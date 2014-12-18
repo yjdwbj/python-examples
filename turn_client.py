@@ -217,7 +217,6 @@ def connect_turn_server():
     stun_setAllocate(sock,'192.168.8.31',3478)
 
 
-
 def main():
     connect_turn_server()
 
