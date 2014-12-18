@@ -3,6 +3,11 @@ import socket
 import binascii
 import logging
 import random
+import struct
+import zlib
+import string
+import threading
+import time
 
 
 DEFAULTS = {
@@ -23,6 +28,19 @@ STUN_METHOD_CHANNEL_BIND='0009'
 STUN_METHOD_CONNECT='000a'
 STUN_METHOD_CONNECTION_BIND='000b'
 STUN_METHOD_CONNECTION_ATTEMPT='000c'
+
+# RFC 6062 #
+STUN_ATTRIBUTE_MAPPED_ADDRESS='0001'
+STUN_ATTRIBUTE_CHANGE_REQUEST='0003'
+STUN_ATTRIBUTE_USERNAME='0006'
+STUN_ATTRIBUTE_MESSAGE_INTEGRITY='0008'
+STUN_ATTRIBUTE_MESSAGE_ERROR_CODE='0009'
+STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES='000a'
+STUN_ATTRIBUTE_REALM='0014'
+STUN_ATTRIBUTE_NONCE='0015'
+STUN_ATTRIBUTE_REQUESTED_ADDRESS_FAMILY='0017'
+STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS='0020'
+OLD_STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS='8020'
 
 
 STUN_ATTRIBUTE_CHANNEL_NUMBER='000c'
@@ -53,8 +71,12 @@ STUN_HEADER_LENGTH=int(20)
 STUN_DEFAULT_ALLOCATE_LIFETIME=int(600)
 UCLIENT_SESSION_LIFETIME=int(777)
 
-STUN_MAGIC_COOKIE='2112A442'
+STUN_MAGIC_COOKIE=0x2112A442
+STUN_MAGIC_COOKIE_STR = struct.pack("I",STUN_MAGIC_COOKIE)
 CRC_MASK=0xFFFFFFFF
+STUN_STRUCT_FMT='!HHI12B' # 固定20Byte的头， 类型，长度，魔数，SSID
+
+STUN_STRUCT_ATTR_HEAD='!HH'
 
 crctable = [
   0x00000000, 0x77073096, 0xee0e612c, 0x990951ba,
@@ -138,34 +160,61 @@ dictMethodToVal={
         'StunMethodConnectionAttempt':STUN_METHOD_CONNECTION_ATTEMPT
         }
 
+dictAttrStruct={
+        STUN_ATTRIBUTE_XOR_RELAYED_ADDRESS:'!HH2BHI', # type,len,reserved,protocl,port,ipaddr
+        STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:'!HH2BHI', # type,len,reserved,protocl,port,ipaddr
+        STUN_ATTRIBUTE_RESERVATION_TOKEN:'!HH8B',
+        STUN_ATTRIBUTE_LIFETIME:'!HHI',
+        }
+
 def get_crc32(str):
+    fmt ='2HI12B2HI2HI2HI'
+    print "calcsize ", struct.calcsize(fmt)
+    return zlib.crc32(binascii.a2b_hex(str.lower()))
+
     crc = int(CRC_MASK)
+    print "Crc buf ",repr(str)
     l = len(str)
     p = 0
     while p < l:  
-        idx = int("0x%s" % str[p:p+2],16) ^ (crc & 127)
+        sub = str[p:p+2]
+        idx = (0xff & int(binascii.b2a_hex(str[p:p+2]),16)) ^ (crc & 0xff)
+        #idx = string.atoi("0x%s" % sub,16) ^ (crc & 0xff)
+        print "Sub is sub %s, index is %d" % (sub,idx)
         crc = crctable[idx] ^ (crc >> 8)
         p +=2
     return ~crc
 
+
 def gen_tran_id():
     a = ''.join(random.choice('0123456789ABCDEF') for i in range(24))
-    return '20f2dbcf09f97c30506f835f'
-    return a.lower()
+    return a
+def gen_random_port():
+    a = ''.join(random.choice('0123456789ABCDEF') for i in range(8))
+    port = 0x4000 + (int(("%s" % a),16) % (0x7FFF - 0x4000+1))
+    return port
 
 def stun_init_command_str(msg_type,buf):
     buf.append(msg_type)
-    buf.append("%04x" % STUN_HEADER_LENGTH )
-    buf.append(STUN_MAGIC_COOKIE.lower())
+    buf.append("%04x" % 0)
+    buf.append("%08x" % STUN_MAGIC_COOKIE)
+    #buf.append(STUN_MAGIC_COOKIE_STR)
     buf.append(gen_tran_id())
 
 def stun_attr_append_str(buf,attr,add_value):
     #buf[1] = "%04x" % (len(''.join(buf)) / 2 - STUN_HEADER_LENGTH)
     # 属性名，属性长度，属性值
-    buf.append(attr.lower()) 
+    buf.append(attr) 
     alen = len(add_value) / 2
     buf.append("%#04d" % alen)
-    buf.append(add_value.lower())
+    buf.append(add_value)
+    # 4Byte 对齐
+    rem4 = (alen & 0x0003)& 0xf 
+    if rem4:
+        rem4 = alen+4-rem4
+    while rem4 > 1:
+        buf[-1] += '00'
+        rem4 -= 1
     buf[1] ="%04x" % (len(''.join(buf)) / 2 - STUN_HEADER_LENGTH)
 
 
@@ -178,23 +227,88 @@ def stun_contract_allocate_request(buf):
     stun_attr_append_str(buf,STUN_ATTRIBUTE_REQUESTED_TRANSPORT,filed)
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
-
     stun_attr_append_str(buf,STUN_ATTRIBUTE_DONT_FRAGMENT,'')
-    
     stun_attr_append_str(buf,STUN_ATTRIBUTE_EVENT_PORT,'80')
-    buf[-1]="%s000000" % buf[-1]
-    
-    #buf[1] = "%04x" % (len(''.join(buf)) / 2 - STUN_HEADER_LENGTH)
+    #buf[-1]="%s000000" % buf[-1]  # 这个是为
     stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
     crc_str = ''.join(buf[:-3])
-    crcval = get_crc32(crc_str)
-    crcstr = "%08x" % (crcval ^ 0x5354554e)
+    crcval = zlib.crc32(binascii.a2b_hex(crc_str))
+    crcstr = "%08x" % ((crcval  ^ 0x5354554e) & 0xFFFFFFFF)
     buf[-1] = crcstr.replace('-','')
-    print "Request msg ",buf
+#### Channel-Bind #######
+def stun_channel_bind_request(sock,host,port):
+    buf = []
     
 
+def stun_struct_cbr(buf,sock):
+    stun_init_command_str(STUN_METHOD_BINDING,buf)
+    port = "%08x" % gen_random_port()
+    stun_attr_append_str(buf,STUN_METHOD_CHANNEL_BIND,filed)
+    stun_attr_append_str(buf,STUN_METHOD_CHANNEL_BIND,filed)
 
 
+#### Refresh Request ######
+def stun_refresh_request(sock,host,port):
+    buf =[]
+    stun_struct_refresh_request(buf)
+    #print "Refresh %s and Len %d" % (buf,len(buf))
+    sdata = binascii.a2b_hex(''.join(buf))
+    sock.sendto(sdata,(host,port))
+
+
+def stun_struct_refresh_request(buf):
+    stun_init_command_str(STUN_METHOD_REFRESH,buf)
+    filed = "%08x" % UCLIENT_SESSION_LIFETIME
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
+    crc_str = ''.join(buf[:-3])
+    crcval = zlib.crc32(binascii.a2b_hex(crc_str))
+    crcstr = "%08x" % ((crcval  ^ 0x5354554e) & 0xFFFFFFFF)
+    buf[-1] = crcstr.replace('-','')
+    
+########## handle response packets ##############
+
+def stun_make_type(method):
+    method  = method & 0x0FFF
+    return ((method & 0x000F) | ((method & 0x0070) << 1) | ((method & 0x0380) << 2) | ((method & 0x0C00) << 2))
+
+def stun_make_success_response(method):
+    return ((stun_make_type(method) & 0xFEEF) | 0x0100)
+
+def stun_get_method_str(method):
+    id = method & 0x3FFF 
+    return int(( id & 0x000F) | ((id & 0x00E0) >> 1)|
+        ((id & 0x0E00)>>2) | ((id & 0x3000)>>2))
+
+def stun_tranid_from_msg(buf):
+    print "tranid is",buf[16:16+24]
+    return buf[16:16+24]
+
+def is_channel_msg_str(mth):
+    return (mth >= 0x4000) and (mth <= 0x7FFF) 
+
+
+def stun_is_success_response_str(mth):
+    if is_channel_msg_str(mth): return False
+    return ((mth & 0x0110 ) == 0x0100)
+
+
+def stun_handle_response(request,response):
+    ss = struct.Struct(STUN_STRUCT_FMT)
+    hexpos = struct.calcsize(STUN_STRUCT_FMT)*2
+    recv_header= ss.unpack(binascii.unhexlify(response[:hexpos]))
+    send_header = ss.unpack(binascii.a2b_hex(''.join(request[:4])))
+
+    if stun_get_method_str(recv_header[0]) != send_header[0] :
+        print "Received wrong response method:",response[:4],"expected :",request[0]
+        return
+    if cmp(recv_header[3:],send_header[3:]) != 0:
+        print "Received wrong response tranid; trying again...."
+        return
+
+    if stun_is_success_response_str(recv_header[0]) == False:
+        return
+    
 
 def stun_setAllocate(sock,host,port):
     buf = []
@@ -202,19 +316,29 @@ def stun_setAllocate(sock,host,port):
     sdata = binascii.a2b_hex(''.join(buf))
     sock.bind(('',56780))
     sock.sendto(sdata,(host,port))
-    #sock.settimeout(5)
+    sock.settimeout(5)
+    print "Buf length",len(''.join(buf))
     while True:
-        buf,addr = sock.recvfrom(2048)
-        if not buf:
+        data,addr = sock.recvfrom(2048)
+        if not data:
             break
         else:
-            myrecv = binascii.b2a_hex(buf)
+            myrecv = binascii.b2a_hex(data)
             print 'response',myrecv
+            stun_handle_response(buf,myrecv)
+            break
 
 def connect_turn_server():
+    srv_host = '192.168.56.1'
+    srv_port = 3478
     sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    stun_setAllocate(sock,'192.168.8.31',3478)
+    stun_setAllocate(sock,srv_host,srv_port)
+    refresh  = threading.Timer(6,stun_refresh_request,(sock,srv_host,srv_port))
+    refresh.start()
+    while True:
+        time.sleep(3)
+        stun_refresh_request(sock,srv_host,srv_port)
 
 
 def main():
