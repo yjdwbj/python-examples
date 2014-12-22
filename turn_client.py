@@ -8,6 +8,8 @@ import zlib
 import string
 import threading
 import time
+import hmac
+import hashlib
 
 
 DEFAULTS = {
@@ -143,6 +145,15 @@ def stun_attr_append_str(buf,attr,add_value):
 def stun_attr_software_gen():
     return binascii.hexlify("Python 'lcy'")
 
+def stun_message_integrity(key):
+    #data = hmac.new(key,msg).hexdigest()
+    hobj = hashlib.sha1()
+    hobj.update(key)
+    data = hobj.hexdigest()
+    print "data is %s,len %d" % (data,len(data))
+    return data
+
+
 
 
 def stun_contract_allocate_request(buf):
@@ -152,10 +163,13 @@ def stun_contract_allocate_request(buf):
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_DONT_FRAGMENT,'')
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_SOFTWARE,stun_attr_software_gen())
+    #stun_attr_append_str(buf,STUN_ATTRIBUTE_SOFTWARE,stun_attr_software_gen())
     stun_attr_append_str(buf,STUN_ATTRIBUTE_EVENT_PORT,'80')
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify('test'))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,stun_message_integrity('test'))
     #buf[-1]="%s000000" % buf[-1]  # 这个是为
     stun_add_fingerprint(buf)
+    print "buf is",buf
 #### Create-Permission Request ####
 
 def stun_create_permission_request(buf,host,port):
@@ -307,7 +321,6 @@ def stun_handle_response(response,result):
         print "handle channel bind"
         res = STUN_METHOD_CREATE_PERMISSION
 
-
     return res
 
 
@@ -357,6 +370,7 @@ def stun_setAllocate(sock,host,port):
     head = "%04x%04x" % (channel_number,len)
     sdata = ''.join(random.choice('0123456789ABCDEF') for i in range(len*2))
     last_request = [head,data]
+    print "Send data is",sdata
     while True:
         sock.sendto(binascii.a2b_hex(''.join([head,sdata])),(host,port))
         data,addr = sock.recvfrom(2048)
