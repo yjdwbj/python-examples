@@ -140,6 +140,8 @@ def stun_attr_append_str(buf,attr,add_value):
         rem4 -= 1
     buf[1] ="%04x" % (len(''.join(buf)) / 2 - STUN_HEADER_LENGTH)
 
+def stun_attr_software_gen():
+    return binascii.hexlify("Python 'lcy'")
 
 
 
@@ -149,7 +151,8 @@ def stun_contract_allocate_request(buf):
     stun_attr_append_str(buf,STUN_ATTRIBUTE_REQUESTED_TRANSPORT,filed)
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
-    #stun_attr_append_str(buf,STUN_ATTRIBUTE_DONT_FRAGMENT,'')
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_DONT_FRAGMENT,'')
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_SOFTWARE,stun_attr_software_gen())
     stun_attr_append_str(buf,STUN_ATTRIBUTE_EVENT_PORT,'80')
     #buf[-1]="%s000000" % buf[-1]  # 这个是为
     stun_add_fingerprint(buf)
@@ -158,6 +161,7 @@ def stun_contract_allocate_request(buf):
 def stun_create_permission_request(buf,host,port):
     stun_init_command_str(STUN_METHOD_CREATE_PERMISSION,buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_PEER_ADDRESS,stun_xor_peer_address(host,port))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_SOFTWARE,stun_attr_software_gen())
     stun_add_fingerprint(buf)
 
 
