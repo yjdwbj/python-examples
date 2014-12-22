@@ -74,76 +74,10 @@ UCLIENT_SESSION_LIFETIME=int(777)
 STUN_MAGIC_COOKIE=0x2112A442
 STUN_MAGIC_COOKIE_STR = struct.pack("I",STUN_MAGIC_COOKIE)
 CRC_MASK=0xFFFFFFFF
-STUN_STRUCT_FMT='!HHI12B' # 固定20Byte的头， 类型，长度，魔数，SSID
+STUN_STRUCT_FMT='!HHI12s' # 固定20Byte的头， 类型，长度，魔数，SSID
 
 STUN_STRUCT_ATTR_HEAD='!HH'
 
-crctable = [
-  0x00000000, 0x77073096, 0xee0e612c, 0x990951ba,
-  0x076dc419, 0x706af48f, 0xe963a535, 0x9e6495a3,
-  0x0edb8832, 0x79dcb8a4, 0xe0d5e91e, 0x97d2d988,
-  0x09b64c2b, 0x7eb17cbd, 0xe7b82d07, 0x90bf1d91,
-  0x1db71064, 0x6ab020f2, 0xf3b97148, 0x84be41de,
-  0x1adad47d, 0x6ddde4eb, 0xf4d4b551, 0x83d385c7,
-  0x136c9856, 0x646ba8c0, 0xfd62f97a, 0x8a65c9ec,
-  0x14015c4f, 0x63066cd9, 0xfa0f3d63, 0x8d080df5,
-  0x3b6e20c8, 0x4c69105e, 0xd56041e4, 0xa2677172,
-  0x3c03e4d1, 0x4b04d447, 0xd20d85fd, 0xa50ab56b,
-  0x35b5a8fa, 0x42b2986c, 0xdbbbc9d6, 0xacbcf940,
-  0x32d86ce3, 0x45df5c75, 0xdcd60dcf, 0xabd13d59,
-  0x26d930ac, 0x51de003a, 0xc8d75180, 0xbfd06116,
-  0x21b4f4b5, 0x56b3c423, 0xcfba9599, 0xb8bda50f,
-  0x2802b89e, 0x5f058808, 0xc60cd9b2, 0xb10be924,
-  0x2f6f7c87, 0x58684c11, 0xc1611dab, 0xb6662d3d,
-  0x76dc4190, 0x01db7106, 0x98d220bc, 0xefd5102a,
-  0x71b18589, 0x06b6b51f, 0x9fbfe4a5, 0xe8b8d433,
-  0x7807c9a2, 0x0f00f934, 0x9609a88e, 0xe10e9818,
-  0x7f6a0dbb, 0x086d3d2d, 0x91646c97, 0xe6635c01,
-  0x6b6b51f4, 0x1c6c6162, 0x856530d8, 0xf262004e,
-  0x6c0695ed, 0x1b01a57b, 0x8208f4c1, 0xf50fc457,
-  0x65b0d9c6, 0x12b7e950, 0x8bbeb8ea, 0xfcb9887c,
-  0x62dd1ddf, 0x15da2d49, 0x8cd37cf3, 0xfbd44c65,
-  0x4db26158, 0x3ab551ce, 0xa3bc0074, 0xd4bb30e2,
-  0x4adfa541, 0x3dd895d7, 0xa4d1c46d, 0xd3d6f4fb,
-  0x4369e96a, 0x346ed9fc, 0xad678846, 0xda60b8d0,
-  0x44042d73, 0x33031de5, 0xaa0a4c5f, 0xdd0d7cc9,
-  0x5005713c, 0x270241aa, 0xbe0b1010, 0xc90c2086,
-  0x5768b525, 0x206f85b3, 0xb966d409, 0xce61e49f,
-  0x5edef90e, 0x29d9c998, 0xb0d09822, 0xc7d7a8b4,
-  0x59b33d17, 0x2eb40d81, 0xb7bd5c3b, 0xc0ba6cad,
-  0xedb88320, 0x9abfb3b6, 0x03b6e20c, 0x74b1d29a,
-  0xead54739, 0x9dd277af, 0x04db2615, 0x73dc1683,
-  0xe3630b12, 0x94643b84, 0x0d6d6a3e, 0x7a6a5aa8,
-  0xe40ecf0b, 0x9309ff9d, 0x0a00ae27, 0x7d079eb1,
-  0xf00f9344, 0x8708a3d2, 0x1e01f268, 0x6906c2fe,
-  0xf762575d, 0x806567cb, 0x196c3671, 0x6e6b06e7,
-  0xfed41b76, 0x89d32be0, 0x10da7a5a, 0x67dd4acc,
-  0xf9b9df6f, 0x8ebeeff9, 0x17b7be43, 0x60b08ed5,
-  0xd6d6a3e8, 0xa1d1937e, 0x38d8c2c4, 0x4fdff252,
-  0xd1bb67f1, 0xa6bc5767, 0x3fb506dd, 0x48b2364b,
-  0xd80d2bda, 0xaf0a1b4c, 0x36034af6, 0x41047a60,
-  0xdf60efc3, 0xa867df55, 0x316e8eef, 0x4669be79,
-  0xcb61b38c, 0xbc66831a, 0x256fd2a0, 0x5268e236,
-  0xcc0c7795, 0xbb0b4703, 0x220216b9, 0x5505262f,
-  0xc5ba3bbe, 0xb2bd0b28, 0x2bb45a92, 0x5cb36a04,
-  0xc2d7ffa7, 0xb5d0cf31, 0x2cd99e8b, 0x5bdeae1d,
-  0x9b64c2b0, 0xec63f226, 0x756aa39c, 0x026d930a,
-  0x9c0906a9, 0xeb0e363f, 0x72076785, 0x05005713,
-  0x95bf4a82, 0xe2b87a14, 0x7bb12bae, 0x0cb61b38,
-  0x92d28e9b, 0xe5d5be0d, 0x7cdcefb7, 0x0bdbdf21,
-  0x86d3d2d4, 0xf1d4e242, 0x68ddb3f8, 0x1fda836e,
-  0x81be16cd, 0xf6b9265b, 0x6fb077e1, 0x18b74777,
-  0x88085ae6, 0xff0f6a70, 0x66063bca, 0x11010b5c,
-  0x8f659eff, 0xf862ae69, 0x616bffd3, 0x166ccf45,
-  0xa00ae278, 0xd70dd2ee, 0x4e048354, 0x3903b3c2,
-  0xa7672661, 0xd06016f7, 0x4969474d, 0x3e6e77db,
-  0xaed16a4a, 0xd9d65adc, 0x40df0b66, 0x37d83bf0,
-  0xa9bcae53, 0xdebb9ec5, 0x47b2cf7f, 0x30b5ffe9,
-  0xbdbdf21c, 0xcabac28a, 0x53b39330, 0x24b4a3a6,
-  0xbad03605, 0xcdd70693, 0x54de5729, 0x23d967bf,
-  0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94,
-  0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d
-]
 
 
 
@@ -161,37 +95,24 @@ dictMethodToVal={
         }
 
 dictAttrStruct={
-        STUN_ATTRIBUTE_XOR_RELAYED_ADDRESS:'!HH2BHI', # type,len,reserved,protocl,port,ipaddr
-        STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:'!HH2BHI', # type,len,reserved,protocl,port,ipaddr
-        STUN_ATTRIBUTE_RESERVATION_TOKEN:'!HH8B',
+        STUN_ATTRIBUTE_XOR_RELAYED_ADDRESS:'!HH2sHI', # type,len,reserved,protocl,port,ipaddr
+        STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:'!HH2sHI', # type,len,reserved,protocl,port,ipaddr
+        STUN_ATTRIBUTE_XOR_PEER_ADDRESS:'!HH2sHI', # type,len,reserved,protocl,port,ipaddr
+        STUN_ATTRIBUTE_RESERVATION_TOKEN:'!HH8s',
         STUN_ATTRIBUTE_LIFETIME:'!HHI',
+        STUN_ATTRIBUTE_FINGERPRINT:'!HHI'
         }
 
 def get_crc32(str):
-    fmt ='2HI12B2HI2HI2HI'
-    print "calcsize ", struct.calcsize(fmt)
     return zlib.crc32(binascii.a2b_hex(str.lower()))
-
-    crc = int(CRC_MASK)
-    print "Crc buf ",repr(str)
-    l = len(str)
-    p = 0
-    while p < l:  
-        sub = str[p:p+2]
-        idx = (0xff & int(binascii.b2a_hex(str[p:p+2]),16)) ^ (crc & 0xff)
-        #idx = string.atoi("0x%s" % sub,16) ^ (crc & 0xff)
-        print "Sub is sub %s, index is %d" % (sub,idx)
-        crc = crctable[idx] ^ (crc >> 8)
-        p +=2
-    return ~crc
-
 
 def gen_tran_id():
     a = ''.join(random.choice('0123456789ABCDEF') for i in range(24))
     return a
-def gen_random_port():
-    a = ''.join(random.choice('0123456789ABCDEF') for i in range(8))
-    port = 0x4000 + (int(("%s" % a),16) % (0x7FFF - 0x4000+1))
+
+def gen_channel_number():
+    a = ''.join(random.choice('0123456789ABCDEF') for i in range(4))
+    port = 0x4000 + (struct.unpack('H',binascii.unhexlify(a))[0]  % (0x7FFF - 0x4000+1))
     return port
 
 def stun_init_command_str(msg_type,buf):
@@ -222,12 +143,11 @@ def stun_attr_append_str(buf,attr,add_value):
 
 def stun_contract_allocate_request(buf):
     stun_init_command_str(STUN_METHOD_ALLOCATE,buf)
-    #stun_init_command_str("%04x" % socket.htons(3),buf)
     filed = "%08x" % socket.htonl(STUN_ATTRIBUTE_TRANSPORT_UDP_VALUE)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_REQUESTED_TRANSPORT,filed)
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_DONT_FRAGMENT,'')
+    #stun_attr_append_str(buf,STUN_ATTRIBUTE_DONT_FRAGMENT,'')
     stun_attr_append_str(buf,STUN_ATTRIBUTE_EVENT_PORT,'80')
     #buf[-1]="%s000000" % buf[-1]  # 这个是为
     stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
@@ -235,24 +155,45 @@ def stun_contract_allocate_request(buf):
     crcval = zlib.crc32(binascii.a2b_hex(crc_str))
     crcstr = "%08x" % ((crcval  ^ 0x5354554e) & 0xFFFFFFFF)
     buf[-1] = crcstr.replace('-','')
+#### Create-Permission Request ####
+
+
 #### Channel-Bind #######
-def stun_channel_bind_request(sock,host,port):
-    buf = []
+def stun_channel_bind_request(buf,host,port):
+    stun_struct_cbr(buf,host,port)
     
 
-def stun_struct_cbr(buf,sock):
-    stun_init_command_str(STUN_METHOD_BINDING,buf)
-    port = "%08x" % gen_random_port()
-    stun_attr_append_str(buf,STUN_METHOD_CHANNEL_BIND,filed)
-    stun_attr_append_str(buf,STUN_METHOD_CHANNEL_BIND,filed)
+
+    
+
+def stun_struct_cbr(buf,host,port):
+    global success_allocate
+    stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
+    channel_number = "%04x" % gen_channel_number()
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_CHANNEL_NUMBER,"%s0000" % channel_number)
+    cfiled = []
+    cfiled.append('0001')
+    xor_port = (port ^ (STUN_MAGIC_COOKIE >> 16)) & 0xFFFF
+    cfiled.append("%04x" % port)
+    xor_addr = host ^ STUN_MAGIC_COOKIE
+    cfiled.append("%08x" % host)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_PEER_ADDRESS,''.join(cfiled))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
+    crc_str = ''.join(buf[:-3])
+    crcval = zlib.crc32(binascii.a2b_hex(crc_str))
+    crcstr = "%08x" % ((crcval  ^ 0x5354554e) & 0xFFFFFFFF)
+    buf[-1] = crcstr.replace('-','')
+    print "Channel-Bind Request",buf
 
 
 #### Refresh Request ######
 def stun_refresh_request(sock,host,port):
     buf =[]
+    global last_request
     stun_struct_refresh_request(buf)
     #print "Refresh %s and Len %d" % (buf,len(buf))
     sdata = binascii.a2b_hex(''.join(buf))
+    last_request = buf
     sock.sendto(sdata,(host,port))
 
 
@@ -290,43 +231,91 @@ def is_channel_msg_str(mth):
 
 def stun_is_success_response_str(mth):
     if is_channel_msg_str(mth): return False
+    flag = ((mth & 0x0110 ) == 0x0100)
     return ((mth & 0x0110 ) == 0x0100)
 
+def stun_get_first_attr(response,response_result):
+    attr_name = response[:4]
+    pos = 0
+    if attr_name in dictAttrStruct:
+        attr_size = struct.calcsize(dictAttrStruct[attr_name])
+        pos += attr_size*2
+        res = struct.unpack(dictAttrStruct[attr_name],binascii.unhexlify(response[:attr_size*2]))
+    elif attr_name == STUN_ATTRIBUTE_SOFTWARE:
+        fmt = '!HH%ds' % (int("0x%s" % response[4:8],16) & 0xFFFF)
+        attr_size = struct.calcsize(fmt)
+        pos += attr_size*2
+        res = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
+    if res:
+        response_result.append(res)
+    return pos
 
-def stun_handle_response(request,response):
+        
+
+def stun_get_dict_header(dict,struct_str):
+    dict['method'] =  "%04x" % struct_str[0]
+    dict['len'] = '%04x' % struct_str[1]
+    dict['cookie'] = '%08x'% struct_str[2]
+    dict['tranid'] = binascii.hexlify(struct_str[3])
+    
+
+def stun_handle_allocate_response(hexpos,blen,response,result):
+    while hexpos < blen:
+        hexpos += stun_get_first_attr(response[hexpos:],result)
+
+def stun_handle_response(response,result):
+    global last_request
     ss = struct.Struct(STUN_STRUCT_FMT)
     hexpos = struct.calcsize(STUN_STRUCT_FMT)*2
     recv_header= ss.unpack(binascii.unhexlify(response[:hexpos]))
-    send_header = ss.unpack(binascii.a2b_hex(''.join(request[:4])))
-
-    if stun_get_method_str(recv_header[0]) != send_header[0] :
-        print "Received wrong response method:",response[:4],"expected :",request[0]
-        return
+    send_header = ss.unpack(binascii.a2b_hex(''.join(last_request[:4])))
+    res_mth = stun_get_method_str(recv_header[0])
+    print "This method is",res_mth
+    result.append(res_mth)
+    result.append('%04x' % recv_header[1])
+    result.append('%04x' % recv_header[2])
+    result.append(binascii.hexlify(recv_header[3]))
+    if res_mth != send_header[0]:
+        print "Received wrong response method:",response[:4],"expected :",last_request[0]
+        return False
     if cmp(recv_header[3:],send_header[3:]) != 0:
         print "Received wrong response tranid; trying again...."
-        return
+        return False
 
     if stun_is_success_response_str(recv_header[0]) == False:
-        return
-    
+        return False
+
+    if res_mth == int(STUN_METHOD_ALLOCATE,16):
+        stun_handle_allocate_response(hexpos,len(response),response,result)
+    elif res_mth == STUN_METHOD_REFRESH:
+        pass  # 这里暂略过，假定时间一直有效
+
+    return True
+
+
 
 def stun_setAllocate(sock,host,port):
     buf = []
+    global last_request
+    global success_allocate
+    response_result = []
     stun_contract_allocate_request(buf)
     sdata = binascii.a2b_hex(''.join(buf))
+    last_request = buf
     sock.bind(('',56780))
     sock.sendto(sdata,(host,port))
-    sock.settimeout(5)
-    print "Buf length",len(''.join(buf))
     while True:
         data,addr = sock.recvfrom(2048)
         if not data:
             break
         else:
             myrecv = binascii.b2a_hex(data)
-            print 'response',myrecv
-            stun_handle_response(buf,myrecv)
-            break
+            if stun_handle_response(myrecv,response_result):
+                #refresh  = threading.Timer(60,stun_refresh_request,(sock,host,port))
+                #refresh.start()
+                nbuf = []
+                stun_channel_bind_request(nbuf,response_result[4][4],response_result[4][3])
+                sock.sendto(binascii.a2b_hex(''.join(nbuf)),addr)
 
 def connect_turn_server():
     srv_host = '192.168.56.1'
@@ -334,11 +323,6 @@ def connect_turn_server():
     sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     stun_setAllocate(sock,srv_host,srv_port)
-    refresh  = threading.Timer(6,stun_refresh_request,(sock,srv_host,srv_port))
-    refresh.start()
-    while True:
-        time.sleep(3)
-        stun_refresh_request(sock,srv_host,srv_port)
 
 
 def main():
