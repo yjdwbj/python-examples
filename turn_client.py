@@ -111,8 +111,10 @@ def gen_tran_id():
     return a
 
 def gen_channel_number():
+    global channel_number
     a = ''.join(random.choice('0123456789ABCDEF') for i in range(4))
     port = 0x4000 + (struct.unpack('H',binascii.unhexlify(a))[0]  % (0x7FFF - 0x4000+1))
+    channel_number = port
     return port
 
 def stun_init_command_str(msg_type,buf):
@@ -150,12 +152,14 @@ def stun_contract_allocate_request(buf):
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_DONT_FRAGMENT,'')
     stun_attr_append_str(buf,STUN_ATTRIBUTE_EVENT_PORT,'80')
     #buf[-1]="%s000000" % buf[-1]  # 这个是为
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
-    crc_str = ''.join(buf[:-3])
-    crcval = zlib.crc32(binascii.a2b_hex(crc_str))
-    crcstr = "%08x" % ((crcval  ^ 0x5354554e) & 0xFFFFFFFF)
-    buf[-1] = crcstr.replace('-','')
+    stun_add_fingerprint(buf)
 #### Create-Permission Request ####
+
+def stun_create_permission_request(buf,host,port):
+    stun_init_command_str(STUN_METHOD_CREATE_PERMISSION,buf)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_PEER_ADDRESS,stun_xor_peer_address(host,port))
+    stun_add_fingerprint(buf)
+
 
 
 #### Channel-Bind #######
@@ -163,7 +167,21 @@ def stun_channel_bind_request(buf,host,port):
     stun_struct_cbr(buf,host,port)
     
 
+def stun_xor_peer_address(host,port):
+    cfiled = []
+    cfiled.append('0001')
+    xor_port = (port ^ (STUN_MAGIC_COOKIE >> 16)) & 0xFFFF
+    cfiled.append("%04x" % port)
+    xor_addr = host ^ STUN_MAGIC_COOKIE
+    cfiled.append("%08x" % host)
+    return ''.join(cfiled)
 
+def stun_add_fingerprint(buf):
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
+    crc_str = ''.join(buf[:-3])
+    crcval = zlib.crc32(binascii.a2b_hex(crc_str))
+    crcstr = "%08x" % ((crcval  ^ 0x5354554e) & 0xFFFFFFFF)
+    buf[-1] = crcstr.replace('-','')
     
 
 def stun_struct_cbr(buf,host,port):
@@ -171,19 +189,8 @@ def stun_struct_cbr(buf,host,port):
     stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
     channel_number = "%04x" % gen_channel_number()
     stun_attr_append_str(buf,STUN_ATTRIBUTE_CHANNEL_NUMBER,"%s0000" % channel_number)
-    cfiled = []
-    cfiled.append('0001')
-    xor_port = (port ^ (STUN_MAGIC_COOKIE >> 16)) & 0xFFFF
-    cfiled.append("%04x" % port)
-    xor_addr = host ^ STUN_MAGIC_COOKIE
-    cfiled.append("%08x" % host)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_PEER_ADDRESS,''.join(cfiled))
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
-    crc_str = ''.join(buf[:-3])
-    crcval = zlib.crc32(binascii.a2b_hex(crc_str))
-    crcstr = "%08x" % ((crcval  ^ 0x5354554e) & 0xFFFFFFFF)
-    buf[-1] = crcstr.replace('-','')
-    print "Channel-Bind Request",buf
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_PEER_ADDRESS,stun_xor_peer_address(host,port))
+    stun_add_fingerprint(buf)
 
 
 #### Refresh Request ######
@@ -201,11 +208,7 @@ def stun_struct_refresh_request(buf):
     stun_init_command_str(STUN_METHOD_REFRESH,buf)
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
-    crc_str = ''.join(buf[:-3])
-    crcval = zlib.crc32(binascii.a2b_hex(crc_str))
-    crcstr = "%08x" % ((crcval  ^ 0x5354554e) & 0xFFFFFFFF)
-    buf[-1] = crcstr.replace('-','')
+    stun_add_fingerprint(buf)
     
 ########## handle response packets ##############
 
@@ -265,6 +268,8 @@ def stun_handle_allocate_response(hexpos,blen,response,result):
 
 def stun_handle_response(response,result):
     global last_request
+    global channel_number
+    res = -1
     ss = struct.Struct(STUN_STRUCT_FMT)
     hexpos = struct.calcsize(STUN_STRUCT_FMT)*2
     recv_header= ss.unpack(binascii.unhexlify(response[:hexpos]))
@@ -277,27 +282,37 @@ def stun_handle_response(response,result):
     result.append(binascii.hexlify(recv_header[3]))
     if res_mth != send_header[0]:
         print "Received wrong response method:",response[:4],"expected :",last_request[0]
-        return False
+        return res
     if cmp(recv_header[3:],send_header[3:]) != 0:
         print "Received wrong response tranid; trying again...."
-        return False
+        return  res
 
     if stun_is_success_response_str(recv_header[0]) == False:
-        return False
+        return  res
 
     if res_mth == int(STUN_METHOD_ALLOCATE,16):
         stun_handle_allocate_response(hexpos,len(response),response,result)
-    elif res_mth == STUN_METHOD_REFRESH:
+        res = STUN_METHOD_ALLOCATE
+    elif res_mth == int(STUN_METHOD_REFRESH,16):
+        res = STUN_METHOD_REFRESH
         pass  # 这里暂略过，假定时间一直有效
+    elif res_mth == int(STUN_METHOD_CHANNEL_BIND,16):
+        print "handle channel bind"
+        res = STUN_METHOD_CHANNEL_BIND
+    elif res_mth == int(STUN_METHOD_CREATE_PERMISSION,16):
+        print "handle channel bind"
+        res = STUN_METHOD_CREATE_PERMISSION
 
-    return True
 
+    return res
 
 
 def stun_setAllocate(sock,host,port):
     buf = []
     global last_request
     global success_allocate
+    xor_port = 0
+    xor_addr = ''
     response_result = []
     stun_contract_allocate_request(buf)
     sdata = binascii.a2b_hex(''.join(buf))
@@ -310,13 +325,46 @@ def stun_setAllocate(sock,host,port):
             break
         else:
             myrecv = binascii.b2a_hex(data)
-            if stun_handle_response(myrecv,response_result):
-                #refresh  = threading.Timer(60,stun_refresh_request,(sock,host,port))
-                #refresh.start()
+            if stun_handle_response(myrecv,response_result) == STUN_METHOD_ALLOCATE:
+                refresh  = threading.Timer(60,stun_refresh_request,(sock,host,port))
+                refresh.start()
                 nbuf = []
-                stun_channel_bind_request(nbuf,response_result[4][4],response_result[4][3])
+                xor_port = response_result[4][3]
+                xor_addr = response_result[4][4]
+                stun_channel_bind_request(nbuf,xor_addr,xor_port)
+                last_request = nbuf
                 sock.sendto(binascii.a2b_hex(''.join(nbuf)),addr)
+                response_result = []
+            elif stun_handle_response(myrecv,response_result) == STUN_METHOD_REFRESH:
+                response_result = []
+                pass
+            elif stun_handle_response(myrecv,response_result) == STUN_METHOD_CHANNEL_BIND:
+                print "Channel bind success"
+                nbuf = []
+                stun_create_permission_request(nbuf,xor_addr,xor_port)
+                last_request = nbuf
+                sock.sendto(binascii.a2b_hex(''.join(nbuf)),addr)
+                response_result = []
+            elif stun_handle_response(myrecv,response_result) == STUN_METHOD_CREATE_PERMISSION:
+                print "Create Permission success"
+                break
 
+    len = 170
+    head = "%04x%04x" % (channel_number,len)
+    sdata = ''.join(random.choice('0123456789ABCDEF') for i in range(len*2))
+    last_request = [head,data]
+    while True:
+        sock.sendto(binascii.a2b_hex(''.join([head,sdata])),(host,port))
+        data,addr = sock.recvfrom(2048)
+        myrecv = binascii.b2a_hex(data)
+        if myrecv[:4] == STUN_METHOD_REFRESH:
+            pass
+        elif myrecv[:4] == "%04x" % channel_number:
+            print "Recv data",myrecv[8:]
+        response_result = []
+        time.sleep(10)
+
+                        
 def connect_turn_server():
     srv_host = '192.168.56.1'
     srv_port = 3478
