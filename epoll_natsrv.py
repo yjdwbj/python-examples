@@ -151,18 +151,22 @@ def handle_client_request(buf,fileno):
     method = '%04x' % reqhead[0]
     tran_id = binascii.hexlify(reqhead[-1])
     if method == STUN_METHOD_REFRESH:
+        res = {}
         hexpos = STUN_HEADER_LENGTH*2
         print "method is ",method
         while  hexpos < blen:
             print "hexpos",hexpos,"blen",blen
-            hexpos += stun_get_first_attr(buf[hexpos:],fileno,None)
+            hexpos += stun_get_first_attr(buf[hexpos:],res)
+        handle_refresh_request(fileno,res[STUN_ATTRIBUTE_LIFETIME][-1])
         refresh_sucess(response_result,tran_id)
     elif method == STUN_METHOD_ALLOCATE:
+        res = {}
         hexpos = STUN_HEADER_LENGTH*2
         host = mdict['clients'][fileno].getpeername()
         while hexpos < blen:
-            hexpos += stun_get_first_attr(buf[hexpos:],fileno,host)
+            hexpos += stun_get_first_attr(buf[hexpos:],res)
         binding_sucess(response_result,tran_id,host)
+        update_newdevice(host,res[STUN_ATTRIBUTE_UUID][-1])
     print "response_result",response_result
 
 def refresh_sucess(buf,tran_id): # 刷新成功
@@ -188,7 +192,8 @@ def handle_refresh_request(fileno,ntime):
 
 def update_newdevice(host,uid):
     dbcon = engine.connect()
-    mirco_devices = Table('mirco_devices',MetaData(),
+    metadata = MetaData()
+    mirco_devices = Table('mirco_devices',metadata,
             Column('devid',pgsql.UUID),
             Column('is_active',pgsql.BOOLEAN),
             Column('last_login_time',pgsql.TIMESTAMP),
@@ -196,6 +201,7 @@ def update_newdevice(host,uid):
             Column('chost',pgsql.ARRAY(pgsql.INTEGER)),
             Column('data',pgsql.TEXT)
             )
+    metadata.create_all(engine)
     s = sql.select([mirco_devices.c.devid])
     result = dbcon.execute(s)
     row = result.fetchone()
@@ -207,35 +213,30 @@ def update_newdevice(host,uid):
         dbcon.execute(ins)
 
 
-def stun_get_first_attr(response,fileno,host):
+def stun_get_first_attr(response,res):
     attr_name = response[:4]
     pos = 0
     print "attr_name",attr_name
+    fmt =''
     if attr_name == STUN_ATTRIBUTE_LIFETIME:
         fmt = '!HHI'
-        attr_size = struct.calcsize(fmt)
-        pos += attr_size*2
-        res = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
-        handle_refresh_request(fileno,res[-1])
     elif attr_name == STUN_ATTRIBUTE_UUID:
         fmt = '!HH16s'
-        attr_size = struct.calcsize(fmt)
-        pos += attr_size*2
-        res = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
-        update_newdevice(host,res[-1])
     elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
         fmt = '!HHI'
-        attr_size = struct.calcsize(fmt)
-        pos += attr_size*2
+    attr_size = struct.calcsize(fmt)
+    pos += attr_size*2
+    res[attr_name] = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
     return pos
+
 class CheckSesionThread(threading.Thread):
     def run(self):
         while True:
             time.sleep(1)
-            print 'mdict[sessons]',mdict['sessions']
             for x in mdict['sessions']:
                 print "x is now",x
                 if mdict['sessions'][x] == 0:
+                    del mdict['sessions'][x]
                     mdict['clients'][x].close()
                 else:
                     mdict['sessions'][x] -=1
