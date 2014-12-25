@@ -1,3 +1,4 @@
+#!/bin/python2
 #coding=utf-8
 import socket
 import binascii
@@ -10,6 +11,7 @@ import threading
 import time
 import hmac
 import hashlib
+import uuid
 
 
 DEFAULTS = {
@@ -61,6 +63,7 @@ STUN_ATTRIBUTE_RESERVATION_TOKEN='0022'
 STUN_ATTRIBUTE_SOFTWARE='8022'
 STUN_ATTRIBUTE_ALTERNATE_SERVER='8023'
 STUN_ATTRIBUTE_FINGERPRINT='8028'
+STUN_ATTRIBUTE_UUID='8001'
 
 STUN_ATTRIBUTE_TRANSPORT_TCP_VALUE=int(6)
 STUN_ATTRIBUTE_TRANSPORT_UDP_VALUE=int(17)
@@ -71,7 +74,7 @@ STUN_HEADER_LENGTH=int(20)
 
 #Lifetimes
 STUN_DEFAULT_ALLOCATE_LIFETIME=int(600)
-UCLIENT_SESSION_LIFETIME=int(777)
+UCLIENT_SESSION_LIFETIME=int(60)
 
 STUN_MAGIC_COOKIE=0x2112A442
 STUN_MAGIC_COOKIE_STR = struct.pack("I",STUN_MAGIC_COOKIE)
@@ -147,6 +150,9 @@ def stun_attr_software_gen():
 
 def stun_message_integrity(key):
     #data = hmac.new(key,msg).hexdigest()
+    obj = hmac.new('')
+    obj.update(key)
+    return obj.hexdigest()
     hobj = hashlib.sha1()
     hobj.update(key)
     data = hobj.hexdigest()
@@ -158,15 +164,16 @@ def stun_message_integrity(key):
 
 def stun_contract_allocate_request(buf):
     stun_init_command_str(STUN_METHOD_ALLOCATE,buf)
-    filed = "%08x" % socket.htonl(STUN_ATTRIBUTE_TRANSPORT_UDP_VALUE)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_REQUESTED_TRANSPORT,filed)
+    #filed = "%08x" % socket.htonl(STUN_ATTRIBUTE_TRANSPORT_UDP_VALUE)
+    #stun_attr_append_str(buf,STUN_ATTRIBUTE_REQUESTED_TRANSPORT,filed)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,str(uuid.uuid1()).replace('-',''))
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_DONT_FRAGMENT,'')
+    #stun_attr_append_str(buf,STUN_ATTRIBUTE_DONT_FRAGMENT,'')
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_SOFTWARE,stun_attr_software_gen())
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_EVENT_PORT,'80')
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify('test'))
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,stun_message_integrity('test'))
+    #stun_attr_append_str(buf,STUN_ATTRIBUTE_EVENT_PORT,'80')
+    #stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify('test'))
+    #stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,stun_message_integrity('test'))
     #buf[-1]="%s000000" % buf[-1]  # 这个是为
     stun_add_fingerprint(buf)
     print "buf is",buf
@@ -174,6 +181,7 @@ def stun_contract_allocate_request(buf):
 
 def stun_create_permission_request(buf,host,port):
     stun_init_command_str(STUN_METHOD_CREATE_PERMISSION,buf)
+    #stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_PEER_ADDRESS,stun_xor_peer_address(3787107421,64197))
     stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_PEER_ADDRESS,stun_xor_peer_address(host,port))
     stun_attr_append_str(buf,STUN_ATTRIBUTE_SOFTWARE,stun_attr_software_gen())
     stun_add_fingerprint(buf)
@@ -215,11 +223,13 @@ def stun_struct_cbr(buf,host,port):
 def stun_refresh_request(sock,host,port):
     buf =[]
     global last_request
+    print "refresh time"
     stun_struct_refresh_request(buf)
     #print "Refresh %s and Len %d" % (buf,len(buf))
     sdata = binascii.a2b_hex(''.join(buf))
     last_request = buf
-    sock.sendto(sdata,(host,port))
+    #sock.sendto(sdata,(host,port))
+    sock.send(sdata)
 
 
 def stun_struct_refresh_request(buf):
@@ -258,6 +268,8 @@ def stun_is_success_response_str(mth):
 def stun_get_first_attr(response,response_result):
     attr_name = response[:4]
     pos = 0
+    res = {}
+    print "attr_name",attr_name
     if attr_name in dictAttrStruct:
         attr_size = struct.calcsize(dictAttrStruct[attr_name])
         pos += attr_size*2
@@ -282,6 +294,7 @@ def stun_get_dict_header(dict,struct_str):
 
 def stun_handle_allocate_response(hexpos,blen,response,result):
     while hexpos < blen:
+        print "hexpos is",hexpos
         hexpos += stun_get_first_attr(response[hexpos:],result)
 
 def stun_handle_response(response,result):
@@ -306,10 +319,12 @@ def stun_handle_response(response,result):
         return  res
 
     if stun_is_success_response_str(recv_header[0]) == False:
+        print "Not success response"
         return  res
 
     if res_mth == int(STUN_METHOD_ALLOCATE,16):
         stun_handle_allocate_response(hexpos,len(response),response,result)
+        print "Allocate success_allocate"
         res = STUN_METHOD_ALLOCATE
     elif res_mth == int(STUN_METHOD_REFRESH,16):
         res = STUN_METHOD_REFRESH
@@ -334,37 +349,41 @@ def stun_setAllocate(sock,host,port):
     stun_contract_allocate_request(buf)
     sdata = binascii.a2b_hex(''.join(buf))
     last_request = buf
-    sock.bind(('',56780))
-    sock.sendto(sdata,(host,port))
+    sock.bind(('',0))
+    #sock.sendto(sdata,(host,port))
+    sock.connect((host,port))
+    sock.send(sdata)
     while True:
         data,addr = sock.recvfrom(2048)
         if not data:
             break
         else:
             myrecv = binascii.b2a_hex(data)
+            print "data is",myrecv
             if stun_handle_response(myrecv,response_result) == STUN_METHOD_ALLOCATE:
-                refresh  = threading.Timer(60,stun_refresh_request,(sock,host,port))
+                print "thread start"
+                refresh  = threading.Timer(3,stun_refresh_request,(sock,host,port))
                 refresh.start()
-                nbuf = []
-                xor_port = response_result[4][3]
-                xor_addr = response_result[4][4]
-                stun_channel_bind_request(nbuf,xor_addr,xor_port)
-                last_request = nbuf
-                sock.sendto(binascii.a2b_hex(''.join(nbuf)),addr)
+##                nbuf = []
+##                xor_port = response_result[4][3]
+##                xor_addr = response_result[4][4]
+##                stun_channel_bind_request(nbuf,xor_addr,xor_port)
+##                last_request = nbuf
+##                sock.sendto(binascii.a2b_hex(''.join(nbuf)),addr)
                 response_result = []
             elif stun_handle_response(myrecv,response_result) == STUN_METHOD_REFRESH:
                 response_result = []
                 pass
-            elif stun_handle_response(myrecv,response_result) == STUN_METHOD_CHANNEL_BIND:
-                print "Channel bind success"
-                nbuf = []
-                stun_create_permission_request(nbuf,xor_addr,xor_port)
-                last_request = nbuf
-                sock.sendto(binascii.a2b_hex(''.join(nbuf)),addr)
-                response_result = []
-            elif stun_handle_response(myrecv,response_result) == STUN_METHOD_CREATE_PERMISSION:
-                print "Create Permission success"
-                break
+##            elif stun_handle_response(myrecv,response_result) == STUN_METHOD_CHANNEL_BIND:
+##                print "Channel bind success"
+##                nbuf = []
+##                stun_create_permission_request(nbuf,xor_addr,xor_port)
+##                last_request = nbuf
+##                sock.sendto(binascii.a2b_hex(''.join(nbuf)),addr)
+##                response_result = []
+##            elif stun_handle_response(myrecv,response_result) == STUN_METHOD_CREATE_PERMISSION:
+##                print "Create Permission success"
+##                break
 
     len = 170
     head = "%04x%04x" % (channel_number,len)
@@ -384,9 +403,12 @@ def stun_setAllocate(sock,host,port):
 
                         
 def connect_turn_server():
-    srv_host = '192.168.56.1'
+    srv_host = '192.168.8.9'
+    #srv_host = '192.168.56.1'
     srv_port = 3478
-    sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    #srv_port = 3478
+    #sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     stun_setAllocate(sock,srv_host,srv_port)
 
