@@ -5,14 +5,16 @@ import time
 import struct
 import binascii
 import threading
-import zlib
+import uuid
+
+from datetime import datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import Column,Integer,String,ForeignKey,Date
+from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,MetaData,DateTime,Boolean,SmallInteger,VARCHAR
 from sqlalchemy import sql
 from sqlalchemy.orm import relationship,backref
-
+from sqlalchemy.dialects import postgresql as pgsql
 
 STUN_METHOD_BINDING='0001'
 STUN_METHOD_ALLOCATE='0003'
@@ -56,6 +58,7 @@ STUN_ATTRIBUTE_RESERVATION_TOKEN='0022'
 STUN_ATTRIBUTE_SOFTWARE='8022'
 STUN_ATTRIBUTE_ALTERNATE_SERVER='8023'
 STUN_ATTRIBUTE_FINGERPRINT='8028'
+STUN_ATTRIBUTE_UUID='8001'
 
 STUN_ATTRIBUTE_TRANSPORT_TCP_VALUE=int(6)
 STUN_ATTRIBUTE_TRANSPORT_UDP_VALUE=int(17)
@@ -71,6 +74,8 @@ UCLIENT_SESSION_LIFETIME=int(60)
 
 STUN_MAGIC_COOKIE=0x2112A442
 
+SOCK_BUFSIZE=2048
+
 dictAttrStruct={
         STUN_ATTRIBUTE_XOR_RELAYED_ADDRESS:'!HH2sHI', # type,len,reserved,protocl,port,ipaddr
         STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:'!HH2sHI', # type,len,reserved,protocl,port,ipaddr
@@ -78,15 +83,13 @@ dictAttrStruct={
         STUN_ATTRIBUTE_RESERVATION_TOKEN:'!HH8s',
         STUN_ATTRIBUTE_LIFETIME:'!HHI',
         STUN_ATTRIBUTE_FINGERPRINT:'!HHI'
+        #STUN_ATTRIBUTE_UUID:'!HH32s'
         }
-
 
 Base = declarative_base()
 
-
-
 def get_crc32(str):
-    return zlib.crc32(binascii.a2b_hex(str.lower()))
+    return binascii.crc32(binascii.a2b_hex(str.lower()))
 
 def gen_tran_id():
     a = ''.join(random.choice('0123456789ABCDEF') for i in range(24))
@@ -111,13 +114,14 @@ def stun_attr_append_str(buf,attr,add_value):
 def stun_add_fingerprint(buf):
     stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
     crc_str = ''.join(buf[:-3])
-    crcval = zlib.crc32(binascii.a2b_hex(crc_str))
+    crcval = binascii.crc32(binascii.a2b_hex(crc_str))
     crcstr = "%08x" % ((crcval  ^ 0x5354554e) & 0xFFFFFFFF)
     buf[-1] = crcstr.replace('-','')
 
 def stun_make_type(method):
     method  = int(method,16) & 0x0FFF
-    return '%04x' % ((method & 0x000F) | ((method & 0x0070) << 1) | ((method & 0x0380) << 2) | ((method & 0x0C00) << 2))
+    method = ((method & 0x000F) | ((method & 0x0070) << 1) | ((method & 0x0380) << 2) | ((method & 0x0C00) << 2))
+    return '%04x' % ((method & 0xFEEF) | 0x0100)
 
 def stun_init_command_str(msg_type,buf,tran_id):
     buf.append(msg_type)
@@ -125,81 +129,116 @@ def stun_init_command_str(msg_type,buf,tran_id):
     buf.append("%08x" % STUN_MAGIC_COOKIE)
     buf.append(tran_id)
 
-def check_crc_is_valid(buf):
+def check_crc_is_valid(buf): # 检查包的CRC
+    if len(buf) < 17:  # 包太小
+        return False
     crc = struct.unpack('!HHI',binascii.unhexlify(buf[-16:]))
-    rcrc = get_crc32(buf[:-16])
-    print "crc " ,crc
-    print "rcrc",rcrc
+    rcrc =(get_crc32(buf[:-16]) ^ 0x5354554e ) & 0xFFFFFFFF
     if crc[-1] != rcrc:
         return False
     return True
 
-def handle_client_request(buf,epoll,fileno,clients,responses):
+def handle_client_request(buf,fileno):
+    blen = len(buf)
     if not check_crc_is_valid(buf):
         print "CRC wrong"
         epoll.unregister(fileno)
-        clients[fileno].close()
-        del clients[fileno]
+        mdict['clients'][fileno].close()
+        del mdict['clients'][fileno]
         return
-    r = []
-    reqhead = struct.unpack(STUN_HEADER_FMT,buf[:STUN_HEADER_LENGTH*2])
+    response_result = mdict['responses'][fileno]
+    reqhead = struct.unpack(STUN_HEADER_FMT,binascii.unhexlify(buf[:STUN_HEADER_LENGTH*2]))
     method = '%04x' % reqhead[0]
     tran_id = binascii.hexlify(reqhead[-1])
     if method == STUN_METHOD_REFRESH:
-        refresh_sucess(r,tran_id)
-    elif method == STUN_METHOD_BINDING:
-        binding_sucess(r,tran_id,clients[fileno].getpeerkname())
-
-    response = binascii.a2b_hex(''.join(r))
-    epoll.modify(fileno,select.EPOLLOUT)
-
+        hexpos = STUN_HEADER_LENGTH*2
+        print "method is ",method
+        while  hexpos < blen:
+            print "hexpos",hexpos,"blen",blen
+            hexpos += stun_get_first_attr(buf[hexpos:],fileno,None)
+        refresh_sucess(response_result,tran_id)
+    elif method == STUN_METHOD_ALLOCATE:
+        hexpos = STUN_HEADER_LENGTH*2
+        host = mdict['clients'][fileno].getpeername()
+        while hexpos < blen:
+            hexpos += stun_get_first_attr(buf[hexpos:],fileno,host)
+        binding_sucess(response_result,tran_id,host)
+    print "response_result",response_result
 
 def refresh_sucess(buf,tran_id): # 刷新成功
     stun_init_command_str(stun_make_type(STUN_METHOD_REFRESH),buf,tran_id)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%04x' % UCLIENT_SESSION_LIFETIME)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
     stun_add_fingerprint(buf)
 
 def binding_sucess(buf,tran_id,host): # 客服端向服务器绑定自己的IP
-    stun_init_command_str(stun_make_type(STUN_METHOD_REFRESH),buf,tran_id)
+    stun_init_command_str(stun_make_type(STUN_METHOD_ALLOCATE),buf,tran_id)
     #eip = "0001%04x%08x" % (ehost[1],ehost[0])
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_RELAYED_ADDRESS,eip)
-    mip = "0001%04x%08x" % (host[1],host[0])
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_MAPPED_ADDRESS,mip)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%04x' % UCLIENT_SESSION_LIFETIME)
+    #mip = "0001%04x%s" % (host[1],binascii.hexlify(socket.inet_aton(host[0])))
+    #stun_attr_append_str(buf,STUN_ATTRIBUTE_MAPPED_ADDRESS,mip)
+    mip = "0001%04x%08x" % (host[1]^ (STUN_MAGIC_COOKIE >> 16),
+            STUN_MAGIC_COOKIE ^ (int(binascii.hexlify(socket.inet_aton(host[0])),16)))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS,mip)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
     stun_add_fingerprint(buf)
 
-def read_client_attr(recv,response_result):
-    pass
+def handle_refresh_request(fileno,ntime):
+    print "refresh new time",ntime
+    mdict['sessions'][fileno] = ntime
+
+def update_newdevice(host,uid):
+    dbcon = engine.connect()
+    mirco_devices = Table('mirco_devices',MetaData(),
+            Column('devid',pgsql.UUID),
+            Column('is_active',pgsql.BOOLEAN),
+            Column('last_login_time',pgsql.TIMESTAMP),
+            Column('is_online',pgsql.BOOLEAN),
+            Column('chost',pgsql.ARRAY(pgsql.INTEGER)),
+            Column('data',pgsql.TEXT)
+            )
+    s = sql.select([mirco_devices.c.devid])
+    result = dbcon.execute(s)
+    row = result.fetchone()
+    if not row or row[0] != uuid.UUID(binascii.hexlify(uid)): # 找不到这个UUID 就插入新的
+        ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
+        ipprt = host[1] & 0xFFFF
+        ins = mirco_devices.insert().values(devid=binascii.hexlify(uid),is_active=True,
+                is_online=True,chost=[ipadr,ipprt])
+        dbcon.execute(ins)
 
 
-def stun_get_first_attr(response,response_result):
+def stun_get_first_attr(response,fileno,host):
     attr_name = response[:4]
     pos = 0
-    if attr_name in dictAttrStruct:
-        attr_size = struct.calcsize(dictAttrStruct[attr_name])
+    print "attr_name",attr_name
+    if attr_name == STUN_ATTRIBUTE_LIFETIME:
+        fmt = '!HHI'
+        attr_size = struct.calcsize(fmt)
         pos += attr_size*2
-        res = struct.unpack(dictAttrStruct[attr_name],binascii.unhexlify(response[:attr_size*2]))
+        res = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
+        handle_refresh_request(fileno,res[-1])
     elif attr_name == STUN_ATTRIBUTE_UUID:
-        fmt = '!HH32s'
-        attr_size = struct.calcsize(fmt)
-        res = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
-        dbcon = engine.conn()
-        mirco = Table('mirco')
-        result = dbcon.execute('select * from mirco')
-        if len(result) == 0:
-            ins = mirco.insert().values(uuid=res[-1])
-            str(ins)
-
-
-    elif attr_name == STUN_ATTRIBUTE_SOFTWARE:
-        fmt = '!HH%ds' % (int("0x%s" % response[4:8],16) & 0xFFFF)
+        fmt = '!HH16s'
         attr_size = struct.calcsize(fmt)
         pos += attr_size*2
         res = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
-    if res:
-        response_result.append(res)
+        update_newdevice(host,res[-1])
+    elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
+        fmt = '!HHI'
+        attr_size = struct.calcsize(fmt)
+        pos += attr_size*2
     return pos
-
+class CheckSesionThread(threading.Thread):
+    def run(self):
+        while True:
+            time.sleep(1)
+            print 'mdict[sessons]',mdict['sessions']
+            for x in mdict['sessions']:
+                print "x is now",x
+                if mdict['sessions'][x] == 0:
+                    mdict['clients'][x].close()
+                else:
+                    mdict['sessions'][x] -=1
 
 
 def Server():
@@ -210,9 +249,11 @@ def Server():
     srvsocket.setblocking(0)
     print "Start Server",srvsocket.getsockname()
     epoll.register(srvsocket.fileno(),select.EPOLLIN)
-    response = b'Welcomei\r\n'
+    mthread = CheckSesionThread()
+    mthread.setDaemon(True)
+    mthread.start()
     try:
-        clients = {}; requests = {} ; responses= {}
+        #clients = {}; requests = {} ; responses= {};sessons = {}
         while True:
             events = epoll.poll(1)
             for fileno,event in events:
@@ -220,27 +261,35 @@ def Server():
                     conn,addr = srvsocket.accept()
                     print "new peer name",conn.getpeername()
                     conn.setblocking(0)
-                    clients[conn.fileno()] = conn
-                    responses[conn.fileno()] = []
+                    print "mdict",mdict
+                    mdict['clients'][conn.fileno()] = conn
+                    mdict['responses'][conn.fileno()] = []
                     epoll.register(conn.fileno(),select.EPOLLIN)
                 elif event & select.EPOLLIN: # 读取socket 的数据
-                    requests[fileno] = clients[fileno].recv(1024)
-                    handle_client_request(binascii.b2a_hex(requests[fileno]),epoll,fileno,clients,responses[fileno])
+                    mdict['requests'][fileno] = mdict['clients'][fileno].recv(2048)
+                    handle_client_request(binascii.b2a_hex(mdict['requests'][fileno]),fileno)
+                    epoll.modify(fileno,select.EPOLLOUT)
                 elif event & select.EPOLLOUT:
-                    byteswritten = clients[fileno].send(responses[fileno])
+                    print "new data"
+                    mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
+                    mdict['responses'][fileno] = []
+                    epoll.modify(fileno,select.EPOLLIN)
                 elif event & select.EPOLLHUP:
+                    print "Client is close",mdict['clients'][fileno].getpeername()
                     epoll.unregister(fileno)
-                    clients[fileno].close()
-                    del clients[fileno]
+                    mdict['clients'][fileno].close()
+                    del mdict['clients'][fileno]
     finally:
         epoll.unregister(srvsocket.fileno())
         epoll.close()
         srvsocket.close()
 
 
-
+store = ['clients','requests','responses','sessions']
+mdict = {} # 这个嵌套字典就是用来存放运行时的状态与数据的
+for element in store:
+    mdict[element]={}
 epoll = select.epoll()
-
 engine = create_engine('postgresql://postgres@localhost:5432/nath',pool_size=20,max_overflow=2)
 port = 3478
 Server()
