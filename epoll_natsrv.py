@@ -118,7 +118,7 @@ def stun_attr_append_str(buf,attr,add_value):
     # 属性名，属性长度，属性值
     buf.append(attr)
     alen = len(add_value) / 2
-    buf.append("%#04d" % alen)
+    buf.append("%04x" % alen)
     buf.append(add_value)
     # 4Byte 对齐
     rem4 = (alen & 0x0003)& 0xf
@@ -170,9 +170,11 @@ def handle_client_request(buf,fileno):
     res['fileno'] = fileno
     res['isok'] = True
     hexpos = STUN_HEADER_LENGTH*2
+    print "hexpos",hexpos
     while hexpos < blen:
         print "hexpos",hexpos,"blen",blen
         n = stun_get_first_attr(buf[hexpos:],res)
+        print "resturn is",n
         if n == 0:
             print "Unkown Attribute"
             res['isok'] = False
@@ -209,6 +211,9 @@ def handle_app_login_request(buf,res):
             stun_auth_error_response(buf,STUN_METHOD_BINDING,res['tran_id'])
         else:
             app_user_auth_success(buf,res)
+            update_app_login_database(res)
+
+
 
 def handle_connect_request(buf,res):
     # 先查数据库状态。
@@ -317,6 +322,7 @@ def update_refresh_time(fileno,ntime):
 
 
 def app_oprator_database(user,pwd,flag):
+    print "register new account %s,%s" % (user,pwd)
     account = get_account_table()
     dbcon = engine.connect()
     if flag: # 注册
@@ -329,6 +335,26 @@ def app_oprator_database(user,pwd,flag):
         return result
     print "After insert users",result
 
+def update_app_login_database(res):
+    acc_status = get_account_table()
+    dbcon = engine.connect()
+    host = res['host']
+    ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
+    ipprt = host[1] & 0xFFFF
+    ins = sql.insert([account_status]).values(uname=res[STUN_ATTRIBUTE_USERNAME][-1],
+            is_login=True,chost=[ipadr,ipprt])
+    result = dbcon.execute(ins)
+    return result
+
+def get_account_status_table():
+    metadata = MetaData()
+    table = Table('account_status',metadata,
+            Column('uname',pgsql.VARCHAR(255)),
+            Column('is_login',pgsql.BOOLEAN),
+            Column('last_login_time',pgsql.TIME),
+            Column('chost',pgsql.ARRAY(pgsql.INTEGER(2)))
+            )
+    return table
 
 def get_account_table():
     metadata = MetaData()
@@ -388,9 +414,9 @@ def update_newdevice(host,uid):
 
 
 def stun_get_first_attr(response,res):
+    print "get first_attr"
     attr_name = response[:4]
     pos = 0
-    print "attr_name",attr_name
     fmt =''
     if attr_name == STUN_ATTRIBUTE_LIFETIME:
         fmt = '!HHI'
@@ -398,8 +424,17 @@ def stun_get_first_attr(response,res):
         fmt = '!HH32s'
     elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
         fmt = '!HHI'
+    elif attr_name == STUN_ATTRIBUTE_MESSAGE_INTEGRITY:
+        fmt = '!HH%ds' % int(response[4:8],16)
+    elif attr_name == STUN_ATTRIBUTE_VENDOR:
+        fmt = '!HHI'
+    elif attr_name == STUN_ATTRIBUTE_USERNAME:
+        fmt = '!HH%ds' % int(response[4:8],16)
+        print "fmt",fmt
     else:
+        print "pos ",0
         return 0
+    print "attr_name",attr_name
     attr_size = struct.calcsize(fmt)
     pos += attr_size*2
     res[attr_name] = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
@@ -433,7 +468,6 @@ def clean_timeout_sock(fileno):
 def sock_fail_pass(fileno):
     epoll.unregister(fileno)
     del mdict['clients'][fileno]
-    del mdict['sessions'][fileno]
 
 
 def Server():
@@ -460,13 +494,13 @@ def Server():
                     mdict['responses'][conn.fileno()] = []
                     epoll.register(conn.fileno(),select.EPOLLIN)
                 elif event & select.EPOLLIN: # 读取socket 的数据
+                    print "read new data"
                     try:
                         mdict['requests'][fileno] = mdict['clients'][fileno].recv(2048)
                         handle_client_request(binascii.b2a_hex(mdict['requests'][fileno]),fileno)
                         epoll.modify(fileno,select.EPOLLOUT)
                     except:
                         sock_fail_pass(fileno)
-
                 elif event & select.EPOLLOUT:
                     try:
                         print "new data"
