@@ -166,7 +166,7 @@ def stun_contract_allocate_request(buf):
     stun_init_command_str(STUN_METHOD_ALLOCATE,buf)
     #filed = "%08x" % socket.htonl(STUN_ATTRIBUTE_TRANSPORT_UDP_VALUE)
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_REQUESTED_TRANSPORT,filed)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,str(uuid.uuid1()).replace('-',''))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,binascii.hexlify(str(uuid.uuid1()).replace('-','')))
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_DONT_FRAGMENT,'')

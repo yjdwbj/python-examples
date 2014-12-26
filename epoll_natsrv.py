@@ -28,6 +28,10 @@ STUN_METHOD_CONNECT='000a'
 STUN_METHOD_CONNECTION_BIND='000b'
 STUN_METHOD_CONNECTION_ATTEMPT='000c'
 
+STUN_METHOD_CHECK_USER='000e'
+STUN_METHOD_REGISTER='000f'
+
+
 # RFC 6062 #
 STUN_ATTRIBUTE_MAPPED_ADDRESS='0001'
 STUN_ATTRIBUTE_CHANGE_REQUEST='0003'
@@ -59,6 +63,8 @@ STUN_ATTRIBUTE_SOFTWARE='8022'
 STUN_ATTRIBUTE_ALTERNATE_SERVER='8023'
 STUN_ATTRIBUTE_FINGERPRINT='8028'
 STUN_ATTRIBUTE_UUID='8001'
+STUN_ATTRIBUTE_DATABASE_RES='8002'
+STUN_ATTRIBUTE_REGISTER_SUCCESS='8003'
 
 STUN_ATTRIBUTE_TRANSPORT_TCP_VALUE=int(6)
 STUN_ATTRIBUTE_TRANSPORT_UDP_VALUE=int(17)
@@ -85,6 +91,11 @@ dictAttrStruct={
         STUN_ATTRIBUTE_FINGERPRINT:'!HHI'
         #STUN_ATTRIBUTE_UUID:'!HH32s'
         }
+dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
+              STUN_METHOD_ALLOCATE:handle_allocate_request,
+              STUN_METHOD_CHECK_USER:handle_chkuser_request,
+              STUN_METHOD_REGISTER:handle_register_request
+              }
 
 Base = declarative_base()
 
@@ -94,6 +105,17 @@ def get_crc32(str):
 def gen_tran_id():
     a = ''.join(random.choice('0123456789ABCDEF') for i in range(24))
     return a
+
+def stun_make_success_response(method):
+    return '%04x' % ((stun_make_type(method) & 0xFEEF) | 0x0100)
+
+def stun_make_error_response(method):
+    return '%04x' % ((stun_make_type(method) & 0xFEEF) | 0x0110)
+
+def stun_make_type(method):
+    t  = int(method,16) & 0x0FFF
+    t = ((method & 0x000F) | ((method & 0x0070) << 1) | ((method & 0x0380) << 2) | ((method & 0x0C00) << 2))
+    return t
 
 def stun_attr_append_str(buf,attr,add_value):
     #buf[1] = "%04x" % (len(''.join(buf)) / 2 - STUN_HEADER_LENGTH)
@@ -118,10 +140,6 @@ def stun_add_fingerprint(buf):
     crcstr = "%08x" % ((crcval  ^ 0x5354554e) & 0xFFFFFFFF)
     buf[-1] = crcstr.replace('-','')
 
-def stun_make_type(method):
-    method  = int(method,16) & 0x0FFF
-    method = ((method & 0x000F) | ((method & 0x0070) << 1) | ((method & 0x0380) << 2) | ((method & 0x0C00) << 2))
-    return '%04x' % ((method & 0xFEEF) | 0x0100)
 
 def stun_init_command_str(msg_type,buf,tran_id):
     buf.append(msg_type)
@@ -150,32 +168,68 @@ def handle_client_request(buf,fileno):
     reqhead = struct.unpack(STUN_HEADER_FMT,binascii.unhexlify(buf[:STUN_HEADER_LENGTH*2]))
     method = '%04x' % reqhead[0]
     tran_id = binascii.hexlify(reqhead[-1])
-    if method == STUN_METHOD_REFRESH:
-        res = {}
-        hexpos = STUN_HEADER_LENGTH*2
-        print "method is ",method
-        while  hexpos < blen:
-            print "hexpos",hexpos,"blen",blen
-            hexpos += stun_get_first_attr(buf[hexpos:],res)
-        handle_refresh_request(fileno,res[STUN_ATTRIBUTE_LIFETIME][-1])
-        refresh_sucess(response_result,tran_id)
-    elif method == STUN_METHOD_ALLOCATE:
-        res = {}
-        hexpos = STUN_HEADER_LENGTH*2
-        host = mdict['clients'][fileno].getpeername()
-        while hexpos < blen:
-            hexpos += stun_get_first_attr(buf[hexpos:],res)
-        binding_sucess(response_result,tran_id,host)
-        update_newdevice(host,res[STUN_ATTRIBUTE_UUID][-1])
+    res = {}
+    res['tran_id'] = tran_id
+    res['host'] = mdict['clients'][fileno].getpeername()
+    res['fileno'] = fileno
+    res['isok'] = True
+    hexpos = STUN_HEADER_LENGTH*2
+    while hexpos < blen:
+        print "hexpos",hexpos,"blen",blen
+        n = stun_get_first_attr(buf[hexpos:],res)
+        if n == 0:
+            print "Unkown Attribute"
+            res['isok'] = False
+            res['eattr'] = buf[hexpos:4]
+            stun_attr_error_response(buf,method,res)
+            break
+        else:
+            hexpos += n
+    if method in dictMethod:
+        dictMethod[method](buf,res)
+    else:
+        print "Unkown Methed"
+        stun_init_command_str(stun_make_error_response(method),buf,tran_id)
+        stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES,method)
+        stun_add_fingerprint(buf)
     print "response_result",response_result
 
-def refresh_sucess(buf,tran_id): # 刷新成功
-    stun_init_command_str(stun_make_type(STUN_METHOD_REFRESH),buf,tran_id)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
+def stun_attr_error_response(bufi,method,res):
+    stun_init_command_str(stun_make_error_response(method),buf,tran_id)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES,res['eattr'])
     stun_add_fingerprint(buf)
 
+def stun_auth_error_response():
+    stun_init_command_str(stun_make_error_response(method),buf,tran_id)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,"0000Unauthorised")
+    stun_add_fingerprint(buf)
+
+
+def handle_register_request(buf,res):
+    register_user(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
+    register_success(buf,res[STUN_ATTRIBUTE_USERNAME][-1])
+
+def register_success(buf,uname):
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf,tran_id)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,uname)
+    stun_add_fingerprint(buf)
+
+
+def handle_chkuser_request(buf,res):
+    f = check_user_in_database(res[STUN_ATTRIBUTE_USERNAME][-1])
+    check_user_sucess(buf,res['tran_id'],flag)
+
+def check_user_sucess(buf,tran_id,flag):
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_CHECK_USER),buf,tran_id)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_DATABASE_RES,"%08x" % flag)
+    stun_add_fingerprint(buf)
+
+def handle_allocate_request(response_result,res):
+    binding_suces(response_result,res['tran_id'],res['host'])
+    update_newdevice(res['host'],res[STUN_ATTRIBUTE_UUID][-1])
+
 def binding_sucess(buf,tran_id,host): # 客服端向服务器绑定自己的IP
-    stun_init_command_str(stun_make_type(STUN_METHOD_ALLOCATE),buf,tran_id)
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_ALLOCATE),buf,tran_id)
     #eip = "0001%04x%08x" % (ehost[1],ehost[0])
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_RELAYED_ADDRESS,eip)
     #mip = "0001%04x%s" % (host[1],binascii.hexlify(socket.inet_aton(host[0])))
@@ -186,9 +240,57 @@ def binding_sucess(buf,tran_id,host): # 客服端向服务器绑定自己的IP
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
     stun_add_fingerprint(buf)
 
-def handle_refresh_request(fileno,ntime):
+
+def handle_refresh_request(buf,res):
+    refresh_sucess(buf,res['tran_id'],res[STUN_ATTRIBUTE_LIFETIME][-1])
+    update_refresh_time(res['fileno'],res[STUN_ATTRIBUTE_LIFETIME][-1])
+
+def refresh_sucess(buf,tran_id,ntime): # 刷新成功
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_REFRESH),buf,tran_id)
+    nt = 0
+    if ntime > UCLIENT_SESSION_LIFETIME:
+        nt = UCLIENT_SESSION_LIFETIME
+    else:
+        nt = ntime
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % nt)
+    stun_add_fingerprint(buf)
+
+def update_refresh_time(fileno,ntime):
     print "refresh new time",ntime
     mdict['sessions'][fileno] = ntime
+
+
+def register_user(user,pwd):
+    account = get_account_table()
+    dbcon = engine.connect()
+    ins = account.insert().values(uname=user,pwd=pwd)
+    result = dbcon.execute(ins)
+    print "After insert users",result
+
+
+def get_account_table():
+    metadata = MetaData()
+    account = Table('account',metadata,
+            Column('id',pgsql.INTEGER),
+            Column('uname',pgsql.VARCHAR(255)),
+            Column('pwd',pgsql.TEXT),
+            Column('is_active',pgsql.BOOLEAN),
+            Column('reg_time',pgsql.TIME)
+            )
+    return account
+
+def check_user_in_database(uname):
+    account = get_account_table()
+    dbcon = engine.connect()
+    s = sql.select([account.c.uname]).where(account.c.uname == uname)
+    result = dbcon.execute(s)
+    row = result.fetchone()
+    if not row:
+        return False
+    else:
+        return True
+
+
 
 def update_newdevice(host,uid):
     dbcon = engine.connect()
@@ -201,11 +303,11 @@ def update_newdevice(host,uid):
             Column('chost',pgsql.ARRAY(pgsql.INTEGER)),
             Column('data',pgsql.TEXT)
             )
-    metadata.create_all(engine)
-    s = sql.select([mirco_devices.c.devid])
+    #metadata.create_all(engine)
+    s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == uuid.UUID(binascii.hexlify(uid)))
     result = dbcon.execute(s)
     row = result.fetchone()
-    if not row or row[0] != uuid.UUID(binascii.hexlify(uid)): # 找不到这个UUID 就插入新的
+    if not row: # 找不到这个UUID 就插入新的
         ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
         ipprt = host[1] & 0xFFFF
         ins = mirco_devices.insert().values(devid=binascii.hexlify(uid),is_active=True,
@@ -221,9 +323,11 @@ def stun_get_first_attr(response,res):
     if attr_name == STUN_ATTRIBUTE_LIFETIME:
         fmt = '!HHI'
     elif attr_name == STUN_ATTRIBUTE_UUID:
-        fmt = '!HH16s'
+        fmt = '!HH32s'
     elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
         fmt = '!HHI'
+    else:
+        return 0
     attr_size = struct.calcsize(fmt)
     pos += attr_size*2
     res[attr_name] = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
@@ -233,13 +337,29 @@ class CheckSesionThread(threading.Thread):
     def run(self):
         while True:
             time.sleep(1)
-            for x in mdict['sessions']:
-                print "x is now",x
-                if mdict['sessions'][x] == 0:
-                    del mdict['sessions'][x]
-                    mdict['clients'][x].close()
-                else:
-                    mdict['sessions'][x] -=1
+#            d = []
+#            for x in mdict['sessions']:
+#                print "x is now",x
+#                if mdict['sessions'][x] == 0:
+#                    d.append(x)
+#                else:
+#                    mdict['sessions'][x] -=1
+            [clean_timeout_sock(x) for x in mdict['sessons']]
+
+def clean_timeout_sock(fileno):
+    if mdict['sessions'][fileno] == 0:
+        del mdict['sessions'][fileno]
+        mdict['clients'][fileno].close()
+        del mdict['responses'][fileno]
+        del mdict['requests'][fileno]
+        del mdict['clients'][fileno]
+    else:
+        mdict['sessions'][fileno] -=1
+
+def sock_fail_pass(fileno):
+    epoll.unregister(fileno)
+    del mdict['clients'][fileno]
+    del mdict['sessions'][fileno]
 
 
 def Server():
@@ -267,14 +387,21 @@ def Server():
                     mdict['responses'][conn.fileno()] = []
                     epoll.register(conn.fileno(),select.EPOLLIN)
                 elif event & select.EPOLLIN: # 读取socket 的数据
-                    mdict['requests'][fileno] = mdict['clients'][fileno].recv(2048)
-                    handle_client_request(binascii.b2a_hex(mdict['requests'][fileno]),fileno)
-                    epoll.modify(fileno,select.EPOLLOUT)
+                    try:
+                        mdict['requests'][fileno] = mdict['clients'][fileno].recv(2048)
+                        handle_client_request(binascii.b2a_hex(mdict['requests'][fileno]),fileno)
+                        epoll.modify(fileno,select.EPOLLOUT)
+                    except:
+                        sock_fail_pass(fileno)
+
                 elif event & select.EPOLLOUT:
-                    print "new data"
-                    mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
-                    mdict['responses'][fileno] = []
-                    epoll.modify(fileno,select.EPOLLIN)
+                    try:
+                        print "new data"
+                        mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
+                        mdict['responses'][fileno] = []
+                        epoll.modify(fileno,select.EPOLLIN)
+                    except:
+                        sock_fail_pass(fileno)
                 elif event & select.EPOLLHUP:
                     print "Client is close",mdict['clients'][fileno].getpeername()
                     epoll.unregister(fileno)
