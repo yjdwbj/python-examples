@@ -177,16 +177,16 @@ def handle_client_request(buf,fileno):
     res['isok'] = True
     hexpos = STUN_HEADER_LENGTH*2
     print "handle whith buf is",buf
+    n = 0
     while hexpos < blen:
         n = stun_get_first_attr(buf[hexpos:],res)
-        print "n is",n
         if n == 0:
-            print "Unkown Attribute"
             res['isok'] = False
             res['eattr'] = buf[hexpos:4]
-            #stun_attr_error_response(buf,method,res)
-            #epoll.modify(fileno,select.EPOLLOUT)
-            break
+            print "Unkown Attribute",res['eattr'],buf[hexpos:]
+            stun_attr_error_response(response_result,method,res)
+            epoll.modify(fileno,select.EPOLLOUT)
+            return
         else:
             hexpos += n
 
@@ -204,15 +204,6 @@ def handle_client_request(buf,fileno):
     print "response_result",response_result
 
 def handle_app_login_request(buf,res):
-    if res['tid'] in mdict['uuids']:
-        print "peer is talk to me"
-        # 上次的请求小机的回复
-        sock = mdict['uuids'][res['tid']]
-        mdict['sessions'][sock] = []
-        stun_connect_address(mdict['responses'][sock],res['host'])
-        epoll.modify(sock,select.EPOLLOUT)
-        return
-    print "new login"
 
     result = app_user_login(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
     if not result:
@@ -223,6 +214,17 @@ def handle_app_login_request(buf,res):
 
 def handle_app_connect_peer_request(buf,res):
     # 先查数据库状态。
+    if res['tid'] in mdict['uuids']:
+        print "peer is talk to me"
+        # 上次的请求小机的回复
+        sock = mdict['uuids'][res['tid']]
+        mdict['sessions'][sock] = []
+        thost = mdict['clients'][res['fileno']].getpeername()
+        stun_connect_address(mdict['responses'][sock],thost,res['tid'])
+        mdict['uuids'].pop(res['tid'])
+        epoll.modify(sock,select.EPOLLOUT)
+        return
+    print "new login"
     print "res dict is",res
     row = find_device_state(res[STUN_ATTRIBUTE_UUID][-1])
     print "row is",row,"len is",len(row)
@@ -295,7 +297,9 @@ def handle_allocate_request(buf,res):
     binding_sucess(buf,res['tid'],res['host'])
 
     mdict['timer'][res['fileno']] = res.get(STUN_ATTRIBUTE_LIFETIME,0)[-1]
-    update_newdevice(res['host'],res[STUN_ATTRIBUTE_UUID][-1],'')
+    if not res.has_key(STUN_ATTRIBUTE_DATA):
+        res[STUN_ATTRIBUTE_DATA]=(0,'')
+    update_newdevice(res['host'],res[STUN_ATTRIBUTE_UUID][-1],res[STUN_ATTRIBUTE_DATA][-1])
     mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]] = res['fileno'] # 保存uuid 后面做查询
     print "devices online"
 
@@ -439,7 +443,6 @@ def update_newdevice(host,uid,data):
     print "added new device to database"
     dbcon = engine.connect()
     mirco_devices = get_devices_table()
-    print "got table"
     #metadata.create_all(engine)
     print "uid is",uuid.UUID(uid)
     s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == uid)
@@ -452,12 +455,12 @@ def update_newdevice(host,uid,data):
     print "host %d:%d" % (ipadr,ipprt)
     if not row: # 找不到这个UUID 就插入新的
         ins = mirco_devices.insert().values(devid=uid,is_active=True,
-                is_online=True,chost=[ipadr,ipprt],data=data)
+                is_online=True,chost=[ipadr,ipprt],data=binascii.hexlify(data))
         result = dbcon.execute(ins)
-        print "insert new devices result fetchall",result.fetchall()
+        print "insert new devices result fetchall"
     else:
-        upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
-                last_login_time=datetime.now()).where(mirco_devices.c.devid == uid) 
+        upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=binascii.hexlify(data),
+                last_login_time=datetime.now()).where(mirco_devices.c.devid == uid)
         result = dbcon.execute(upd)
         print "update devices status result"
 
@@ -472,7 +475,7 @@ def stun_get_first_attr(response,res):
     if attr_name == STUN_ATTRIBUTE_LIFETIME:
         fmt = '!HHI'
     elif attr_name == STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:
-        fmt = '!HH2I'
+        fmt = '!HH2sHI'
     elif attr_name == STUN_ATTRIBUTE_UUID:
         fmt = '!HH32s'
     elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
@@ -486,12 +489,12 @@ def stun_get_first_attr(response,res):
     elif attr_name == STUN_ATTRIBUTE_VENDOR:
         fmt = '!HHI'
     else:
-        print "pos ",0
         return 0
     attr_size = struct.calcsize(fmt)
     res[attr_name] = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
     if res.has_key(STUN_ATTRIBUTE_LIFETIME): # 请求的时间大于服务器的定义的，使用服务端的定义 # 请求的时间大于服务器的定义的，使用服务端的定义
         if res[STUN_ATTRIBUTE_LIFETIME][-1] > UCLIENT_SESSION_LIFETIME:
+            res[STUN_ATTRIBUTE_LIFETIME] = list(res[STUN_ATTRIBUTE_LIFETIME])
             res[STUN_ATTRIBUTE_LIFETIME][-1] = UCLIENT_SESSION_LIFETIME
     else:
         #print "res ",res
@@ -529,7 +532,10 @@ def sock_fail_pass(fileno):
     print "fileno error",fileno
     epoll.unregister(fileno)
     for n in [p for p  in  [mdict[x] for x in store] if p.has_key(fileno)]:
-        del n
+        n.pop(fileno)
+    for n in  [ x for x in  mdict['uuids'] if mdict.get(x) == fileno]:
+        mdict['uuids'].pop(n)
+
 
 
 def Server():
@@ -549,7 +555,8 @@ def Server():
             for fileno,event in events:
                 if fileno == srvsocket.fileno(): #新的连接
                     conn,addr = srvsocket.accept()
-                    print "new accept",conn.fileno()
+                    #print "new accept",conn.fileno()
+                    print "new clients",addr
                     conn.setblocking(0)
                     mdict['clients'][conn.fileno()] = conn
                     print "mdict[clients]", mdict
@@ -596,7 +603,7 @@ for x in store:
 
 epoll = select.epoll()
 engine = create_engine('postgresql://postgres@localhost:5432/nath',pool_size=20,max_overflow=2)
-port = 9088
+port = 3478
 Server()
 
 
