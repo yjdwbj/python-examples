@@ -80,7 +80,7 @@ STUN_HEADER_FMT='!HHI12s'
 
 #Lifetimes
 STUN_DEFAULT_ALLOCATE_LIFETIME=int(600)
-UCLIENT_SESSION_LIFETIME=int(60)
+UCLIENT_SESSION_LIFETIME=int(160)
 
 STUN_MAGIC_COOKIE=0x2112A442
 
@@ -189,7 +189,6 @@ def handle_client_request(buf,fileno):
             break
         else:
             hexpos += n
-            print "hexpos",hexpos,"blen",blen
 
     if res.has_key(STUN_ATTRIBUTE_LIFETIME):
         update_refresh_time(fileno,res.get(STUN_ATTRIBUTE_LIFETIME)[-1])
@@ -224,25 +223,27 @@ def handle_app_login_request(buf,res):
 
 def handle_app_connect_peer_request(buf,res):
     # 先查数据库状态。
+    print "res dict is",res
     row = find_device_state(res[STUN_ATTRIBUTE_UUID][-1])
     print "row is",row,"len is",len(row)
     mdict['uuids'][res['tid']] = res['fileno'] # 这里用TID做键,后面要用到
+    rlist = list(row[0])
     if not row:
-        stun_mirco_device_error(buf,"not device ")
+        stun_mirco_device_error(buf,"!not device!",res['tid'])
         #设备不存在
     else:
-        if row[0][1] == False: # 设备没有激活
-            stun_mirco_device_error(buf,"device disabled")
+        if rlist[1] == False: # 设备没有激活
+            stun_mirco_device_error(buf,"device disabled",res['tid'])
 
-        if row[0][2] and res.has_key(STUN_ATTRIBUTE_UUID): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
+        if rlist[3] and mdict['uuids'].has_key(res[STUN_ATTRIBUTE_UUID][-1]): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
             print "uuids is",mdict['uuids']
             sock = mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]]
-            print "fileno sock is",sock
             mdict['responses'][sock] = []
             stun_connect_address(mdict['responses'][sock],res['host'],res['tid'])
             epoll.modify(sock,select.EPOLLOUT)
         else:
-            stun_mirco_device_error(buf,'device offline')
+            print "devices offline"
+            stun_mirco_device_error(buf,'device offline',res['tid'])
 
 def stun_connect_address(buf,host,tid):
     stun_init_command_str(stun_make_success_response(STUN_METHOD_CONNECT),buf,tid)
@@ -251,9 +252,9 @@ def stun_connect_address(buf,host,tid):
     stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS,mip)
     stun_add_fingerprint(buf)
 
-def stun_mirco_device_error(buf,err_code):
-    stun_init_command_str(stun_make_error_response(STUN_METHOD_CONNECT),buf,res['tid'])
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,binascii.hexlify("no device"))
+def stun_mirco_device_error(buf,err_code,tid):
+    stun_init_command_str(stun_make_error_response(STUN_METHOD_CONNECT),buf,tid)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,binascii.hexlify(err_code))
     stun_add_fingerprint(buf)
 
 def stun_attr_error_response(buf,method,res):
@@ -295,8 +296,8 @@ def handle_allocate_request(buf,res):
 
     mdict['timer'][res['fileno']] = res.get(STUN_ATTRIBUTE_LIFETIME,0)[-1]
     update_newdevice(res['host'],res[STUN_ATTRIBUTE_UUID][-1],'')
-    print "update database done"
     mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]] = res['fileno'] # 保存uuid 后面做查询
+    print "devices online"
 
 def app_user_auth_success(buf,res):
     host = res['host']
@@ -322,10 +323,10 @@ def binding_sucess(buf,tid,host): # 客服端向服务器绑定自己的IP
     print "response buf",buf
 
 def handle_refresh_request(buf,res):
-    print "send fresh time",res
+    #print "send fresh time",res
     refresh_sucess(buf,res['tid'],res[STUN_ATTRIBUTE_LIFETIME][-1])
     update_refresh_time(res['fileno'],res[STUN_ATTRIBUTE_LIFETIME][-1])
-    print "refresh time done"
+    #print "refresh time done"
 
 def refresh_sucess(buf,tid,ntime): # 刷新成功
     stun_init_command_str(stun_make_success_response(STUN_METHOD_REFRESH),buf,tid)
@@ -336,19 +337,19 @@ def refresh_sucess(buf,tid,ntime): # 刷新成功
     #    nt = ntime
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % ntime)
     stun_add_fingerprint(buf)
-    print "refresh response buf",buf
+    #print "refresh response buf",buf
 
 def update_refresh_time(fileno,ntime):
-    print "refresh new time",ntime
+    #print "refresh new time",ntime
     mdict['timer'][fileno] = ntime
 
 def app_user_register(user,pwd):
     account = get_account_table()
     dbcon = engine.connect()
-    print "register new account %s,%s" % (user,pwd)
+    #print "register new account %s,%s" % (user,pwd)
     ins = account.insert().values(uname=user,pwd=pwd)
     result = dbcon.execute(ins)
-    print "result fetchall",result.fetchall()
+    #print "result fetchall",result.fetchall()
     return result
 
 def app_user_update_status(user,host):
@@ -446,19 +447,25 @@ def update_newdevice(host,uid,data):
     row = result.fetchall()
     print "result is",row
     print "host is",host
+    ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
+    ipprt = host[1] & 0xFFFF
+    print "host %d:%d" % (ipadr,ipprt)
     if not row: # 找不到这个UUID 就插入新的
-        ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
-        ipprt = host[1] & 0xFFFF
-        print "host %d:%d" % (ipadr,ipprt)
         ins = mirco_devices.insert().values(devid=uid,is_active=True,
                 is_online=True,chost=[ipadr,ipprt],data=data)
         result = dbcon.execute(ins)
-        print "result fetchall",result.fetchall
+        print "insert new devices result fetchall",result.fetchall()
+    else:
+        upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
+                last_login_time=datetime.now()).where(mirco_devices.c.devid == uid) 
+        result = dbcon.execute(upd)
+        print "update devices status result"
+
 
 
 def stun_get_first_attr(response,res):
     attr_name = response[:4]
-    print "attr_name",attr_name
+    #print "attr_name",attr_name
     pos = 0
     fmt ='!HH'
     vfunc = lambda x: '!HH%ds' % int(x,16)
@@ -487,14 +494,14 @@ def stun_get_first_attr(response,res):
         if res[STUN_ATTRIBUTE_LIFETIME][-1] > UCLIENT_SESSION_LIFETIME:
             res[STUN_ATTRIBUTE_LIFETIME][-1] = UCLIENT_SESSION_LIFETIME
     else:
-        print "res ",res
+        #print "res ",res
         res[STUN_ATTRIBUTE_LIFETIME] = (int(STUN_ATTRIBUTE_LIFETIME,16),4,UCLIENT_SESSION_LIFETIME)
     rem4 = attr_size & 0x0003
     if rem4: # 这里要与客户端一样,4Byte 对齐
         rem4 = attr_size+4-rem4
         attr_size += (rem4 - attr_size)
     pos += attr_size*2
-    print "res[attr_name]",res,"pos",pos
+    #print "res[attr_name]",res,"pos",pos
     return pos
 
 class CheckSesionThread(threading.Thread):
@@ -589,7 +596,7 @@ for x in store:
 
 epoll = select.epoll()
 engine = create_engine('postgresql://postgres@localhost:5432/nath',pool_size=20,max_overflow=2)
-port = 3478
+port = 9088
 Server()
 
 
