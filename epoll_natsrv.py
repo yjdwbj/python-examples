@@ -15,6 +15,9 @@ from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,Me
 from sqlalchemy import sql,and_
 from sqlalchemy.orm import relationship,backref
 from sqlalchemy.dialects import postgresql as pgsql
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy import types as sytypes
+
 
 STUN_METHOD_BINDING='0001'
 STUN_METHOD_ALLOCATE='0003'
@@ -95,10 +98,11 @@ dictAttrStruct={
 
 Base = declarative_base()
 
+
 def get_crc32(str):
     return binascii.crc32(binascii.a2b_hex(str.lower()))
 
-def gen_tran_id():
+def gen_tid():
     a = ''.join(random.choice('0123456789ABCDEF') for i in range(24))
     return a
 
@@ -138,11 +142,11 @@ def stun_add_fingerprint(buf):
     buf[-1] = crcstr.replace('-','')
 
 
-def stun_init_command_str(msg_type,buf,tran_id):
+def stun_init_command_str(msg_type,buf,tid):
     buf.append(msg_type)
     buf.append("%04x" % 0)
     buf.append("%08x" % STUN_MAGIC_COOKIE)
-    buf.append(tran_id)
+    buf.append(tid)
     print "stun head buf",buf
 
 def check_crc_is_valid(buf): # 检查包的CRC
@@ -155,6 +159,7 @@ def check_crc_is_valid(buf): # 检查包的CRC
     return True
 
 def handle_client_request(buf,fileno):
+    print "handle allocate request"
     blen = len(buf)
     if not check_crc_is_valid(buf):
         print "CRC wrong"
@@ -165,9 +170,8 @@ def handle_client_request(buf,fileno):
     response_result = mdict['responses'][fileno]
     reqhead = struct.unpack(STUN_HEADER_FMT,binascii.unhexlify(buf[:STUN_HEADER_LENGTH*2]))
     method = '%04x' % reqhead[0]
-    tran_id = binascii.hexlify(reqhead[-1])
     res = {}
-    res['tran_id'] = tran_id
+    res['tid'] = binascii.hexlify(reqhead[-1]).lower()
     res['host'] = mdict['clients'][fileno].getpeername()
     res['fileno'] = fileno
     res['isok'] = True
@@ -180,128 +184,131 @@ def handle_client_request(buf,fileno):
             print "Unkown Attribute"
             res['isok'] = False
             res['eattr'] = buf[hexpos:4]
-            stun_attr_error_response(buf,method,res)
+            #stun_attr_error_response(buf,method,res)
+            #epoll.modify(fileno,select.EPOLLOUT)
             break
         else:
             hexpos += n
             print "hexpos",hexpos,"blen",blen
 
+    if res.has_key(STUN_ATTRIBUTE_LIFETIME):
+        update_refresh_time(fileno,res.get(STUN_ATTRIBUTE_LIFETIME)[-1])
+
     if dictMethod.has_key(method):
         dictMethod[method](response_result,res)
     else:
         print "Unkown Methed"
-        stun_init_command_str(stun_make_error_response(method),response_result,tran_id)
+        stun_init_command_str(stun_make_error_response(method),response_result,tid)
         stun_attr_append_str(response_result,STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES,method)
         stun_add_fingerprint(response_result)
     epoll.modify(fileno,select.EPOLLOUT)
     print "response_result",response_result
 
 def handle_app_login_request(buf,res):
-    if res['tran_id'] in mdict['uuids']:
+    if res['tid'] in mdict['uuids']:
+        print "peer is talk to me"
         # 上次的请求小机的回复
-        sock = mdict['uuids'][res['tran_id']]
+        sock = mdict['uuids'][res['tid']]
         mdict['sessions'][sock] = []
         stun_connect_address(mdict['responses'][sock],res['host'])
         epoll.modify(sock,select.EPOLLOUT)
         return
     print "new login"
 
-    result = oprator_account_table(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1],False)
+    result = app_user_login(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
     if not result:
-        stun_auth_error_response(buf,STUN_METHOD_BINDING,res['tran_id'])
+        stun_auth_error_response(buf,STUN_METHOD_BINDING,res['tid'])
     else:
-        row = result.fecthone()
-        if row['is_active'] == False: # 帐户被禁用的。
-            stun_auth_error_response(buf,STUN_METHOD_BINDING,res['tran_id'])
-        else:
-            app_user_auth_success(buf,res)
-            update_app_login_database(res)
+        app_user_update_status(res[STUN_ATTRIBUTE_USERNAME][-1],res['host'])
+        app_user_auth_success(buf,res)
 
-
-
-def handle_connect_request(buf,res):
+def handle_app_connect_peer_request(buf,res):
     # 先查数据库状态。
-    result = find_device_state(res[STUN_ATTRIBUTE_UUID][-1])
-    mdict['uuids'][res['tran_id']] = res['tran_id'] # 后面要用到
-    if not result:
-        stun_mirco_device_error(buf,"not device")
+    row = find_device_state(res[STUN_ATTRIBUTE_UUID][-1])
+    print "row is",row,"len is",len(row)
+    mdict['uuids'][res['tid']] = res['fileno'] # 这里用TID做键,后面要用到
+    if not row:
+        stun_mirco_device_error(buf,"not device ")
         #设备不存在
     else:
-        row = result.fetchone()
-        if row['is_active'] == False: # 设备没有激活
+        if row[0][1] == False: # 设备没有激活
             stun_mirco_device_error(buf,"device disabled")
 
-        if row['is_online']: # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
+        if row[0][2] and res.has_key(STUN_ATTRIBUTE_UUID): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
+            print "uuids is",mdict['uuids']
             sock = mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]]
+            print "fileno sock is",sock
             mdict['responses'][sock] = []
-            stun_connect_address(mdict['responses'][sock],res['host'])
+            stun_connect_address(mdict['responses'][sock],res['host'],res['tid'])
             epoll.modify(sock,select.EPOLLOUT)
         else:
             stun_mirco_device_error(buf,'device offline')
 
-def stun_connect_address(buf,host):
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_CONNECT),buf,res['tran_id'])
+def stun_connect_address(buf,host,tid):
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_CONNECT),buf,tid)
     mip = "0001%04x%08x" % (host[1]^ (STUN_MAGIC_COOKIE >> 16),
             STUN_MAGIC_COOKIE ^ (int(binascii.hexlify(socket.inet_aton(host[0])),16)))
     stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS,mip)
     stun_add_fingerprint(buf)
 
 def stun_mirco_device_error(buf,err_code):
-    stun_init_command_str(stun_make_error_response(STUN_METHOD_CONNECT),buf,res['tran_id'])
+    stun_init_command_str(stun_make_error_response(STUN_METHOD_CONNECT),buf,res['tid'])
     stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,binascii.hexlify("no device"))
     stun_add_fingerprint(buf)
 
 def stun_attr_error_response(buf,method,res):
-    stun_init_command_str(stun_make_error_response(method),buf,tran_id)
+    stun_init_command_str(stun_make_error_response(method),buf,res['tid'])
     stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES,res['eattr'])
     stun_add_fingerprint(buf)
 
-def stun_auth_error_response(buf,mehtod,tran_id):
-    stun_init_command_str(stun_make_error_response(method),buf,tran_id)
+def stun_auth_error_response(buf,mehtod,tid):
+    stun_init_command_str(stun_make_error_response(method),buf,tid)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,"0000Unauthorised")
     stun_add_fingerprint(buf)
 
 def handle_register_request(buf,res):
     print "register now"
-    result = oprator_account_table(res[STUN_ATTRIBUTE_USERNAME][-1],
-            binascii.hexlify(res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]),True)
+    result = app_user_register(res[STUN_ATTRIBUTE_USERNAME][-1],
+            binascii.hexlify(res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]))
     print "register result",result
     print "register success"
     register_success(buf,res[STUN_ATTRIBUTE_USERNAME][-1])
 
 def register_success(buf,uname):
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf,tran_id)
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf,tid)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,uname)
     stun_add_fingerprint(buf)
 
 
 def handle_chkuser_request(buf,res):
     f = check_user_in_database(res[STUN_ATTRIBUTE_USERNAME][-1])
-    check_user_sucess(buf,res['tran_id'],flag)
+    check_user_sucess(buf,res['tid'],flag)
 
-def check_user_sucess(buf,tran_id,flag):
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_CHECK_USER),buf,tran_id)
+def check_user_sucess(buf,tid,flag):
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_CHECK_USER),buf,tid)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_DATABASE_RES,"%08x" % flag)
     stun_add_fingerprint(buf)
 
 def handle_allocate_request(buf,res):
     print "res to binding_sucess",res
-    binding_sucess(buf,res['tran_id'],res['host'])
+    binding_sucess(buf,res['tid'],res['host'])
+
+    mdict['timer'][res['fileno']] = res.get(STUN_ATTRIBUTE_LIFETIME,0)[-1]
     update_newdevice(res['host'],res[STUN_ATTRIBUTE_UUID][-1],'')
     print "update database done"
-    mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]] = [res['fileno']] # 保存uuid 后面做查询
+    mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]] = res['fileno'] # 保存uuid 后面做查询
 
 def app_user_auth_success(buf,res):
     host = res['host']
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_BINDING),buf,res['tran_id'])
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_BINDING),buf,res['tid'])
     mip = "0001%04x%08x" % (host[1]^ (STUN_MAGIC_COOKIE >> 16),
             STUN_MAGIC_COOKIE ^ (int(binascii.hexlify(socket.inet_aton(host[0])),16)))
     stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS,mip)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
     stun_add_fingerprint(buf)
 
-def binding_sucess(buf,tran_id,host): # 客服端向服务器绑定自己的IP
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_ALLOCATE),buf,tran_id)
+def binding_sucess(buf,tid,host): # 客服端向服务器绑定自己的IP
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_ALLOCATE),buf,tid)
     #eip = "0001%04x%08x" % (ehost[1],ehost[0])
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_RELAYED_ADDRESS,eip)
     #mip = "0001%04x%s" % (host[1],binascii.hexlify(socket.inet_aton(host[0])))
@@ -316,12 +323,12 @@ def binding_sucess(buf,tran_id,host): # 客服端向服务器绑定自己的IP
 
 def handle_refresh_request(buf,res):
     print "send fresh time",res
-    refresh_sucess(buf,res['tran_id'],res[STUN_ATTRIBUTE_LIFETIME][-1])
+    refresh_sucess(buf,res['tid'],res[STUN_ATTRIBUTE_LIFETIME][-1])
     update_refresh_time(res['fileno'],res[STUN_ATTRIBUTE_LIFETIME][-1])
     print "refresh time done"
 
-def refresh_sucess(buf,tran_id,ntime): # 刷新成功
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_REFRESH),buf,tran_id)
+def refresh_sucess(buf,tid,ntime): # 刷新成功
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_REFRESH),buf,tid)
     #nt = 0
     #if ntime > UCLIENT_SESSION_LIFETIME:
     #    nt = UCLIENT_SESSION_LIFETIME
@@ -333,41 +340,46 @@ def refresh_sucess(buf,tran_id,ntime): # 刷新成功
 
 def update_refresh_time(fileno,ntime):
     print "refresh new time",ntime
-    mdict['sessions'][fileno] = ntime
+    mdict['timer'][fileno] = ntime
 
-
-def oprator_account_table(user,pwd,flag):
+def app_user_register(user,pwd):
     account = get_account_table()
     dbcon = engine.connect()
-    if flag: # 注册
-        print "register new account %s,%s" % (user,pwd)
-        ins = account.insert().values(uname=user,pwd=pwd)
-        str(ins)
-        result = dbcon.execute(ins)
-        print "result fetchall",result.fetchall()
-        return result
-    else:
-        print "select %s,%s" % (user,binascii.hexlify(pwd))
-        s = sql.select([account]).where(and_(account.c.uname == user,account.c.pwd == binascii.hexlify(pwd),
-            account.c.is_active == True))
-        result = dbcon.execute(s)
-        if result:
-            status_tables = get_account_status_table()
-        print "result fetchall",result.fetchall()
-        print "result type",type(result)
-        return result
+    print "register new account %s,%s" % (user,pwd)
+    ins = account.insert().values(uname=user,pwd=pwd)
+    result = dbcon.execute(ins)
+    print "result fetchall",result.fetchall()
+    return result
 
-
-def update_app_login_database(res):
-    acc_status = get_account_table()
-    dbcon = engine.connect()
-    host = res['host']
+def app_user_update_status(user,host):
+    status_tables = get_account_status_table()
     ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
     ipprt = host[1] & 0xFFFF
-    ins = sql.insert([account_status]).values(uname=res[STUN_ATTRIBUTE_USERNAME][-1],
-            is_login=True,chost=[ipadr,ipprt])
-    result = dbcon.execute(ins)
+    s = sql.select([status_tables]).where(status_tables.c.uname == user)
+    dbcon = engine.connect()
+    result = dbcon.execute(s)
+    row = result.fetchall()
+    print "row is",row
+    sss = 0
+    if row:
+        #修改
+        sss = status_tables.update().values(last_login_time = datetime.now(),chost=[ipadr,ipprt]).where(status_tables.c.uname == user)
+    else:
+        sss = status_tables.insert().values(uname=user,is_login=True,chost=[ipadr,ipprt])
+    result = dbcon.execute(sss)
+
+
+def app_user_login(user,pwd):
+    account = get_account_table()
+    dbcon = engine.connect()
+    print "select %s,%s" % (user,binascii.hexlify(pwd))
+    s = sql.select([account]).where(and_(account.c.uname == user,account.c.pwd == binascii.hexlify(pwd),
+        account.c.is_active == True))
+    result = dbcon.execute(s)
+    print "result fetchall",result.fetchall()
     return result
+
+
 
 def get_account_status_table():
     metadata = MetaData()
@@ -375,14 +387,13 @@ def get_account_status_table():
             Column('uname',pgsql.VARCHAR(255)),
             Column('is_login',pgsql.BOOLEAN),
             Column('last_login_time',pgsql.TIME),
-            Column('chost',pgsql.ARRAY(pgsql.INTEGER(2)))
+            Column('chost',pgsql.ARRAY(pgsql.INTEGER))
             )
     return table
 
 def get_account_table():
     metadata = MetaData()
     account = Table('account',metadata,
-            Column('id',pgsql.INTEGER),
             Column('uname',pgsql.VARCHAR(255)),
             Column('pwd',pgsql.TEXT),
             Column('is_active',pgsql.BOOLEAN),
@@ -415,10 +426,12 @@ def get_devices_table():
 
 
 def find_device_state(uid):
+    print "find uuid is",uid
     dbcon = engine.connect()
     mirco_devices = get_devices_table()
-    s = sql.select([mirco_devices]).where(mirco_devices.c.devid == uuid.UUID(binascii.hexlify(uid)))
-    return  dbcon.execute(s)
+    s = sql.select([mirco_devices]).where(mirco_devices.c.devid == uid)
+    result = dbcon.execute(s)
+    return result.fetchall()
 
 
 def update_newdevice(host,uid,data):
@@ -445,6 +458,7 @@ def update_newdevice(host,uid,data):
 
 def stun_get_first_attr(response,res):
     attr_name = response[:4]
+    print "attr_name",attr_name
     pos = 0
     fmt ='!HH'
     vfunc = lambda x: '!HH%ds' % int(x,16)
@@ -472,42 +486,40 @@ def stun_get_first_attr(response,res):
     if res.has_key(STUN_ATTRIBUTE_LIFETIME): # 请求的时间大于服务器的定义的，使用服务端的定义 # 请求的时间大于服务器的定义的，使用服务端的定义
         if res[STUN_ATTRIBUTE_LIFETIME][-1] > UCLIENT_SESSION_LIFETIME:
             res[STUN_ATTRIBUTE_LIFETIME][-1] = UCLIENT_SESSION_LIFETIME
+    else:
+        print "res ",res
+        res[STUN_ATTRIBUTE_LIFETIME] = (int(STUN_ATTRIBUTE_LIFETIME,16),4,UCLIENT_SESSION_LIFETIME)
     rem4 = attr_size & 0x0003
     if rem4: # 这里要与客户端一样,4Byte 对齐
         rem4 = attr_size+4-rem4
         attr_size += (rem4 - attr_size)
     pos += attr_size*2
-    print "response buf",response[:attr_size*2]
     print "res[attr_name]",res,"pos",pos
     return pos
 
 class CheckSesionThread(threading.Thread):
     def run(self):
-        print 'mdict[sessions]',mdict['sessions']
+        #print 'mdict[timer]',mdict['timer']
         while True:
             time.sleep(1)
-#            d = []
-#            for x in mdict['sessions']:
-#                print "x is now",x
-#                if mdict['sessions'][x] == 0:
-#                    d.append(x)
-#                else:
-#                    mdict['sessions'][x] -=1
-            [clean_timeout_sock(x) for x in list(mdict['sessions'].keys())]
+            [clean_timeout_sock(x)  for x in  mdict['timer'].keys()]
 
-def clean_timeout_sock(fileno):
-    print 'mdict[sessions][fileno]',mdict['sessions'][fileno]
-    if mdict['sessions'][fileno] == 0:
-        del mdict['sessions'][fileno]
-        epoll.unregister(fileno)
-        if mdict['clients'].has_key(fileno):
-            mdict['clients'][fileno].close()
-        for n in [ p for p in  [mdict[x] for x in store] if p.has_key(fileno)]:
-            del n
-    else:
-        mdict['sessions'][fileno] -=1
+def clean_timeout_sock(fileno): # 清除超时的连接
+    #print 'mdict[timer][%d]' % fileno,mdict['timer'][fileno]
+    if mdict['timer'].has_key(fileno):
+        if mdict['timer'][fileno] == 0:
+            epoll.unregister(fileno)
+            mdict['timer'].pop(fileno)
+            print "delete fileno",fileno
+            if mdict['clients'].has_key(fileno):
+                mdict['clients'][fileno].close()
+            for n in [ p for p in  [mdict[x] for x in store] if p.has_key(fileno)]:
+                del n
+        else:
+            mdict['timer'][fileno] -= 1
 
 def sock_fail_pass(fileno):
+    print "fileno error",fileno
     epoll.unregister(fileno)
     for n in [p for p  in  [mdict[x] for x in store] if p.has_key(fileno)]:
         del n
@@ -530,18 +542,19 @@ def Server():
             for fileno,event in events:
                 if fileno == srvsocket.fileno(): #新的连接
                     conn,addr = srvsocket.accept()
-                    print "new peer name",conn.getpeername()
+                    print "new accept",conn.fileno()
                     conn.setblocking(0)
                     mdict['clients'][conn.fileno()] = conn
+                    print "mdict[clients]", mdict
                     mdict['responses'][conn.fileno()] = []
+                    #mdict['timer'][conn.fileno()] = 6
                     epoll.register(conn.fileno(),select.EPOLLIN)
                 elif event & select.EPOLLIN: # 读取socket 的数据
-                    print "read new data"
                     try:
                         mdict['requests'][fileno] = mdict['clients'][fileno].recv(2048)
                         handle_client_request(binascii.b2a_hex(mdict['requests'][fileno]),fileno)
                         epoll.modify(fileno,select.EPOLLOUT)
-                    except:
+                    except IOError:
                         sock_fail_pass(fileno)
                 elif event & select.EPOLLOUT:
                     print "send data"
@@ -549,13 +562,13 @@ def Server():
                         mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
                         mdict['responses'][fileno] = []
                         epoll.modify(fileno,select.EPOLLIN)
-                    except:
+                    except IOError:
                         sock_fail_pass(fileno)
                 elif event & select.EPOLLHUP:
                     print "Client is close",mdict['clients'][fileno].getpeername()
                     epoll.unregister(fileno)
                     mdict['clients'][fileno].close()
-                    del mdict['clients'][fileno]
+                    mdict['clients'].pop(fileno)
     finally:
         epoll.unregister(srvsocket.fileno())
         epoll.close()
@@ -566,12 +579,14 @@ dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
               STUN_METHOD_ALLOCATE:handle_allocate_request, # 小机登录方法
               STUN_METHOD_CHECK_USER:handle_chkuser_request,
               STUN_METHOD_REGISTER:handle_register_request,
-              STUN_METHOD_BINDING:handle_app_login_request  # app端登录方法
+              STUN_METHOD_BINDING:handle_app_login_request,  # app端登录方法
+              STUN_METHOD_CONNECT:handle_app_connect_peer_request
               }
-store = ['clients','requests','responses','sessions','uuids']
-mdict = {} # 这个嵌套字典就是用来存放运行时的状态与数据的
-for element in store:
-    mdict[element]={}
+store = ['timer','clients','requests','responses','sessions','uuids']
+mdict = {}
+for x in store:
+   mdict[x]={} # 这个嵌套字典就是用来存放运行时的状态与数据的
+
 epoll = select.epoll()
 engine = create_engine('postgresql://postgres@localhost:5432/nath',pool_size=20,max_overflow=2)
 port = 3478

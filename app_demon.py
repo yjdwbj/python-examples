@@ -294,7 +294,10 @@ def stun_handle_response(response,result):
     
     send_header = ss.unpack(binascii.a2b_hex(''.join(last_request[:4])))
     res_mth = "%04x" % stun_get_method_str(recv_header[0])
+<<<<<<< HEAD
     rdict['rmethod'] = res_mth
+=======
+>>>>>>> 1a12fa4803278d244fadac1ca7d0a105bd457178
     print "This method is",res_mth,"send method is",send_header[0]
     result.append(res_mth)
     result.append('%04x' % recv_header[1])
@@ -364,6 +367,7 @@ def stun_setLogin(sock,host,port):
         else:
             myrecv = binascii.b2a_hex(data)
             print "data  new ",myrecv
+<<<<<<< HEAD
             rdict = stun_handle_response(myrecv,response_result)
             if rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
                 print "Message Error",rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1]
@@ -374,11 +378,20 @@ def stun_setLogin(sock,host,port):
                 response_result = []
                 #refresh  = threading.Timer(3,stun_refresh_request,(sock,host,port))
                 #refresh.start()
+=======
+            method = stun_handle_response(myrecv,response_result)
+            if method  == STUN_METHOD_BINDING:
+                print "thread start"
+                response_result = []
+                refresh  = threading.Timer(3,stun_refresh_request,(sock,host,port))
+                refresh.start()
+>>>>>>> 1a12fa4803278d244fadac1ca7d0a105bd457178
                 buf = []
                 uid = "ce8f91f82ff423da42d977177d365e84"
                 stun_connect_peer_with_uuid(buf,uid) 
                 last_request = buf
                 sock.send(binascii.a2b_hex(''.join(buf)))
+<<<<<<< HEAD
             elif rdict['rmethod'] == STUN_METHOD_REFRESH:
                 #refresh  = threading.Timer(3,stun_refresh_request,(sock,host,port))
                 #refresh.start()
@@ -393,6 +406,15 @@ def stun_setLogin(sock,host,port):
                 print "Command error"
     if len(phost) != 2: return
     print "phost",phost
+=======
+            elif method == STUN_METHOD_REFRESH:
+                #refresh  = threading.Timer(3,stun_refresh_request,(sock,host,port))
+                #refresh.start()
+                print "app refresh time"
+            elif method == STUN_METHOD_CONNECT:
+                # 可以去连接对端了
+                break
+>>>>>>> 1a12fa4803278d244fadac1ca7d0a105bd457178
     sock.connect((phost[0],phost[1]))
     sock.send("Hi I'm app")
     while True:
@@ -402,7 +424,10 @@ def stun_setLogin(sock,host,port):
         else:
             print data
             sock.send("I'am app",time.time())
+<<<<<<< HEAD
         time.sleep(1)
+=======
+>>>>>>> 1a12fa4803278d244fadac1ca7d0a105bd457178
   
                 
 
