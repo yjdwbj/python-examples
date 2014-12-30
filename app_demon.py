@@ -138,9 +138,11 @@ def stun_attr_append_str(buf,attr,add_value):
     buf.append(add_value)
     # 4Byte 对齐
     rem4 = (alen & 0x0003)& 0xf 
+    print "the rem4 is",rem4
     if rem4:
         rem4 = alen+4-rem4
-    while rem4 > 1:
+        print "rem4",rem4
+    while (rem4 - alen)  > 0:
         buf[-1] += '00'
         rem4 -= 1
     buf[1] ="%04x" % (len(''.join(buf)) / 2 - STUN_HEADER_LENGTH)
@@ -165,15 +167,34 @@ def stun_check_user_valid(buf,uname):
 def stun_register_request(buf,uname,pwd):
     stun_init_command_str(STUN_METHOD_REGISTER,buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(uname))
-    nmac = hmac.new(uname,pwd).hexdigest()
-    print "nmac",nmac,"m len",len(nmac)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,nmac)
+    nmac = hashlib.sha256()
+    nmac.update(pwd)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,nmac.hexdigest())
     stun_add_fingerprint(buf)
     print "buf len",len(''.join(buf))
 
+def stun_login_request(buf,uname,pwd):
+    stun_init_command_str(STUN_METHOD_BINDING,buf)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(uname))
+    obj = hashlib.sha256()
+    obj.update(pwd)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,obj.hexdigest())
+    #filed = "%08x" % UCLIENT_SESSION_LIFETIME
+    filed = "%08x" % 30
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
+    stun_add_fingerprint(buf)
+
+def stun_connect_peer_with_uuid(buf,uuid):
+    stun_init_command_str(STUN_METHOD_CONNECT,buf)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,binascii.hexlify(uuid))
+    stun_add_fingerprint(buf)
+
+
+    
+
 def stun_contract_allocate_request(buf):
     stun_init_command_str(STUN_METHOD_BINDING,buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify("test"))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify("lcy"))
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     stun_add_fingerprint(buf)
@@ -206,10 +227,8 @@ def stun_refresh_request(sock,host,port):
     global last_request
     print "refresh time"
     stun_struct_refresh_request(buf)
-    #print "Refresh %s and Len %d" % (buf,len(buf))
     sdata = binascii.a2b_hex(''.join(buf))
     last_request = buf
-    #sock.sendto(sdata,(host,port))
     sock.send(sdata)
 
 
@@ -253,7 +272,7 @@ def get_first_attr(response,res):
     fmt =''
     if attr_name == STUN_ATTRIBUTE_LIFETIME:
         fmt = '!HHI'
-    elif attr_name ==  STUN_ATTRIBUTE_CONNECT:
+    elif attr_name == STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:
         fmt = '!HH2I'
     elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
         fmt = '!HHI'
@@ -270,52 +289,55 @@ def stun_handle_response(response,result):
     res = -1
     ss = struct.Struct(STUN_STRUCT_FMT)
     hexpos = struct.calcsize(STUN_STRUCT_FMT)*2
-    recv_header= ss.unpack(binascii.unhexlify(response[:hexpos]))
+    rdict = {}
+    rdict['header'] = recv_header = ss.unpack(binascii.unhexlify(response[:hexpos]))
+    
     send_header = ss.unpack(binascii.a2b_hex(''.join(last_request[:4])))
     res_mth = "%04x" % stun_get_method_str(recv_header[0])
-    print "This method is",res_mth
+    rdict['rmethod'] = res_mth
+    print "This method is",res_mth,"send method is",send_header[0]
     result.append(res_mth)
     result.append('%04x' % recv_header[1])
     result.append('%04x' % recv_header[2])
     result.append(binascii.hexlify(recv_header[3]))
-    if res_mth != send_header[0]:
+    if res_mth !=  ("%04x" % send_header[0]):
         print "Received wrong response method:",response[:4],"expected :",last_request[0]
-        return res
+        return rdict
     if cmp(recv_header[3:],send_header[3:]) != 0:
         print "Received wrong response tranid; trying again...."
-        return  res
+        return  rdict
 
     if stun_is_success_response_str(recv_header[0]) == False:
         print "Not success response"
-        return  res
-    rdict = {} 
+        return  rdict
     hexpos = 40
     blen = len(response)
     while hexpos < blen:
         n = get_first_attr(response[hexpos:],rdict)
         if n == 0:
             print "Unkown Attribute"
-            return -1
+            return rdict
         else:
             hexpos += n
 
     if res_mth == STUN_METHOD_BINDING: # 登录
         print "Allocate success_allocate"
-        res = STUN_METHOD_ALLOCATE
+        res = STUN_METHOD_BINDING
     elif res_mth == STUN_METHOD_REFRESH: #刷新
         res = STUN_METHOD_REFRESH
         pass  # 这里暂略过，假定时间一直有效
     elif res_mth == STUN_METHOD_CONNECT: # 连接小机
         print "handle connect"
         phost = rdict[STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS][-2:]
-        res = STUN_METHOD_CHANNEL_BIND
+        print "Peer host is",phost
+        res = STUN_METHOD_CONNECT
     elif res_mth ==STUN_METHOD_CHECK_USER: #注册时，检查用户名
         print "Check User"
         res = res_mth
     elif res_mth == STUN_METHOD_REGISTER: #注册新的用户名
         print "Register"
         res = res_mth
-    return res
+    return rdict
 
 
 def stun_setLogin(sock,host,port):
@@ -326,7 +348,8 @@ def stun_setLogin(sock,host,port):
     xor_addr = ''
     response_result = []
     #stun_contract_allocate_request(buf)
-    stun_register_request(buf,'test','test')
+    #stun_register_request(buf,'lcy','test')
+    stun_login_request(buf,'lcy','test') 
     print "send buf",buf
     sdata = binascii.a2b_hex(''.join(buf))
     last_request = buf
@@ -340,11 +363,48 @@ def stun_setLogin(sock,host,port):
             break
         else:
             myrecv = binascii.b2a_hex(data)
-            print "data is",myrecv
-            if stun_handle_response(myrecv,response_result) == STUN_METHOD_ALLOCATE:
+            print "data  new ",myrecv
+            rdict = stun_handle_response(myrecv,response_result)
+            if rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
+                print "Message Error",rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1]
+                continue
+
+            if rdict['rmethod'] == STUN_METHOD_BINDING:
                 print "thread start"
-                refresh  = threading.Timer(3,stun_refresh_request,(sock,host,port))
-                refresh.start()
+                response_result = []
+                #refresh  = threading.Timer(3,stun_refresh_request,(sock,host,port))
+                #refresh.start()
+                buf = []
+                uid = "ce8f91f82ff423da42d977177d365e84"
+                stun_connect_peer_with_uuid(buf,uid) 
+                last_request = buf
+                sock.send(binascii.a2b_hex(''.join(buf)))
+            elif rdict['rmethod'] == STUN_METHOD_REFRESH:
+                #refresh  = threading.Timer(3,stun_refresh_request,(sock,host,port))
+                #refresh.start()
+                print "app refresh time"
+            elif rdict['rmethod'] == STUN_METHOD_CONNECT:
+                if rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
+                    pass
+                # 可以去连接对端了
+                else:
+                    break
+            else:
+                print "Command error"
+    if len(phost) != 2: return
+    print "phost",phost
+    sock.connect((phost[0],phost[1]))
+    sock.send("Hi I'm app")
+    while True:
+        addr,data = sock.recv(2048)
+        if not data:
+            break
+        else:
+            print data
+            sock.send("I'am app",time.time())
+        time.sleep(1)
+  
+                
 
                         
 def connect_turn_server():
