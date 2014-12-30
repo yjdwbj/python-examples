@@ -273,7 +273,7 @@ def get_first_attr(response,res):
     if attr_name == STUN_ATTRIBUTE_LIFETIME:
         fmt = '!HHI'
     elif attr_name == STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:
-        fmt = '!HH2I'
+        fmt = '!HH2sHI'
     elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
         fmt = '!HHI'
     else:
@@ -328,8 +328,6 @@ def stun_handle_response(response,result):
         pass  # 这里暂略过，假定时间一直有效
     elif res_mth == STUN_METHOD_CONNECT: # 连接小机
         print "handle connect"
-        phost = rdict[STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS][-2:]
-        print "Peer host is",phost
         res = STUN_METHOD_CONNECT
     elif res_mth ==STUN_METHOD_CHECK_USER: #注册时，检查用户名
         print "Check User"
@@ -353,7 +351,7 @@ def stun_setLogin(sock,host,port):
     print "send buf",buf
     sdata = binascii.a2b_hex(''.join(buf))
     last_request = buf
-    sock.bind(('',0))
+    sock.bind(('',54321))
     #sock.sendto(sdata,(host,port))
     sock.connect((host,port))
     sock.send(sdata)
@@ -388,20 +386,34 @@ def stun_setLogin(sock,host,port):
                     pass
                 # 可以去连接对端了
                 else:
-                    break
+                    if rdict.has_key(STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS):
+                        phost = rdict[STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS][-2:]
+                        break
             else:
                 print "Command error"
+    sock.close()
+    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     if len(phost) != 2: return
     print "phost",phost
-    sock.connect((phost[0],phost[1]))
+    hhh = socket.inet_ntoa(binascii.unhexlify("%x" % (phost[1] ^ STUN_MAGIC_COOKIE)))
+    ppp = phost[0] ^  (STUN_MAGIC_COOKIE >> 16)
+    print "xor phost",  hhh,ppp
+
+    print "connect peer",hhh,ppp
+    sock.bind(('',54321))
+    print "local",sock.getsockname()
+    sock.connect((hhh,ppp))
+    print "remote",sock.getpeername()
     sock.send("Hi I'm app")
     while True:
-        addr,data = sock.recv(2048)
+        data = sock.recv(2048)
+        sock.send("Hi I'm app")
         if not data:
             break
         else:
             print data
-            sock.send("I'am app",time.time())
+            sock.send("I'am app %s" % time.time())
         time.sleep(1)
   
                 
