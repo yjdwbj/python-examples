@@ -266,7 +266,7 @@ def stun_attr_error_response(buf,method,res):
 
 def stun_auth_error_response(buf,mehtod,tid):
     stun_init_command_str(stun_make_error_response(method),buf,tid)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,"0000Unauthorised")
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,"Unauthorised")
     stun_add_fingerprint(buf)
 
 def handle_register_request(buf,res):
@@ -285,11 +285,22 @@ def register_success(buf,uname):
 
 def handle_chkuser_request(buf,res):
     f = check_user_in_database(res[STUN_ATTRIBUTE_USERNAME][-1])
-    check_user_sucess(buf,res['tid'],flag)
+    print "res",res
+    if f:
+        check_user_error(buf,res)
+    else:
+        check_user_sucess(buf,res)
 
-def check_user_sucess(buf,tid,flag):
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_CHECK_USER),buf,tid)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_DATABASE_RES,"%08x" % flag)
+
+def check_user_error(buf,res):
+    stun_init_command_str(stun_make_error_response(STUN_METHOD_CHECK_USER),buf,res['tid'])
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,binascii.hexlify("User Exist"))
+    stun_add_fingerprint(buf)
+
+
+def check_user_sucess(buf,res):
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_CHECK_USER),buf,res['tid'])
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(res[STUN_ATTRIBUTE_USERNAME][-1]))
     stun_add_fingerprint(buf)
 
 def handle_allocate_request(buf,res):
@@ -425,7 +436,7 @@ def get_devices_table():
             Column('last_login_time',pgsql.TIMESTAMP),
             Column('is_online',pgsql.BOOLEAN),
             Column('chost',pgsql.ARRAY(pgsql.INTEGER)),
-            Column('data',pgsql.TEXT)
+            Column('data',pgsql.BYTEA)
             )
     return mirco_devices
 
@@ -455,11 +466,11 @@ def update_newdevice(host,uid,data):
     print "host %d:%d" % (ipadr,ipprt)
     if not row: # 找不到这个UUID 就插入新的
         ins = mirco_devices.insert().values(devid=uid,is_active=True,
-                is_online=True,chost=[ipadr,ipprt],data=binascii.hexlify(data))
+                is_online=True,chost=[ipadr,ipprt],data=data)
         result = dbcon.execute(ins)
         print "insert new devices result fetchall"
     else:
-        upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=binascii.hexlify(data),
+        upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
                 last_login_time=datetime.now()).where(mirco_devices.c.devid == uid)
         result = dbcon.execute(upd)
         print "update devices status result"
