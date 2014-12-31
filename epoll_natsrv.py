@@ -371,8 +371,8 @@ def app_user_register(user,pwd):
     dbcon = engine.connect()
     #print "register new account %s,%s" % (user,pwd)
     sss = sql.select([account]).where(account.c.uname == user)
-    dbcon.execute(sss)
-    rrr = sss.fetchall()
+    res = dbcon.execute(sss)
+    rrr = res.fetchall()
     if rrr:
         return True
     else:
