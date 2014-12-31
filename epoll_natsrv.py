@@ -159,7 +159,8 @@ def check_crc_is_valid(buf): # 检查包的CRC
     return True
 
 def handle_client_request(buf,fileno):
-    print "handle allocate request"
+    print "handle allocate request\n"
+    print buf
     blen = len(buf)
     if not check_crc_is_valid(buf):
         print "CRC wrong"
@@ -175,6 +176,7 @@ def handle_client_request(buf,fileno):
     res['host'] = mdict['clients'][fileno].getpeername()
     res['fileno'] = fileno
     res['isok'] = True
+    res['method'] = method
     hexpos = STUN_HEADER_LENGTH*2
     print "handle whith buf is",buf
     n = 0
@@ -271,15 +273,17 @@ def stun_auth_error_response(buf,mehtod,tid):
 
 def handle_register_request(buf,res):
     print "register now"
-    result = app_user_register(res[STUN_ATTRIBUTE_USERNAME][-1],
-            binascii.hexlify(res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]))
-    print "register result",result
+    if app_user_register(res[STUN_ATTRIBUTE_USERNAME][-1],
+            binascii.hexlify(res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])):
+        buf = []   # 用户名已经存了。
+        check_user_error(buf,res)
+        return
     print "register success"
-    register_success(buf,res[STUN_ATTRIBUTE_USERNAME][-1])
+    register_success(buf,res[STUN_ATTRIBUTE_USERNAME][-1],res['tid'])
 
-def register_success(buf,uname):
+def register_success(buf,uname,tid):
     stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf,tid)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,uname)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(uname))
     stun_add_fingerprint(buf)
 
 
@@ -305,14 +309,18 @@ def check_user_sucess(buf,res):
 
 def handle_allocate_request(buf,res):
     print "res to binding_sucess",res
+    if not res.has_key(STUN_ATTRIBUTE_UUID):
+        res['eattr'] = binascii.hexlify("Not Found UUID")
+        stun_attr_error_response(buf,res['method'],res)
+        return
     binding_sucess(buf,res['tid'],res['host'])
 
     mdict['timer'][res['fileno']] = res.get(STUN_ATTRIBUTE_LIFETIME,0)[-1]
     if not res.has_key(STUN_ATTRIBUTE_DATA):
         res[STUN_ATTRIBUTE_DATA]=(0,'')
+
     update_newdevice(res['host'],res[STUN_ATTRIBUTE_UUID][-1],res[STUN_ATTRIBUTE_DATA][-1])
     mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]] = res['fileno'] # 保存uuid 后面做查询
-    print "devices online"
 
 def app_user_auth_success(buf,res):
     host = res['host']
@@ -362,10 +370,16 @@ def app_user_register(user,pwd):
     account = get_account_table()
     dbcon = engine.connect()
     #print "register new account %s,%s" % (user,pwd)
-    ins = account.insert().values(uname=user,pwd=pwd)
-    result = dbcon.execute(ins)
+    sss = sql.select([account]).where(account.c.uname == user)
+    rrr = sss.fetchall()
+    if rrr:
+        return True
+    else:
+        ins = account.insert().values(uname=user,pwd=pwd)
+        dbcon.execute(ins)
+        return False
     #print "result fetchall",result.fetchall()
-    return result
+    #return result
 
 def app_user_update_status(user,host):
     status_tables = get_account_status_table()
@@ -473,7 +487,6 @@ def update_newdevice(host,uid,data):
         upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
                 last_login_time=datetime.now()).where(mirco_devices.c.devid == uid)
         result = dbcon.execute(upd)
-        print "update devices status result"
 
 
 
@@ -598,6 +611,22 @@ def Server():
         epoll.unregister(srvsocket.fileno())
         epoll.close()
         srvsocket.close()
+
+def check_server_is_run():
+    global isRun
+    global epoll
+    global engine
+    if not isRun:
+        for x in store:
+            mdict[x]={} # 这个嵌套字典就是用来存放运行时的状态与数据的
+        epoll = select.epoll()
+        engine = create_engine('postgresql://postgres@localhost:5432/nath',pool_size=20,max_overflow=2)
+        isRun = True
+        try:
+            Server()
+        except:
+            print "Server stop"
+            isRun = False
 
 
 dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
