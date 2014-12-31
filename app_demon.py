@@ -161,7 +161,7 @@ def stun_message_integrity(key):
 
 def stun_check_user_valid(buf,uname):
     stun_init_command_str(STUN_METHOD_CHECK_USER,buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,uname)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(uname))
     stun_add_fingerprint(buf)
 
 def stun_register_request(buf,uname,pwd):
@@ -347,7 +347,8 @@ def stun_setLogin(sock,host,port):
     response_result = []
     #stun_contract_allocate_request(buf)
     #stun_register_request(buf,'lcy','test')
-    stun_login_request(buf,'lcy','test') 
+    stun_check_user_valid(buf,'lcy')
+    #stun_login_request(buf,'lcy','test') 
     print "send buf",buf
     sdata = binascii.a2b_hex(''.join(buf))
     last_request = buf
@@ -391,6 +392,7 @@ def stun_setLogin(sock,host,port):
                         break
             else:
                 print "Command error"
+    return
     sock.close()
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
