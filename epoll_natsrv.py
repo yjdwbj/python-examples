@@ -147,7 +147,6 @@ def stun_init_command_str(msg_type,buf,tid):
     buf.append("%04x" % 0)
     buf.append("%08x" % STUN_MAGIC_COOKIE)
     buf.append(tid)
-    print "stun head buf",buf
 
 def check_crc_is_valid(buf): # 检查包的CRC
     if len(buf) < 17:  # 包太小
@@ -160,7 +159,6 @@ def check_crc_is_valid(buf): # 检查包的CRC
 
 def handle_client_request(buf,fileno):
     print "handle allocate request\n"
-    print buf
     blen = len(buf)
     if not check_crc_is_valid(buf):
         print "CRC wrong"
@@ -178,7 +176,6 @@ def handle_client_request(buf,fileno):
     res['isok'] = True
     res['method'] = method
     hexpos = STUN_HEADER_LENGTH*2
-    print "handle whith buf is",buf
     n = 0
     while hexpos < blen:
         n = stun_get_first_attr(buf[hexpos:],res)
@@ -186,6 +183,8 @@ def handle_client_request(buf,fileno):
             res['isok'] = False
             res['eattr'] = buf[hexpos:4]
             print "Unkown Attribute",res['eattr'],buf[hexpos:]
+            print "res is",res
+            print "buf is",buf
             stun_attr_error_response(response_result,method,res)
             epoll.modify(fileno,select.EPOLLOUT)
             return
@@ -199,14 +198,19 @@ def handle_client_request(buf,fileno):
         dictMethod[method](response_result,res)
     else:
         print "Unkown Methed"
-        stun_init_command_str(stun_make_error_response(method),response_result,tid)
-        stun_attr_append_str(response_result,STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES,method)
-        stun_add_fingerprint(response_result)
-    epoll.modify(fileno,select.EPOLLOUT)
+        print "res is",res
+        print "buf is",buf
+        stun_unkown_method_error(response_result,res)
+    epoll.modify(fileno,select.EPOLLOUT) # 触发回复sock的事件
     print "response_result",response_result
 
-def handle_app_login_request(buf,res):
+def stun_unkown_method_error(buf,res):
+    stun_init_command_str(stun_make_error_response(res['mehtod']),buf,res['tid'])
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES,res['mehtod'])
+    stun_add_fingerprint(buf)
 
+
+def handle_app_login_request(buf,res):
     result = app_user_login(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
     if not result:
         stun_auth_error_response(buf,STUN_METHOD_BINDING,res['tid'])
@@ -214,10 +218,12 @@ def handle_app_login_request(buf,res):
         app_user_update_status(res[STUN_ATTRIBUTE_USERNAME][-1],res['host'])
         app_user_auth_success(buf,res)
 
+
 def handle_app_connect_peer_request(buf,res):
+
+
     # 先查数据库状态。
     if res['tid'] in mdict['uuids']:
-        print "peer is talk to me"
         # 上次的请求小机的回复
         sock = mdict['uuids'][res['tid']]
         mdict['sessions'][sock] = []
@@ -226,10 +232,18 @@ def handle_app_connect_peer_request(buf,res):
         mdict['uuids'].pop(res['tid'])
         epoll.modify(sock,select.EPOLLOUT)
         return
-    print "new login"
-    print "res dict is",res
+
+    if not res.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) or  not res.has_key(STUN_ATTRIBUTE_USERNAME):
+        stun_mirco_device_error(buf,"Not Authentication ",res['tid']) # APP端必须带用认证信息才能发起连接.
+        return
+
+    # 检查用户名与密码
+    result = app_user_login(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
+    if not result:
+        stun_auth_error_response(buf,STUN_METHOD_CONNECT,res['tid'])
+        return
+
     row = find_device_state(res[STUN_ATTRIBUTE_UUID][-1])
-    print "row is",row,"len is",len(row)
     mdict['uuids'][res['tid']] = res['fileno'] # 这里用TID做键,后面要用到
     rlist = list(row[0])
     if not row:
@@ -240,13 +254,11 @@ def handle_app_connect_peer_request(buf,res):
             stun_mirco_device_error(buf,"device disabled",res['tid'])
 
         if rlist[3] and mdict['uuids'].has_key(res[STUN_ATTRIBUTE_UUID][-1]): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
-            print "uuids is",mdict['uuids']
             sock = mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]]
             mdict['responses'][sock] = []
             stun_connect_address(mdict['responses'][sock],res['host'],res['tid'])
             epoll.modify(sock,select.EPOLLOUT)
         else:
-            print "devices offline"
             stun_mirco_device_error(buf,'device offline',res['tid'])
 
 def stun_connect_address(buf,host,tid):
@@ -308,16 +320,26 @@ def check_user_sucess(buf,res):
     stun_add_fingerprint(buf)
 
 def handle_allocate_request(buf,res):
+    if res.has_key(STUN_ATTRIBUTE_UUID):
+        n = [ x for x in res[STUN_ATTRIBUTE_UUID][-1] if x > 'f' or x < '0']
+        if len(n) > 0:
+            res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
+            stun_attr_error_response(buf,res['method'],res)
+            return
+
     print "res to binding_sucess",res
     if not res.has_key(STUN_ATTRIBUTE_UUID):
         res['eattr'] = binascii.hexlify("Not Found UUID")
         stun_attr_error_response(buf,res['method'],res)
         return
+
     binding_sucess(buf,res['tid'],res['host'])
 
     mdict['timer'][res['fileno']] = res.get(STUN_ATTRIBUTE_LIFETIME,0)[-1]
     if not res.has_key(STUN_ATTRIBUTE_DATA):
         res[STUN_ATTRIBUTE_DATA]=(0,'')
+
+
 
     update_newdevice(res['host'],res[STUN_ATTRIBUTE_UUID][-1],res[STUN_ATTRIBUTE_DATA][-1])
     mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]] = res['fileno'] # 保存uuid 后面做查询
@@ -377,7 +399,10 @@ def app_user_register(user,pwd):
         return True
     else:
         ins = account.insert().values(uname=user,pwd=pwd)
-        dbcon.execute(ins)
+        try:
+            dbcon.execute(ins)
+        except:
+            print "account tables insert uname=%s occur error" % user
         return False
     #print "result fetchall",result.fetchall()
     #return result
@@ -397,13 +422,16 @@ def app_user_update_status(user,host):
         sss = status_tables.update().values(last_login_time = datetime.now(),chost=[ipadr,ipprt]).where(status_tables.c.uname == user)
     else:
         sss = status_tables.insert().values(uname=user,is_login=True,chost=[ipadr,ipprt])
-    result = dbcon.execute(sss)
+    try:
+        result = dbcon.execute(sss)
+    except:
+        print type(sss),"execute occur error"
+        pass
 
 
 def app_user_login(user,pwd):
     account = get_account_table()
     dbcon = engine.connect()
-    print "select %s,%s" % (user,binascii.hexlify(pwd))
     s = sql.select([account]).where(and_(account.c.uname == user,account.c.pwd == binascii.hexlify(pwd),
         account.c.is_active == True))
     result = dbcon.execute(s)
@@ -467,27 +495,36 @@ def find_device_state(uid):
 
 def update_newdevice(host,uid,data):
     print "added new device to database"
+    print "uid is",uid
     dbcon = engine.connect()
+
     mirco_devices = get_devices_table()
     #metadata.create_all(engine)
-    print "uid is",uuid.UUID(uid)
     s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == uid)
-    result = dbcon.execute(s)
-    row = result.fetchall()
-    print "result is",row
-    print "host is",host
+    row = ''
+    try:
+        result = dbcon.execute(s)
+        row = result.fetchall()
+    except:
+        print "select mirco_devices occur error"
     ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
     ipprt = host[1] & 0xFFFF
     print "host %d:%d" % (ipadr,ipprt)
     if not row: # 找不到这个UUID 就插入新的
         ins = mirco_devices.insert().values(devid=uid,is_active=True,
                 is_online=True,chost=[ipadr,ipprt],data=data)
-        result = dbcon.execute(ins)
+        try:
+            result = dbcon.execute(ins)
+        except:
+            print "mirco_devices insert devid=%s occur error" % uid
         print "insert new devices result fetchall"
     else:
         upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
                 last_login_time=datetime.now()).where(mirco_devices.c.devid == uid)
-        result = dbcon.execute(upd)
+        try:
+            result = dbcon.execute(upd)
+        except:
+            print "mirco_devices update occur error"
 
 
 
@@ -554,6 +591,7 @@ def clean_timeout_sock(fileno): # 清除超时的连接
             mdict['timer'][fileno] -= 1
 
 def sock_fail_pass(fileno):
+    # sock 关闭时产生的异常处理
     print "fileno error",fileno
     epoll.unregister(fileno)
     for n in [p for p  in  [mdict[x] for x in store] if p.has_key(fileno)]:

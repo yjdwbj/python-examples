@@ -417,10 +417,7 @@ def stun_setLogin(sock,host,port):
             print data
             sock.send("I'am app %s" % time.time())
         time.sleep(1)
-  
-                
 
-                        
 def connect_turn_server():
     srv_host = '192.168.8.9'
     #srv_host = '192.168.56.1'
