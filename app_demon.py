@@ -184,9 +184,13 @@ def stun_login_request(buf,uname,pwd):
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     stun_add_fingerprint(buf)
 
-def stun_connect_peer_with_uuid(buf,uuid):
+def stun_connect_peer_with_uuid(buf,uuid,uname,pwd):
     stun_init_command_str(STUN_METHOD_CONNECT,buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,binascii.hexlify(uuid))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(uname))
+    obj = hashlib.sha256()
+    obj.update(pwd)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,obj.hexdigest())
     stun_add_fingerprint(buf)
 
 
@@ -262,7 +266,7 @@ def is_channel_msg_str(mth):
 
 def stun_is_success_response_str(mth):
     if is_channel_msg_str(mth): return False
-    flag = ((mth & 0x0110 ) == 0x0100)
+    #flag = ((mth & 0x0110 ) == 0x0100)
     return ((mth & 0x0110 ) == 0x0100)
 
 def get_first_attr(response,res):
@@ -295,7 +299,7 @@ def stun_handle_response(response,result):
     send_header = ss.unpack(binascii.a2b_hex(''.join(last_request[:4])))
     res_mth = "%04x" % stun_get_method_str(recv_header[0])
     rdict['rmethod'] = res_mth
-    print "This method is",res_mth,"send method is",send_header[0]
+    #print "This method is",res_mth,"send method is",send_header[0]
     result.append(res_mth)
     result.append('%04x' % recv_header[1])
     result.append('%04x' % recv_header[2])
@@ -306,10 +310,12 @@ def stun_handle_response(response,result):
     if cmp(recv_header[3:],send_header[3:]) != 0:
         print "Received wrong response tranid; trying again...."
         return  rdict
-
+    iserr = False
     if stun_is_success_response_str(recv_header[0]) == False:
         print "Not success response"
-        return  rdict
+        iserr = True
+        
+
     hexpos = 40
     blen = len(response)
     while hexpos < blen:
@@ -319,6 +325,9 @@ def stun_handle_response(response,result):
             return rdict
         else:
             hexpos += n
+    if iserr and rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
+        print "Occur error ",binascii.unhexlify(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1])
+        return rdict
 
     if res_mth == STUN_METHOD_BINDING: # 登录
         print "Allocate success_allocate"
@@ -346,9 +355,9 @@ def stun_setLogin(sock,host,port):
     xor_addr = ''
     response_result = []
     #stun_contract_allocate_request(buf)
-    #stun_register_request(buf,'lcy','test')
-    stun_check_user_valid(buf,'lcy')
-    #stun_login_request(buf,'lcy','test') 
+    #stun_register_request(buf,'test','1234')
+    #stun_check_user_valid(buf,'lcy')
+    stun_login_request(buf,'lcy','test') 
     print "send buf",buf
     sdata = binascii.a2b_hex(''.join(buf))
     last_request = buf
@@ -374,8 +383,9 @@ def stun_setLogin(sock,host,port):
                 #refresh  = threading.Timer(3,stun_refresh_request,(sock,host,port))
                 #refresh.start()
                 buf = []
-                uid = "ce8f91f82ff423da42d977177d365e84"
-                stun_connect_peer_with_uuid(buf,uid) 
+                #uid = "ab8f91f82ff423db42d977177d365e84"
+                uid = "ce8f91f82ff423da42d977177d365963"
+                stun_connect_peer_with_uuid(buf,uid,'lcy','test') 
                 last_request = buf
                 sock.send(binascii.a2b_hex(''.join(buf)))
             elif rdict['rmethod'] == STUN_METHOD_REFRESH:
@@ -392,8 +402,8 @@ def stun_setLogin(sock,host,port):
                         break
             else:
                 print "Command error"
-    return
     sock.close()
+    time.sleep(6)
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     if len(phost) != 2: return
@@ -405,19 +415,25 @@ def stun_setLogin(sock,host,port):
     print "connect peer",hhh,ppp
     sock.bind(('',54321))
     print "local",sock.getsockname()
-    sock.connect((hhh,ppp))
-    print "remote",sock.getpeername()
-    sock.send("Hi I'm app")
-    while True:
-        data = sock.recv(2048)
+    try:
+        sock.connect((hhh,ppp))
+        print "remote",sock.getpeername()
         sock.send("Hi I'm app")
-        if not data:
-            break
-        else:
-            print data
-            sock.send("I'am app %s" % time.time())
-        time.sleep(1)
+        while True:
+            data = sock.recv(2048)
+            sock.send("Hi I'm app")
+            if not data:
+                break
+            else:
+                print data
+                sock.send("I'am app %s" % time.time())
+            time.sleep(1)
+    except:
+        print "connect peer occur error"
+  
+                
 
+                        
 def connect_turn_server():
     srv_host = '192.168.8.9'
     #srv_host = '192.168.56.1'
