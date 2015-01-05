@@ -274,12 +274,15 @@ def get_first_attr(response,res):
     pos = 0
     print "attr_name",attr_name
     fmt =''
+    vfunc = lambda x: '!HH%ds' % int(x,16)
     if attr_name == STUN_ATTRIBUTE_LIFETIME:
         fmt = '!HHI'
     elif attr_name == STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:
         fmt = '!HH2sHI'
     elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
         fmt = '!HHI'
+    elif attr_name == STUN_ATTRIBUTE_MESSAGE_ERROR_CODE:
+        fmt = vfunc(response[4:8])
     else:
         return 0
     attr_size = struct.calcsize(fmt)
