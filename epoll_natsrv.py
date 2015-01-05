@@ -183,7 +183,6 @@ def handle_client_request(buf,fileno):
             res['isok'] = False
             res['eattr'] = buf[hexpos:4]
             print "Unkown Attribute",res['eattr'],buf[hexpos:]
-            print "res is",res
             print "buf is",buf
             stun_attr_error_response(response_result,method,res)
             epoll.modify(fileno,select.EPOLLOUT)
@@ -198,8 +197,6 @@ def handle_client_request(buf,fileno):
         dictMethod[method](response_result,res)
     else:
         print "Unkown Methed"
-        print "res is",res
-        print "buf is",buf
         stun_unkown_method_error(response_result,res)
     epoll.modify(fileno,select.EPOLLOUT) # 触发回复sock的事件
     print "response_result",response_result
@@ -220,12 +217,12 @@ def handle_app_login_request(buf,res):
 
 
 def handle_app_connect_peer_request(buf,res):
-
-
     # 先查数据库状态。
     if res['tid'] in mdict['uuids']:
-        # 上次的请求小机的回复
+        # 上次的请求小机的回复给APP
+        print "replay peer ask"
         sock = mdict['uuids'][res['tid']]
+        print "the peer is ",mdict['clients'][sock].getpeername()
         mdict['sessions'][sock] = []
         thost = mdict['clients'][res['fileno']].getpeername()
         stun_connect_address(mdict['responses'][sock],thost,res['tid'])
@@ -630,13 +627,15 @@ def Server():
                     try:
                         mdict['requests'][fileno] = mdict['clients'][fileno].recv(2048)
                         handle_client_request(binascii.b2a_hex(mdict['requests'][fileno]),fileno)
+                        mdict['requests'].pop(fileno)
                         epoll.modify(fileno,select.EPOLLOUT)
                     except IOError:
                         sock_fail_pass(fileno)
                 elif event & select.EPOLLOUT:
                     print "send data"
                     try:
-                        mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
+                        nbyte =  mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
+                        print "send %d byte" % nbyte
                         mdict['responses'][fileno] = []
                         epoll.modify(fileno,select.EPOLLIN)
                     except IOError:
