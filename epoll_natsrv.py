@@ -183,7 +183,6 @@ def handle_client_request(buf,fileno):
             res['isok'] = False
             res['eattr'] = buf[hexpos:4]
             print "Unkown Attribute",res['eattr'],buf[hexpos:]
-            print "res is",res
             print "buf is",buf
             stun_attr_error_response(response_result,method,res)
             epoll.modify(fileno,select.EPOLLOUT)
@@ -198,8 +197,6 @@ def handle_client_request(buf,fileno):
         dictMethod[method](response_result,res)
     else:
         print "Unkown Methed"
-        print "res is",res
-        print "buf is",buf
         stun_unkown_method_error(response_result,res)
     epoll.modify(fileno,select.EPOLLOUT) # 触发回复sock的事件
     print "response_result",response_result
@@ -220,14 +217,12 @@ def handle_app_login_request(buf,res):
 
 
 def handle_app_connect_peer_request(buf,res):
-
-
     # 先查数据库状态。
     if res['tid'] in mdict['uuids']:
-        # 上次的请求小机的回复
+        # 上次的请求小机的回复给APP
         sock = mdict['uuids'][res['tid']]
-        mdict['sessions'][sock] = []
         thost = mdict['clients'][res['fileno']].getpeername()
+        print "replay app  ip  ",mdict['clients'][sock].getpeername()
         stun_connect_address(mdict['responses'][sock],thost,res['tid'])
         mdict['uuids'].pop(res['tid'])
         epoll.modify(sock,select.EPOLLOUT)
@@ -256,10 +251,22 @@ def handle_app_connect_peer_request(buf,res):
         if rlist[3] and mdict['uuids'].has_key(res[STUN_ATTRIBUTE_UUID][-1]): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
             sock = mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]]
             mdict['responses'][sock] = []
+            #这里先去告诉小机，有一个客户端要连接它
+            print "send ask package to the mirco_devices",mdict['clients'][sock].getpeername()
             stun_connect_address(mdict['responses'][sock],res['host'],res['tid'])
+            asktimer = threading.Timer(10,stun_ask_mirco_devices_timeout,
+                    (buf,"Check mirco_devices timeout",res['tid'],res['fileno']))
+            asktimer.start()
             epoll.modify(sock,select.EPOLLOUT)
         else:
             stun_mirco_device_error(buf,'device offline',res['tid'])
+def stun_ask_mirco_devices_timeout(buf,msg,tid,sock):
+    #超过一定时间，小机没有回复服务器，就假定小机不可以连接，回复APP端一个错误
+    if mdict['uuids'].has_key(tid):
+        buf = []
+        stun_mirco_device_error(buf,msg,tid)
+        epoll.modify(sock,select.EPOLLOUT)
+
 
 def stun_connect_address(buf,host,tid):
     stun_init_command_str(stun_make_success_response(STUN_METHOD_CONNECT),buf,tid)
@@ -596,8 +603,10 @@ def sock_fail_pass(fileno):
     epoll.unregister(fileno)
     for n in [p for p  in  [mdict[x] for x in store] if p.has_key(fileno)]:
         n.pop(fileno)
+        print "now n is",n
     for n in  [ x for x in  mdict['uuids'] if mdict.get(x) == fileno]:
         mdict['uuids'].pop(n)
+        print "now mdict[uuids] is",mdict['uuids']
 
 
 
@@ -622,7 +631,7 @@ def Server():
                     print "new clients",addr
                     conn.setblocking(0)
                     mdict['clients'][conn.fileno()] = conn
-                    print "mdict[clients]", mdict
+                    #print "mdict[clients]", mdict
                     mdict['responses'][conn.fileno()] = []
                     #mdict['timer'][conn.fileno()] = 6
                     epoll.register(conn.fileno(),select.EPOLLIN)
@@ -630,13 +639,14 @@ def Server():
                     try:
                         mdict['requests'][fileno] = mdict['clients'][fileno].recv(2048)
                         handle_client_request(binascii.b2a_hex(mdict['requests'][fileno]),fileno)
+                        mdict['requests'].pop(fileno)
                         epoll.modify(fileno,select.EPOLLOUT)
                     except IOError:
                         sock_fail_pass(fileno)
                 elif event & select.EPOLLOUT:
-                    print "send data"
                     try:
-                        mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
+                        nbyte =  mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
+                        print "send %d byte" % nbyte
                         mdict['responses'][fileno] = []
                         epoll.modify(fileno,select.EPOLLIN)
                     except IOError:
@@ -675,7 +685,7 @@ dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
               STUN_METHOD_BINDING:handle_app_login_request,  # app端登录方法
               STUN_METHOD_CONNECT:handle_app_connect_peer_request
               }
-store = ['timer','clients','requests','responses','sessions','uuids']
+store = ['timer','clients','requests','responses','uuids']
 mdict = {}
 for x in store:
    mdict[x]={} # 这个嵌套字典就是用来存放运行时的状态与数据的
