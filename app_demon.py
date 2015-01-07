@@ -405,8 +405,9 @@ def stun_setLogin(sock,host,port):
                         break
             else:
                 print "Command error"
+    srvport = sock.getsockname()[1]
     sock.close()
-    time.sleep(6)
+    time.sleep(2)
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     if len(phost) != 2: return
@@ -416,7 +417,7 @@ def stun_setLogin(sock,host,port):
     print "xor phost",  hhh,ppp
 
     print "connect peer",hhh,ppp
-    sock.bind(('',54321))
+    sock.bind(('',srvport))
     print "local",sock.getsockname()
     try:
         sock.connect((hhh,ppp))
