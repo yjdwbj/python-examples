@@ -10,10 +10,27 @@ import logging
 from splinter import Browser
 import time
 import threading
+import getpass
+
+uname  = None
+pwd = None
+while True:
+    uname = raw_input("用户名:")
+    if len(uname) == 0:
+        continue
+    else:
+        break
+while True:
+    pwd = getpass.getpass("密码:")
+    if len(pwd) == 0:
+        continue
+    else:
+        break
+
 logging.getLogger().setLevel(logging.ERROR)
 reload(sys)
 sys.setdefaultencoding('utf-8')  # @UndefinedVariable
-browser = Browser()
+browser = None
 
 def timer_refresh_ticket(btn):
     btn.click()
@@ -23,13 +40,10 @@ def checkTick():
         if int(time.strftime("%H", time.localtime())) in [23,0,1,2,3,4,5,6]:
             print "23点到7点不能登录"
             time.sleep(200)
-            continue
-            pass
-        break
-        pass
+    browser = Browser()
     browser.visit("https://kyfw.12306.cn/otn/login/init")
-    browser.find_by_id("username").fill("")
-    browser.find_by_id("password").fill("")
+    browser.find_by_id("username").fill(uname)
+    browser.find_by_id("password").fill(pwd)
     browser.find_by_id("randCode").click()
      
     while True:       
