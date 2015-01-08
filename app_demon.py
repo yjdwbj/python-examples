@@ -226,6 +226,7 @@ def stun_add_fingerprint(buf):
 
 
 #### Refresh Request ######
+
 def stun_refresh_request(sock,host,port):
     buf =[]
     global last_request
@@ -280,11 +281,20 @@ def get_first_attr(response,res):
         fmt = '!HH2sHI'
     elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
         fmt = '!HHI'
+    elif attr_name == STUN_ATTRIBUTE_DATA:
+        fmt = '!HH%ds' % int(response[4:8],16)
+    elif attr_name == STUN_ATTRIBUTE_MESSAGE_ERROR_CODE:
+        fmt = '!HH%ds' % int(response[4:8],16)
     else:
+        print "wrong attr is",attr_name
         return 0
     attr_size = struct.calcsize(fmt)
-    pos += attr_size*2
     res[attr_name] = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
+    rem4 = attr_size & 0x0003
+    if rem4:
+        rem4 = attr_size+4-rem4
+        attr_size+=(rem4-attr_size)
+    pos += attr_size*2
     return pos
 
 def stun_handle_response(response,result):
@@ -322,6 +332,7 @@ def stun_handle_response(response,result):
         n = get_first_attr(response[hexpos:],rdict)
         if n == 0:
             print "Unkown Attribute"
+            print "resposes left",response[hexpos:]
             return rdict
         else:
             hexpos += n
@@ -357,7 +368,13 @@ def stun_setLogin(sock,host,port):
     #stun_contract_allocate_request(buf)
     #stun_register_request(buf,'test','1234')
     #stun_check_user_valid(buf,'lcy')
-    stun_login_request(buf,'lcy','test') 
+    #stun_login_request(buf,'lcy','test') 
+    #stun_struct_refresh_request(buf)
+    #uid = "ab8f91f82ff423db42d977177d365e84"
+    #uid = "ce8f91f82ff423da42d977177d365963"
+    uid = "ab8f5f82ff423db42d97c7177dc38920"
+    #uid = "ab8f5f82ff423db42d97c7177dc31159"
+    stun_connect_peer_with_uuid(buf,uid,'lcy','test') 
     print "send buf",buf
     sdata = binascii.a2b_hex(''.join(buf))
     last_request = buf
@@ -384,7 +401,9 @@ def stun_setLogin(sock,host,port):
                 #refresh.start()
                 buf = []
                 #uid = "ab8f91f82ff423db42d977177d365e84"
-                uid = "ce8f91f82ff423da42d977177d365963"
+                #uid = "ce8f91f82ff423da42d977177d365963"
+                uid = "ab8f5f82ff423db42d97c7177dc38920"
+                #uid = "ab8f5f82ff423db42d97c7177dc31159"
                 stun_connect_peer_with_uuid(buf,uid,'lcy','test') 
                 last_request = buf
                 sock.send(binascii.a2b_hex(''.join(buf)))
@@ -402,8 +421,9 @@ def stun_setLogin(sock,host,port):
                         break
             else:
                 print "Command error"
+    srvport = sock.getsockname()[1]
     sock.close()
-    time.sleep(6)
+    #time.sleep(3)
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     if len(phost) != 2: return
@@ -413,7 +433,7 @@ def stun_setLogin(sock,host,port):
     print "xor phost",  hhh,ppp
 
     print "connect peer",hhh,ppp
-    sock.bind(('',54321))
+    sock.bind(('',srvport))
     print "local",sock.getsockname()
     try:
         sock.connect((hhh,ppp))
@@ -435,7 +455,7 @@ def stun_setLogin(sock,host,port):
 
                         
 def connect_turn_server():
-    srv_host = '192.168.8.9'
+    srv_host = '183.234.21.52'
     #srv_host = '192.168.56.1'
     srv_port = 3478
     #srv_port = 3478
