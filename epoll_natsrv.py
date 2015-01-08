@@ -86,17 +86,6 @@ STUN_MAGIC_COOKIE=0x2112A442
 
 SOCK_BUFSIZE=2048
 
-dictAttrStruct={
-        STUN_ATTRIBUTE_XOR_RELAYED_ADDRESS:'!HH2sHI', # type,len,reserved,protocl,port,ipaddr
-        STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:'!HH2sHI', # type,len,reserved,protocl,port,ipaddr
-        STUN_ATTRIBUTE_XOR_PEER_ADDRESS:'!HH2sHI', # type,len,reserved,protocl,port,ipaddr
-        STUN_ATTRIBUTE_RESERVATION_TOKEN:'!HH8s',
-        STUN_ATTRIBUTE_LIFETIME:'!HHI',
-        STUN_ATTRIBUTE_FINGERPRINT:'!HHI'
-        #STUN_ATTRIBUTE_UUID:'!HH32s'
-        }
-
-Base = declarative_base()
 
 
 def get_crc32(str):
@@ -160,15 +149,22 @@ def check_crc_is_valid(buf): # 检查包的CRC
 def handle_client_request(buf,fileno):
     print "handle allocate request\n"
     blen = len(buf)
+
     if not check_crc_is_valid(buf):
         print "CRC wrong"
         epoll.unregister(fileno)
         mdict['clients'][fileno].close()
         del mdict['clients'][fileno]
         return
-    response_result = mdict['responses'][fileno]
+
     reqhead = struct.unpack(STUN_HEADER_FMT,binascii.unhexlify(buf[:STUN_HEADER_LENGTH*2]))
     method = '%04x' % reqhead[0]
+    if not mdict['timer'].has_key(fileno):
+        if method == STUN_METHOD_REFRESH:  # 非法刷新请求
+            epoll.unregister(fileno)
+            mdict['clients'][fileno].close()
+            del mdict['clients'][fileno]
+            return
     res = {}
     res['tid'] = binascii.hexlify(reqhead[-1]).lower()
     res['host'] = mdict['clients'][fileno].getpeername()
@@ -183,11 +179,8 @@ def handle_client_request(buf,fileno):
             res['isok'] = False
             res['eattr'] = buf[hexpos:4]
             print "Unkown Attribute",res['eattr'],buf[hexpos:]
-            print "res is",res
             print "buf is",buf
-            stun_attr_error_response(response_result,method,res)
-            epoll.modify(fileno,select.EPOLLOUT)
-            return
+            return  stun_attr_error_response(method,res)
         else:
             hexpos += n
 
@@ -195,156 +188,189 @@ def handle_client_request(buf,fileno):
         update_refresh_time(fileno,res.get(STUN_ATTRIBUTE_LIFETIME)[-1])
 
     if dictMethod.has_key(method):
-        dictMethod[method](response_result,res)
+        return  dictMethod[method](res)
     else:
         print "Unkown Methed"
-        print "res is",res
-        print "buf is",buf
-        stun_unkown_method_error(response_result,res)
-    epoll.modify(fileno,select.EPOLLOUT) # 触发回复sock的事件
+        return stun_unkown_method_error(res)
     print "response_result",response_result
 
 def stun_unkown_method_error(buf,res):
+    buf = []
     stun_init_command_str(stun_make_error_response(res['mehtod']),buf,res['tid'])
     stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES,res['mehtod'])
     stun_add_fingerprint(buf)
+    return (buf)
 
 
-def handle_app_login_request(buf,res):
+def handle_app_login_request(res):
     result = app_user_login(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
     if not result:
-        stun_auth_error_response(buf,STUN_METHOD_BINDING,res['tid'])
+        return stun_auth_error_response(STUN_METHOD_BINDING,res['tid'])
     else:
         app_user_update_status(res[STUN_ATTRIBUTE_USERNAME][-1],res['host'])
-        app_user_auth_success(buf,res)
+        return app_user_auth_success(res)
 
-
-def handle_app_connect_peer_request(buf,res):
-
-
+def handle_mdev_replay(res):
     # 先查数据库状态。
-    if res['tid'] in mdict['uuids']:
-        # 上次的请求小机的回复
+    # 上次的请求小机的回复给APP
+    sock = mdict['uuids'][res['tid']]
+    thost = mdict['clients'][res['fileno']].getpeername()
+    print "replay app  ip  ",mdict['clients'][sock].getpeername()
+    mdict['uuids'].pop(res['tid'])
+    return  stun_connect_address(thost,res)
+
+def handle_app_connect_peer_request(res):
+    if mdict['uuids'].has_key(res['tid']):
         sock = mdict['uuids'][res['tid']]
-        mdict['sessions'][sock] = []
         thost = mdict['clients'][res['fileno']].getpeername()
-        stun_connect_address(mdict['responses'][sock],thost,res['tid'])
         mdict['uuids'].pop(res['tid'])
+        mdict['responses'][sock]  = stun_connect_address(thost,res)
         epoll.modify(sock,select.EPOLLOUT)
         return
 
     if not res.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) or  not res.has_key(STUN_ATTRIBUTE_USERNAME):
-        stun_mirco_device_error(buf,"Not Authentication ",res['tid']) # APP端必须带用认证信息才能发起连接.
-        return
+       return  stun_mirco_device_error("Not Authentication ",res['tid']) # APP端必须带用认证信息才能发起连接.
 
     # 检查用户名与密码
     result = app_user_login(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
     if not result:
-        stun_auth_error_response(buf,STUN_METHOD_CONNECT,res['tid'])
-        return
+        return stun_auth_error_response(STUN_METHOD_CONNECT,res['tid'])
 
+    app_user_update_status(res[STUN_ATTRIBUTE_USERNAME][-1],res['host'])
     row = find_device_state(res[STUN_ATTRIBUTE_UUID][-1])
-    mdict['uuids'][res['tid']] = res['fileno'] # 这里用TID做键,后面要用到
-    rlist = list(row[0])
+    mdict['uuids'][res['tid']] = res['fileno'] # 这里用APP 端TID做键,后面要用到
     if not row:
-        stun_mirco_device_error(buf,"!not device!",res['tid'])
+        return stun_mirco_device_error("!not device!",res['tid'])
         #设备不存在
     else:
+        rlist = list(row[0])
         if rlist[1] == False: # 设备没有激活
-            stun_mirco_device_error(buf,"device disabled",res['tid'])
+            return  stun_mirco_device_error("device disabled",res['tid'])
 
         if rlist[3] and mdict['uuids'].has_key(res[STUN_ATTRIBUTE_UUID][-1]): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
             sock = mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]]
-            mdict['responses'][sock] = []
-            stun_connect_address(mdict['responses'][sock],res['host'],res['tid'])
-            epoll.modify(sock,select.EPOLLOUT)
+            try:#这里先去告诉小机，有一个客户端要连接它
+                print "send ask package to the mirco_devices",mdict['clients'][sock].getpeername()
+                asktimer = threading.Timer(10,stun_ask_mirco_devices_timeout,
+                    ("Check mirco_devices timeout",res['tid'],res['fileno']))
+                asktimer.start()
+                mdict['responses'][sock] = stun_connect_address(res['host'],res)
+                epoll.modify(sock,select.EPOLLOUT)
+#                nbyte =  mdict['clients'][sock].send(binascii.a2b_hex(''.join(mdict['responses'][sock])))
+#                print "send to mdev %d bytes" % nbyte
+#                epoll.modify(sock,select.EPOLLIN)
+            except IOError:
+                print sock,"microc_devices sock has closed"
         else:
-            stun_mirco_device_error(buf,'device offline',res['tid'])
+            return  stun_mirco_device_error('device offline',res['tid'])
 
-def stun_connect_address(buf,host,tid):
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_CONNECT),buf,tid)
+def stun_ask_mirco_devices_timeout(msg,tid,sock):
+    #超过一定时间，小机没有回复服务器，就假定小机不可以连接，回复APP端一个错误
+    if mdict['uuids'].has_key(tid):
+        mdict['responses'][sock] = stun_mirco_device_error(msg,tid)
+        try:
+            epoll.modify(sock,select.EPOLLOUT)
+        except:
+            print "app sock %d has closed" % sock
+
+
+def stun_connect_address(host,res):
+    buf = []
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_CONNECT),buf,res['tid'])
     mip = "0001%04x%08x" % (host[1]^ (STUN_MAGIC_COOKIE >> 16),
             STUN_MAGIC_COOKIE ^ (int(binascii.hexlify(socket.inet_aton(host[0])),16)))
     stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS,mip)
+    if res.has_key(STUN_ATTRIBUTE_DATA): #转发小机的基本信息
+        stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify(res[STUN_ATTRIBUTE_DATA][-1]))
     stun_add_fingerprint(buf)
+    return (buf)
 
-def stun_mirco_device_error(buf,err_code,tid):
+def stun_mirco_device_error(err_code,tid):
+    buf = []
     stun_init_command_str(stun_make_error_response(STUN_METHOD_CONNECT),buf,tid)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,binascii.hexlify(err_code))
     stun_add_fingerprint(buf)
+    return (buf)
 
-def stun_attr_error_response(buf,method,res):
+def stun_attr_error_response(method,res):
+    buf = []
     stun_init_command_str(stun_make_error_response(method),buf,res['tid'])
     stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES,res['eattr'])
     stun_add_fingerprint(buf)
+    return (buf)
 
-def stun_auth_error_response(buf,mehtod,tid):
+def stun_auth_error_response(mehtod,tid):
+    buf = []
     stun_init_command_str(stun_make_error_response(method),buf,tid)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,"Unauthorised")
     stun_add_fingerprint(buf)
+    return (buf)
 
-def handle_register_request(buf,res):
+def handle_register_request(res):
     print "register now"
     if app_user_register(res[STUN_ATTRIBUTE_USERNAME][-1],
             binascii.hexlify(res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])):
         buf = []   # 用户名已经存了。
-        check_user_error(buf,res)
-        return
+        return check_user_error(res)
     print "register success"
-    register_success(buf,res[STUN_ATTRIBUTE_USERNAME][-1],res['tid'])
+    return register_success(res[STUN_ATTRIBUTE_USERNAME][-1],res['tid'])
 
 def register_success(buf,uname,tid):
+    buf = []
     stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf,tid)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(uname))
     stun_add_fingerprint(buf)
+    return (buf)
 
 
-def handle_chkuser_request(buf,res):
+def handle_chkuser_request(res):
     f = check_user_in_database(res[STUN_ATTRIBUTE_USERNAME][-1])
     print "res",res
     if f:
-        check_user_error(buf,res)
+        return check_user_error(res)
     else:
-        check_user_sucess(buf,res)
+        return check_user_sucess(res)
 
 
-def check_user_error(buf,res):
+def check_user_error(res):
+    buf = []
     stun_init_command_str(stun_make_error_response(STUN_METHOD_CHECK_USER),buf,res['tid'])
     stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,binascii.hexlify("User Exist"))
     stun_add_fingerprint(buf)
+    return (buf)
 
 
 def check_user_sucess(buf,res):
+    buf = []
     stun_init_command_str(stun_make_success_response(STUN_METHOD_CHECK_USER),buf,res['tid'])
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(res[STUN_ATTRIBUTE_USERNAME][-1]))
     stun_add_fingerprint(buf)
+    return (buf)
 
-def handle_allocate_request(buf,res):
+def handle_allocate_request(res):
     if res.has_key(STUN_ATTRIBUTE_UUID):
         n = [ x for x in res[STUN_ATTRIBUTE_UUID][-1] if x > 'f' or x < '0']
         if len(n) > 0:
             res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
-            stun_attr_error_response(buf,res['method'],res)
-            return
+            return stun_attr_error_response(res['method'],res)
 
-    print "res to binding_sucess",res
+    #print "res to binding_sucess",res
     if not res.has_key(STUN_ATTRIBUTE_UUID):
         res['eattr'] = binascii.hexlify("Not Found UUID")
-        stun_attr_error_response(buf,res['method'],res)
-        return
+        return stun_attr_error_response(res['method'],res)
 
-    binding_sucess(buf,res['tid'],res['host'])
 
     mdict['timer'][res['fileno']] = res.get(STUN_ATTRIBUTE_LIFETIME,0)[-1]
     if not res.has_key(STUN_ATTRIBUTE_DATA):
         res[STUN_ATTRIBUTE_DATA]=(0,'')
 
-
-
     update_newdevice(res['host'],res[STUN_ATTRIBUTE_UUID][-1],res[STUN_ATTRIBUTE_DATA][-1])
     mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]] = res['fileno'] # 保存uuid 后面做查询
+    print "device login , sock is",res['fileno'],"uuid is",res[STUN_ATTRIBUTE_UUID][-1]
+    return binding_sucess(res['tid'],res['host'])
 
-def app_user_auth_success(buf,res):
+def app_user_auth_success(res):
+    buf = []
     host = res['host']
     stun_init_command_str(stun_make_success_response(STUN_METHOD_BINDING),buf,res['tid'])
     mip = "0001%04x%08x" % (host[1]^ (STUN_MAGIC_COOKIE >> 16),
@@ -352,8 +378,10 @@ def app_user_auth_success(buf,res):
     stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS,mip)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
     stun_add_fingerprint(buf)
+    return (buf)
 
-def binding_sucess(buf,tid,host): # 客服端向服务器绑定自己的IP
+def binding_sucess(tid,host): # 客服端向服务器绑定自己的IP
+    buf = []
     stun_init_command_str(stun_make_success_response(STUN_METHOD_ALLOCATE),buf,tid)
     #eip = "0001%04x%08x" % (ehost[1],ehost[0])
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_RELAYED_ADDRESS,eip)
@@ -365,15 +393,15 @@ def binding_sucess(buf,tid,host): # 客服端向服务器绑定自己的IP
     stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS,mip)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
     stun_add_fingerprint(buf)
-    print "response buf",buf
+    #print "response buf",buf
+    return (buf)
 
-def handle_refresh_request(buf,res):
-    #print "send fresh time",res
-    refresh_sucess(buf,res['tid'],res[STUN_ATTRIBUTE_LIFETIME][-1])
+def handle_refresh_request(res):
     update_refresh_time(res['fileno'],res[STUN_ATTRIBUTE_LIFETIME][-1])
-    #print "refresh time done"
+    return refresh_sucess(res['tid'],res[STUN_ATTRIBUTE_LIFETIME][-1])
 
-def refresh_sucess(buf,tid,ntime): # 刷新成功
+def refresh_sucess(tid,ntime): # 刷新成功
+    buf = []
     stun_init_command_str(stun_make_success_response(STUN_METHOD_REFRESH),buf,tid)
     #nt = 0
     #if ntime > UCLIENT_SESSION_LIFETIME:
@@ -382,6 +410,7 @@ def refresh_sucess(buf,tid,ntime): # 刷新成功
     #    nt = ntime
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % ntime)
     stun_add_fingerprint(buf)
+    return (buf)
     #print "refresh response buf",buf
 
 def update_refresh_time(fileno,ntime):
@@ -435,10 +464,23 @@ def app_user_login(user,pwd):
     s = sql.select([account]).where(and_(account.c.uname == user,account.c.pwd == binascii.hexlify(pwd),
         account.c.is_active == True))
     result = dbcon.execute(s)
-    print "result fetchall",result.fetchall()
+    #print "result fetchall",result.fetchall()
     return result
 
-
+def get_mirco_devices_data(uid):
+    mtable = get_devices_table()
+    s = sql.select([mtable.c.data]).where(mtable.c.uuid == uid)
+    dbcon = engine.connect()
+    try:
+        res = dbcon.execute(s)
+        data = res.fetchall()
+        if not data:
+            return ''
+        else:
+            return data
+    except:
+        print "sql data error"
+        return ''
 
 def get_account_status_table():
     metadata = MetaData()
@@ -489,15 +531,18 @@ def find_device_state(uid):
     dbcon = engine.connect()
     mirco_devices = get_devices_table()
     s = sql.select([mirco_devices]).where(mirco_devices.c.devid == uid)
-    result = dbcon.execute(s)
-    return result.fetchall()
+    try:
+        result = dbcon.execute(s)
+        return result.fetchall()
+    except:
+        print "DataError",str(s)
+        return None
 
 
 def update_newdevice(host,uid,data):
-    print "added new device to database"
+    '''添加新的小机到数据库'''
     print "uid is",uid
     dbcon = engine.connect()
-
     mirco_devices = get_devices_table()
     #metadata.create_all(engine)
     s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == uid)
@@ -525,8 +570,6 @@ def update_newdevice(host,uid,data):
             result = dbcon.execute(upd)
         except:
             print "mirco_devices update occur error"
-
-
 
 def stun_get_first_attr(response,res):
     attr_name = response[:4]
@@ -596,8 +639,10 @@ def sock_fail_pass(fileno):
     epoll.unregister(fileno)
     for n in [p for p  in  [mdict[x] for x in store] if p.has_key(fileno)]:
         n.pop(fileno)
+        print "now n is",n
     for n in  [ x for x in  mdict['uuids'] if mdict.get(x) == fileno]:
         mdict['uuids'].pop(n)
+        print "now mdict[uuids] is",mdict['uuids']
 
 
 
@@ -622,27 +667,30 @@ def Server():
                     print "new clients",addr
                     conn.setblocking(0)
                     mdict['clients'][conn.fileno()] = conn
-                    print "mdict[clients]", mdict
+                    #print "mdict[clients]", mdict
                     mdict['responses'][conn.fileno()] = []
                     #mdict['timer'][conn.fileno()] = 6
                     epoll.register(conn.fileno(),select.EPOLLIN)
                 elif event & select.EPOLLIN: # 读取socket 的数据
                     try:
-                        mdict['requests'][fileno] = mdict['clients'][fileno].recv(2048)
-                        handle_client_request(binascii.b2a_hex(mdict['requests'][fileno]),fileno)
+                        mdict['requests'][fileno] = mdict['clients'][fileno].recv(SOCK_BUFSIZE)
+                        mdict['responses'][fileno] = handle_client_request(binascii.b2a_hex(mdict['requests'][fileno]),fileno)
+                        mdict['requests'].pop(fileno)
                         epoll.modify(fileno,select.EPOLLOUT)
                     except IOError:
                         sock_fail_pass(fileno)
                 elif event & select.EPOLLOUT:
-                    print "send data"
                     try:
-                        mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
-                        mdict['responses'][fileno] = []
+                        if not mdict['responses'][fileno]: #连接命令的时候返回是NULL
+                            #epoll.modify(fileno,select.EPOLLIN)
+                            continue
+                        nbyte =  mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
+                        #print "send %d byte" % nbyte
                         epoll.modify(fileno,select.EPOLLIN)
                     except IOError:
                         sock_fail_pass(fileno)
                 elif event & select.EPOLLHUP:
-                    print "Client is close",mdict['clients'][fileno].getpeername()
+                    #print "Client is close",mdict['clients'][fileno].getpeername()
                     epoll.unregister(fileno)
                     mdict['clients'][fileno].close()
                     mdict['clients'].pop(fileno)
@@ -651,31 +699,16 @@ def Server():
         epoll.close()
         srvsocket.close()
 
-def check_server_is_run():
-    global isRun
-    global epoll
-    global engine
-    if not isRun:
-        for x in store:
-            mdict[x]={} # 这个嵌套字典就是用来存放运行时的状态与数据的
-        epoll = select.epoll()
-        engine = create_engine('postgresql://postgres@localhost:5432/nath',pool_size=20,max_overflow=2)
-        isRun = True
-        try:
-            Server()
-        except:
-            print "Server stop"
-            isRun = False
-
 
 dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
               STUN_METHOD_ALLOCATE:handle_allocate_request, # 小机登录方法
               STUN_METHOD_CHECK_USER:handle_chkuser_request,
               STUN_METHOD_REGISTER:handle_register_request,
               STUN_METHOD_BINDING:handle_app_login_request,  # app端登录方法
-              STUN_METHOD_CONNECT:handle_app_connect_peer_request
+              STUN_METHOD_CONNECT:handle_app_connect_peer_request,
+              STUN_METHOD_CONNECTION_BIND:handle_mdev_replay
               }
-store = ['timer','clients','requests','responses','sessions','uuids']
+store = ['timer','clients','requests','responses','uuids']
 mdict = {}
 for x in store:
    mdict[x]={} # 这个嵌套字典就是用来存放运行时的状态与数据的
