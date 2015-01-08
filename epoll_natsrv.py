@@ -160,6 +160,7 @@ def check_crc_is_valid(buf): # 检查包的CRC
 def handle_client_request(buf,fileno):
     print "handle allocate request\n"
     blen = len(buf)
+
     if not check_crc_is_valid(buf):
         print "CRC wrong"
         epoll.unregister(fileno)
@@ -169,6 +170,10 @@ def handle_client_request(buf,fileno):
     response_result = mdict['responses'][fileno]
     reqhead = struct.unpack(STUN_HEADER_FMT,binascii.unhexlify(buf[:STUN_HEADER_LENGTH*2]))
     method = '%04x' % reqhead[0]
+    if not mdict['timer'].has_key(fileno):
+        if method == STUN_METHOD_REFRESH:  # 非法刷新请求
+            mdict['clients'][fileno].close()
+            return
     res = {}
     res['tid'] = binascii.hexlify(reqhead[-1]).lower()
     res['host'] = mdict['clients'][fileno].getpeername()
@@ -223,7 +228,7 @@ def handle_app_connect_peer_request(buf,res):
         sock = mdict['uuids'][res['tid']]
         thost = mdict['clients'][res['fileno']].getpeername()
         print "replay app  ip  ",mdict['clients'][sock].getpeername()
-        stun_connect_address(mdict['responses'][sock],thost,res['tid'])
+        stun_connect_address(mdict['responses'][sock],thost,res)
         mdict['uuids'].pop(res['tid'])
         epoll.modify(sock,select.EPOLLOUT)
         return
@@ -240,39 +245,47 @@ def handle_app_connect_peer_request(buf,res):
 
     row = find_device_state(res[STUN_ATTRIBUTE_UUID][-1])
     mdict['uuids'][res['tid']] = res['fileno'] # 这里用TID做键,后面要用到
-    rlist = list(row[0])
     if not row:
         stun_mirco_device_error(buf,"!not device!",res['tid'])
         #设备不存在
     else:
+        rlist = list(row[0])
         if rlist[1] == False: # 设备没有激活
             stun_mirco_device_error(buf,"device disabled",res['tid'])
 
         if rlist[3] and mdict['uuids'].has_key(res[STUN_ATTRIBUTE_UUID][-1]): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
             sock = mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]]
             mdict['responses'][sock] = []
-            #这里先去告诉小机，有一个客户端要连接它
-            print "send ask package to the mirco_devices",mdict['clients'][sock].getpeername()
-            stun_connect_address(mdict['responses'][sock],res['host'],res['tid'])
-            asktimer = threading.Timer(10,stun_ask_mirco_devices_timeout,
+            try:#这里先去告诉小机，有一个客户端要连接它
+                print "send ask package to the mirco_devices",mdict['clients'][sock].getpeername()
+                stun_connect_address(mdict['responses'][sock],res['host'],res)
+                asktimer = threading.Timer(10,stun_ask_mirco_devices_timeout,
                     (buf,"Check mirco_devices timeout",res['tid'],res['fileno']))
-            asktimer.start()
-            epoll.modify(sock,select.EPOLLOUT)
+                asktimer.start()
+                epoll.modify(sock,select.EPOLLOUT)
+            except:
+                print sock,"sock has closed"
         else:
             stun_mirco_device_error(buf,'device offline',res['tid'])
+
 def stun_ask_mirco_devices_timeout(buf,msg,tid,sock):
     #超过一定时间，小机没有回复服务器，就假定小机不可以连接，回复APP端一个错误
     if mdict['uuids'].has_key(tid):
         buf = []
         stun_mirco_device_error(buf,msg,tid)
-        epoll.modify(sock,select.EPOLLOUT)
+        try:
+            epoll.modify(sock,select.EPOLLOUT)
+        except:
+            print "sock %d has closed" % sock
 
 
-def stun_connect_address(buf,host,tid):
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_CONNECT),buf,tid)
+def stun_connect_address(buf,host,res):
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_CONNECT),buf,res['tid'])
     mip = "0001%04x%08x" % (host[1]^ (STUN_MAGIC_COOKIE >> 16),
             STUN_MAGIC_COOKIE ^ (int(binascii.hexlify(socket.inet_aton(host[0])),16)))
     stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS,mip)
+    if res.has_key(STUN_ATTRIBUTE_DATA): #转发小机的基本信息
+        stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify(res[STUN_ATTRIBUTE_DATA][-1]))
     stun_add_fingerprint(buf)
 
 def stun_mirco_device_error(buf,err_code,tid):
@@ -445,6 +458,21 @@ def app_user_login(user,pwd):
     print "result fetchall",result.fetchall()
     return result
 
+def get_mirco_devices_data(uid):
+    mtable = get_devices_table()
+    s = sql.select([mtable.c.data]).where(mtable.c.uuid == uid)
+    dbcon = engine.connect()
+    try:
+        res = dbcon.execute(s)
+        data = res.fetchall()
+        if not data:
+            return ''
+        else:
+            return data
+    except:
+        print "sql data error"
+        return ''
+
 
 
 def get_account_status_table():
@@ -496,8 +524,12 @@ def find_device_state(uid):
     dbcon = engine.connect()
     mirco_devices = get_devices_table()
     s = sql.select([mirco_devices]).where(mirco_devices.c.devid == uid)
-    result = dbcon.execute(s)
-    return result.fetchall()
+    try:
+        result = dbcon.execute(s)
+        return result.fetchall()
+    except:
+        print "DataError",str(s)
+        return None
 
 
 def update_newdevice(host,uid,data):
