@@ -83,8 +83,11 @@ STUN_DEFAULT_ALLOCATE_LIFETIME=int(600)
 UCLIENT_SESSION_LIFETIME=int(160)
 
 STUN_MAGIC_COOKIE=0x2112A442
-
 SOCK_BUFSIZE=2048
+UUID_SIZE=0x20
+CRCMASK=0x5354554e
+HEX4B=16
+HEX2B=8
 
 
 
@@ -127,7 +130,7 @@ def stun_add_fingerprint(buf):
     stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
     crc_str = ''.join(buf[:-3])
     crcval = binascii.crc32(binascii.a2b_hex(crc_str))
-    crcstr = "%08x" % ((crcval  ^ 0x5354554e) & 0xFFFFFFFF)
+    crcstr = "%08x" % ((crcval  ^ CRCMASK) & 0xFFFFFFFF)
     buf[-1] = crcstr.replace('-','')
 
 
@@ -141,7 +144,7 @@ def check_crc_is_valid(buf): # 检查包的CRC
     if len(buf) < 17:  # 包太小
         return False
     crc = struct.unpack('!HHI',binascii.unhexlify(buf[-16:]))
-    rcrc =(get_crc32(buf[:-16]) ^ 0x5354554e ) & 0xFFFFFFFF
+    rcrc =(get_crc32(buf[:-16]) ^ CRCMASK) & 0xFFFFFFFF
     if crc[-1] != rcrc:
         return False
     return True
@@ -347,15 +350,29 @@ def check_user_sucess(buf,res):
     stun_add_fingerprint(buf)
     return (buf)
 
+def check_uuid_valid(uhex):
+    print "uuid whole",uhex
+    ucrc = binascii.crc32(binascii.a2b_hex(uhex[:-8]))
+    crcstr = "%08x" % ((ucrc  ^ CRCMASK) & 0xFFFFFFFF)
+    print "crcstr is",crcstr
+    if crcstr != uhex[-8:]:
+        return False
+    else:
+        return True
+
 def handle_allocate_request(res):
+    tuid = binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])
     if res.has_key(STUN_ATTRIBUTE_UUID):
-        n = [ x for x in res[STUN_ATTRIBUTE_UUID][-1] if x > 'f' or x < '0']
+        if not check_uuid_valid(tuid):
+            print "UUID crc32 wrong"
+            res['eattr'] = binascii.hexlify("UUID CRC Wrong") # 错误的UUID格式
+            return stun_attr_error_response(res['method'],res)
+
+        n = [ x for x in binascii.unhexlify(tuid[:UUID_SIZE*2]) if x > 'f' or x < '0']
         if len(n) > 0:
             res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
             return stun_attr_error_response(res['method'],res)
-
-    #print "res to binding_sucess",res
-    if not res.has_key(STUN_ATTRIBUTE_UUID):
+    else:
         res['eattr'] = binascii.hexlify("Not Found UUID")
         return stun_attr_error_response(res['method'],res)
 
@@ -364,9 +381,9 @@ def handle_allocate_request(res):
     if not res.has_key(STUN_ATTRIBUTE_DATA):
         res[STUN_ATTRIBUTE_DATA]=(0,'')
 
-    update_newdevice(res['host'],res[STUN_ATTRIBUTE_UUID][-1],res[STUN_ATTRIBUTE_DATA][-1])
-    mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]] = res['fileno'] # 保存uuid 后面做查询
-    print "device login , sock is",res['fileno'],"uuid is",res[STUN_ATTRIBUTE_UUID][-1]
+    update_newdevice(res['host'],tuid[:-8],res[STUN_ATTRIBUTE_DATA][-1])
+    mdict['uuids'][tuid] = res['fileno'] # 保存uuid 后面做查询
+    print "device login , sock is",res['fileno'],"uuid is",tuid
     return binding_sucess(res['tid'],res['host'])
 
 def app_user_auth_success(res):
@@ -444,7 +461,7 @@ def app_user_update_status(user,host):
     dbcon = engine.connect()
     result = dbcon.execute(s)
     row = result.fetchall()
-    print "row is",row
+    #print "row is",row
     sss = 0
     if row:
         #修改
@@ -467,20 +484,6 @@ def app_user_login(user,pwd):
     #print "result fetchall",result.fetchall()
     return result
 
-def get_mirco_devices_data(uid):
-    mtable = get_devices_table()
-    s = sql.select([mtable.c.data]).where(mtable.c.uuid == uid)
-    dbcon = engine.connect()
-    try:
-        res = dbcon.execute(s)
-        data = res.fetchall()
-        if not data:
-            return ''
-        else:
-            return data
-    except:
-        print "sql data error"
-        return ''
 
 def get_account_status_table():
     metadata = MetaData()
@@ -527,10 +530,11 @@ def get_devices_table():
 
 
 def find_device_state(uid):
-    print "find uuid is",uid
+    tuid= binascii.unhexlify(binascii.hexlify(uid)[:UUID_SIZE*2])
+    print "find uuid is",tuid
     dbcon = engine.connect()
     mirco_devices = get_devices_table()
-    s = sql.select([mirco_devices]).where(mirco_devices.c.devid == uid)
+    s = sql.select([mirco_devices]).where(mirco_devices.c.devid == tuid)
     try:
         result = dbcon.execute(s)
         return result.fetchall()
@@ -541,11 +545,14 @@ def find_device_state(uid):
 
 def update_newdevice(host,uid,data):
     '''添加新的小机到数据库'''
-    print "uid is",uid
+    print "uid is",uid[:UUID_SIZE*2],"vendor is",uid[-16:-8]
+    vendor = uid[-16:-8]
+    tuid = binascii.unhexlify(uid[:UUID_SIZE*2])
     dbcon = engine.connect()
     mirco_devices = get_devices_table()
     #metadata.create_all(engine)
-    s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == uid)
+    print "tuid len",len(binascii.hexlify(tuid))
+    s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == tuid)
     row = ''
     try:
         result = dbcon.execute(s)
@@ -556,16 +563,16 @@ def update_newdevice(host,uid,data):
     ipprt = host[1] & 0xFFFF
     print "host %d:%d" % (ipadr,ipprt)
     if not row: # 找不到这个UUID 就插入新的
-        ins = mirco_devices.insert().values(devid=uid,is_active=True,
+        ins = mirco_devices.insert().values(devid=tuid,is_active=True,
                 is_online=True,chost=[ipadr,ipprt],data=data)
         try:
             result = dbcon.execute(ins)
         except:
-            print "mirco_devices insert devid=%s occur error" % uid
+            print "mirco_devices insert devid=%s occur error" % tuid
         print "insert new devices result fetchall"
     else:
         upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
-                last_login_time=datetime.now()).where(mirco_devices.c.devid == uid)
+                last_login_time=datetime.now()).where(mirco_devices.c.devid == tuid)
         try:
             result = dbcon.execute(upd)
         except:
@@ -582,7 +589,8 @@ def stun_get_first_attr(response,res):
     elif attr_name == STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:
         fmt = '!HH2sHI'
     elif attr_name == STUN_ATTRIBUTE_UUID:
-        fmt = '!HH32s'
+        #fmt = '!HH32s'
+        fmt = vfunc(response[4:8])
     elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
         fmt = '!HHI'
     elif attr_name == STUN_ATTRIBUTE_MESSAGE_INTEGRITY:
@@ -636,6 +644,8 @@ def clean_timeout_sock(fileno): # 清除超时的连接
 def sock_fail_pass(fileno):
     # sock 关闭时产生的异常处理
     print "fileno error",fileno
+    print "now mdict[uuids] is",mdict['uuids']
+    print "mdict[clients] is",mdict['clients']
     epoll.unregister(fileno)
     for n in [p for p  in  [mdict[x] for x in store] if p.has_key(fileno)]:
         n.pop(fileno)
