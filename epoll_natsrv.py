@@ -98,6 +98,10 @@ def gen_tid():
     a = ''.join(random.choice('0123456789ABCDEF') for i in range(24))
     return a
 
+def stun_is_success_response_str(mth):
+    n = int(mth,16) & 0xFFFF
+    return ((n & 0x0110) == 0x0100)
+
 def stun_make_success_response(method):
     #print "success response %04x" % ((stun_make_type(method) & 0xFEEF) | 0x0100)
     return '%04x' % ((stun_make_type(method) & 0xFEEF) | 0x0100)
@@ -129,7 +133,7 @@ def stun_attr_append_str(buf,attr,add_value):
 def stun_add_fingerprint(buf):
     stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
     crc_str = ''.join(buf[:-3])
-    crcval = binascii.crc32(binascii.a2b_hex(crc_str))
+    crcval = get_crc32(crc_str)
     crcstr = "%08x" % ((crcval  ^ CRCMASK) & 0xFFFFFFFF)
     buf[-1] = crcstr.replace('-','')
 
@@ -210,20 +214,12 @@ def handle_app_login_request(res):
     if not result:
         return stun_auth_error_response(STUN_METHOD_BINDING,res['tid'])
     else:
+        mdict['actives'][res['fileno']] = res[STUN_ATTRIBUTE_USERNAME]
         app_user_update_status(res[STUN_ATTRIBUTE_USERNAME][-1],res['host'])
         return app_user_auth_success(res)
 
-def handle_mdev_replay(res):
-    # 先查数据库状态。
-    # 上次的请求小机的回复给APP
-    sock = mdict['uuids'][res['tid']]
-    thost = mdict['clients'][res['fileno']].getpeername()
-    print "replay app  ip  ",mdict['clients'][sock].getpeername()
-    mdict['uuids'].pop(res['tid'])
-    return  stun_connect_address(thost,res)
-
 def handle_app_connect_peer_request(res):
-    if mdict['uuids'].has_key(res['tid']):
+    if mdict['uuids'].has_key(res['tid']): # 小机收到服务器转发的连接请求，回复APP
         sock = mdict['uuids'][res['tid']]
         thost = mdict['clients'][res['fileno']].getpeername()
         mdict['uuids'].pop(res['tid'])
@@ -240,6 +236,7 @@ def handle_app_connect_peer_request(res):
         return stun_auth_error_response(STUN_METHOD_CONNECT,res['tid'])
 
     app_user_update_status(res[STUN_ATTRIBUTE_USERNAME][-1],res['host'])
+    mdict['actives'][res['fileno']] = res[STUN_ATTRIBUTE_USERNAME]
     row = find_device_state(res[STUN_ATTRIBUTE_UUID][-1])
     mdict['uuids'][res['tid']] = res['fileno'] # 这里用APP 端TID做键,后面要用到
     if not row:
@@ -250,8 +247,8 @@ def handle_app_connect_peer_request(res):
         if rlist[1] == False: # 设备没有激活
             return  stun_mirco_device_error("device disabled",res['tid'])
 
-        if rlist[3] and mdict['uuids'].has_key(res[STUN_ATTRIBUTE_UUID][-1]): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
-            sock = mdict['uuids'][res[STUN_ATTRIBUTE_UUID][-1]]
+        if rlist[3] and mdict['uuids'].has_key(binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
+            sock = mdict['uuids'][binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])]
             try:#这里先去告诉小机，有一个客户端要连接它
                 print "send ask package to the mirco_devices",mdict['clients'][sock].getpeername()
                 asktimer = threading.Timer(10,stun_ask_mirco_devices_timeout,
@@ -259,9 +256,6 @@ def handle_app_connect_peer_request(res):
                 asktimer.start()
                 mdict['responses'][sock] = stun_connect_address(res['host'],res)
                 epoll.modify(sock,select.EPOLLOUT)
-#                nbyte =  mdict['clients'][sock].send(binascii.a2b_hex(''.join(mdict['responses'][sock])))
-#                print "send to mdev %d bytes" % nbyte
-#                epoll.modify(sock,select.EPOLLIN)
             except IOError:
                 print sock,"microc_devices sock has closed"
         else:
@@ -313,7 +307,7 @@ def handle_register_request(res):
     print "register now"
     if app_user_register(res[STUN_ATTRIBUTE_USERNAME][-1],
             binascii.hexlify(res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])):
-        buf = []   # 用户名已经存了。
+         # 用户名已经存了。
         return check_user_error(res)
     print "register success"
     return register_success(res[STUN_ATTRIBUTE_USERNAME][-1],res['tid'])
@@ -352,9 +346,9 @@ def check_user_sucess(buf,res):
 
 def check_uuid_valid(uhex):
     print "uuid whole",uhex
-    ucrc = binascii.crc32(binascii.a2b_hex(uhex[:-8]))
-    crcstr = "%08x" % ((ucrc  ^ CRCMASK) & 0xFFFFFFFF)
-    print "crcstr is",crcstr
+    ucrc = get_crc32(uhex[:-8])
+    crcstr = "%08x" % ((ucrc ^ 0x6a686369) & 0xFFFFFFFF)
+    print "crcstr is",crcstr,"buf crc is",uhex[-8:]
     if crcstr != uhex[-8:]:
         return False
     else:
@@ -377,12 +371,13 @@ def handle_allocate_request(res):
         return stun_attr_error_response(res['method'],res)
 
 
-    mdict['timer'][res['fileno']] = res.get(STUN_ATTRIBUTE_LIFETIME,0)[-1]
+    mdict['timer'][res['fileno']] = time.time()+ res.get(STUN_ATTRIBUTE_LIFETIME,0)[-1]
     if not res.has_key(STUN_ATTRIBUTE_DATA):
         res[STUN_ATTRIBUTE_DATA]=(0,'')
 
     update_newdevice(res['host'],tuid[:-8],res[STUN_ATTRIBUTE_DATA][-1])
     mdict['uuids'][tuid] = res['fileno'] # 保存uuid 后面做查询
+    mdict['actives'][res['fileno']] = res[STUN_ATTRIBUTE_UUID]
     print "device login , sock is",res['fileno'],"uuid is",tuid
     return binding_sucess(res['tid'],res['host'])
 
@@ -406,7 +401,6 @@ def binding_sucess(tid,host): # 客服端向服务器绑定自己的IP
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_MAPPED_ADDRESS,mip)
     mip = "0001%04x%08x" % (host[1]^ (STUN_MAGIC_COOKIE >> 16),
             STUN_MAGIC_COOKIE ^ (int(binascii.hexlify(socket.inet_aton(host[0])),16)))
-    print "mip",mip
     stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS,mip)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
     stun_add_fingerprint(buf)
@@ -432,7 +426,7 @@ def refresh_sucess(tid,ntime): # 刷新成功
 
 def update_refresh_time(fileno,ntime):
     #print "refresh new time",ntime
-    mdict['timer'][fileno] = ntime
+    mdict['timer'][fileno] = time.time()+ntime
 
 def app_user_register(user,pwd):
     account = get_account_table()
@@ -491,7 +485,7 @@ def get_account_status_table():
             Column('uname',pgsql.VARCHAR(255)),
             Column('is_login',pgsql.BOOLEAN),
             Column('last_login_time',pgsql.TIME),
-            Column('chost',pgsql.ARRAY(pgsql.INTEGER))
+            Column('chost',pgsql.ARRAY(pgsql.BIGINT))
             )
     return table
 
@@ -516,14 +510,14 @@ def check_user_in_database(uname):
     else:
         return 0
 
-def get_devices_table():
+def get_devices_table(tname):
     metadata = MetaData()
-    mirco_devices = Table('mirco_devices',metadata,
-            Column('devid',pgsql.UUID),
-            Column('is_active',pgsql.BOOLEAN),
-            Column('last_login_time',pgsql.TIMESTAMP),
-            Column('is_online',pgsql.BOOLEAN),
-            Column('chost',pgsql.ARRAY(pgsql.INTEGER)),
+    mirco_devices = Table(tname,metadata,
+            Column('devid',pgsql.UUID,primary_key=True),
+            Column('is_active',pgsql.BOOLEAN,nullable=False),
+            Column('last_login_time',pgsql.TIMESTAMP,nullable=False),
+            Column('is_online',pgsql.BOOLEAN,nullable=False),
+            Column('chost',pgsql.ARRAY(pgsql.BIGINT),nullable=False),
             Column('data',pgsql.BYTEA)
             )
     return mirco_devices
@@ -531,9 +525,12 @@ def get_devices_table():
 
 def find_device_state(uid):
     tuid= binascii.unhexlify(binascii.hexlify(uid)[:UUID_SIZE*2])
+    vendor = uid[-16:-8]
     print "find uuid is",tuid
     dbcon = engine.connect()
-    mirco_devices = get_devices_table()
+    mirco_devices = get_devices_table(vendor)
+    if not mirco_devices.exists(engine):
+        return None
     s = sql.select([mirco_devices]).where(mirco_devices.c.devid == tuid)
     try:
         result = dbcon.execute(s)
@@ -549,7 +546,9 @@ def update_newdevice(host,uid,data):
     vendor = uid[-16:-8]
     tuid = binascii.unhexlify(uid[:UUID_SIZE*2])
     dbcon = engine.connect()
-    mirco_devices = get_devices_table()
+    mirco_devices = get_devices_table(vendor)
+    if not mirco_devices.exists(engine):
+        mirco_devices.create(engine)
     #metadata.create_all(engine)
     print "tuid len",len(binascii.hexlify(tuid))
     s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == tuid)
@@ -564,7 +563,8 @@ def update_newdevice(host,uid,data):
     print "host %d:%d" % (ipadr,ipprt)
     if not row: # 找不到这个UUID 就插入新的
         ins = mirco_devices.insert().values(devid=tuid,is_active=True,
-                is_online=True,chost=[ipadr,ipprt],data=data)
+                is_online=True,chost=[ipadr,ipprt],data=data,last_login_time=datetime.now())
+        result = dbcon.execute(ins)
         try:
             result = dbcon.execute(ins)
         except:
@@ -630,7 +630,7 @@ class CheckSesionThread(threading.Thread):
 def clean_timeout_sock(fileno): # 清除超时的连接
     #print 'mdict[timer][%d]' % fileno,mdict['timer'][fileno]
     if mdict['timer'].has_key(fileno):
-        if mdict['timer'][fileno] == 0:
+        if mdict['timer'][fileno] < time.time():
             epoll.unregister(fileno)
             mdict['timer'].pop(fileno)
             print "delete fileno",fileno
@@ -638,21 +638,47 @@ def clean_timeout_sock(fileno): # 清除超时的连接
                 mdict['clients'][fileno].close()
             for n in [ p for p in  [mdict[x] for x in store] if p.has_key(fileno)]:
                 del n
-        else:
-            mdict['timer'][fileno] -= 1
+
+def mirco_devices_logout(devid):
+    uhex = binascii.hexlify(devid)
+    vendor = uhex[-16:-8]
+    tuid = uhex[:UUID_SIZE*2]
+
+    mtable = get_devices_table(vendor)
+    conn = engine.connect()
+    ss = mtable.update().values(is_online=False).where(mtable.c.devid == tuid)
+    try:
+        res = conn.execute(ss)
+    except :
+        print "update status error"
+
+def app_user_logout(uname):
+    print uname,"logout"
+    atable = get_account_status_table()
+    conn = engine.connect()
+    ss = atable.update().values(is_login=False).where(atable.c.uname == uname)
+    try:
+        res = conn.execute(ss)
+    except :
+        print "update status error"
+
 
 def sock_fail_pass(fileno):
     # sock 关闭时产生的异常处理
     print "fileno error",fileno
-    print "now mdict[uuids] is",mdict['uuids']
-    print "mdict[clients] is",mdict['clients']
     epoll.unregister(fileno)
+    if mdict['actives'].has_key(fileno): #更新相应的数据库在线状态
+        attr = mdict['actives'].get(fileno)
+        aname = "%04x" % attr[0]
+        if aname == STUN_ATTRIBUTE_USERNAME:
+            app_user_logout(attr[-1])
+        elif aname == STUN_ATTRIBUTE_UUID:
+            mirco_devices_logout(attr[-1])
+
     for n in [p for p  in  [mdict[x] for x in store] if p.has_key(fileno)]:
         n.pop(fileno)
-        print "now n is",n
     for n in  [ x for x in  mdict['uuids'] if mdict.get(x) == fileno]:
         mdict['uuids'].pop(n)
-        print "now mdict[uuids] is",mdict['uuids']
 
 
 
@@ -696,7 +722,13 @@ def Server():
                             continue
                         nbyte =  mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
                         #print "send %d byte" % nbyte
-                        epoll.modify(fileno,select.EPOLLIN)
+                        if not stun_is_success_response_str(mdict['responses'][fileno][0][:4]): # 不正确的请求，关闭它。
+                            mdict['clients'][fileno].close()
+                            epoll.unregister(fileno)
+                            mdict['clients'].pop(fileno)
+                        else:
+                            epoll.modify(fileno,select.EPOLLIN)
+                        mdict['responses'].pop(fileno)
                     except IOError:
                         sock_fail_pass(fileno)
                 elif event & select.EPOLLHUP:
@@ -715,10 +747,9 @@ dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
               STUN_METHOD_CHECK_USER:handle_chkuser_request,
               STUN_METHOD_REGISTER:handle_register_request,
               STUN_METHOD_BINDING:handle_app_login_request,  # app端登录方法
-              STUN_METHOD_CONNECT:handle_app_connect_peer_request,
-              STUN_METHOD_CONNECTION_BIND:handle_mdev_replay
+              STUN_METHOD_CONNECT:handle_app_connect_peer_request
               }
-store = ['timer','clients','requests','responses','uuids']
+store = ['timer','clients','requests','responses','uuids','actives']
 mdict = {}
 for x in store:
    mdict[x]={} # 这个嵌套字典就是用来存放运行时的状态与数据的
