@@ -12,35 +12,19 @@ import time
 import threading
 import getpass
 
-uname  = None
-pwd = None
-while True:
-    uname = raw_input("用户名:")
-    if len(uname) == 0:
-        continue
-    else:
-        break
-while True:
-    pwd = getpass.getpass("密码:")
-    if len(pwd) == 0:
-        continue
-    else:
-        break
-
 logging.getLogger().setLevel(logging.ERROR)
 reload(sys)
 sys.setdefaultencoding('utf-8')  # @UndefinedVariable
-browser = None
 
 def timer_refresh_ticket(btn):
     btn.click()
-
 def checkTick():
     while True:
         if int(time.strftime("%H", time.localtime())) in [23,0,1,2,3,4,5,6]:
             print "23点到7点不能登录"
             time.sleep(200)
-    browser = Browser()
+        else:
+            break
     browser.visit("https://kyfw.12306.cn/otn/login/init")
     browser.find_by_id("username").fill(uname)
     browser.find_by_id("password").fill(pwd)
@@ -81,6 +65,7 @@ def checkTick():
     $(\"#nav_list5\").click();
     $.stationFor12306.pageDesigh(17,2,5);
     $(\"#ul_list5 > li:nth-child(6)\").click();
+    $("#train_date").val("2015-02-14");
     ''')
     browser.find_by_id("show_more").click() #打开更多选项，添加乘车人等信息
     browser.execute_script('''
@@ -159,7 +144,7 @@ $('#queryLeftTable tr').each(function () {
   if (/^ticket/.test(trId)) {
     tid=trId.replace("ticket_","");
     tranCode=$("#"+trId+"_train").find("a").text()
-    if("K6546".indexOf(tranCode+",")!=-1){
+    if("K6546,K6542,G6142,K9084".indexOf(tranCode+",")!=-1){
         //二等座位
         ZEtxt=$("#ZE_"+tid).text();
         zcount=0;
@@ -178,7 +163,6 @@ $('#queryLeftTable tr').each(function () {
      
   }
 });
- 
 ''')
          
         if browser.evaluate_script("iflagt;"):
@@ -188,7 +172,7 @@ $('#queryLeftTable tr').each(function () {
             print "无"
             pass
         time.sleep(3)
-        pass
+
     while browser.url !="https://kyfw.12306.cn/otn/confirmPassenger/initDc":
         print browser.url
         time.sleep(1)
@@ -212,7 +196,24 @@ $('#queryLeftTable tr').each(function () {
     #print browser.html
     print browser.cookies.all()
     pass
+
 if __name__ == '__main__':
+    uname  = None
+    pwd = None
+    while True:
+        uname = raw_input("用户名:")
+        if len(uname) == 0:
+            continue
+        else:
+            break
+    while True:
+        pwd = getpass.getpass("密码:")
+        if len(pwd) == 0:
+            continue
+        else:
+            break
+    
+    browser = Browser()
     while True:
         try:
             checkTick()
