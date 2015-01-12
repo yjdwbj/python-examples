@@ -12,6 +12,7 @@ import time
 import hmac
 import hashlib
 import uuid
+import sys
 
 
 
@@ -136,7 +137,6 @@ def stun_attr_append_str(buf,attr,add_value):
     buf.append(add_value)
     # 4Byte 对齐
     rem4 = (alen & 0x0003)& 0xf
-    print "the rem4 is",rem4
     if rem4:
         rem4 = alen+4-rem4
         print "rem4",rem4
@@ -213,7 +213,6 @@ def stun_xor_peer_address(host,port):
 def stun_add_fingerprint(buf):
     stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
     crc_str = ''.join(buf[:-3])
-    print "crc_str",crc_str
     crcval = binascii.crc32(binascii.unhexlify(crc_str))
     crcstr = "%08x" % ((crcval  ^ 0x5354554e) & 0xFFFFFFFF)
     buf[-1] = crcstr.replace('-','')
@@ -222,12 +221,13 @@ def stun_add_fingerprint(buf):
 
 #### Refresh Request ######
 
-def stun_refresh_request(sock,n):
+def stun_refresh_request(sock):
     buf =[]
     stun_struct_refresh_request(buf)
     sdata = binascii.a2b_hex(''.join(buf))
-    if n > 0:
+    if sock:
         sock.send(sdata)
+
 
 
 def stun_struct_refresh_request(buf):
@@ -348,19 +348,19 @@ def stun_handle_response(response,result):
     return rdict
 
 #### 模拟小机登录
-def gen_uuid()
-    ruuid = uuid.uuid4().replace('-','')
-    tt = binascii.hexlify('test')+ruuid
+def gen_uuid():
+    ruuid = str(uuid.uuid4()).replace('-','')
+    tt = binascii.hexlify(ruuid)+ binascii.hexlify('test')
     ruuid = tt + "%08x" % get_uuid_crc32(tt)
     return ruuid
 
-def device_struct_allocate()
+def device_struct_allocate():
     buf = []
     stun_init_command_str(STUN_METHOD_ALLOCATE,buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,gen_uuid())
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('testdata')
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('testdata'))
     stun_add_fingerprint(buf)
     return buf
 
@@ -368,120 +368,51 @@ def device_allocate_login(host,port):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     sock.connect((host,port))
-    sock.send(binascii.unhexlify(device_struct_allocate()))
+    sock.send(binascii.unhexlify(''.join(device_struct_allocate())))
     n = 50
     while n > 0:
-        data,addr = sock.recvfrom(2048)
-        if not data:
-            break
-        else:
-            rhex = binascii.hexlify(data)
-            print rhex
-            res_mth = "%04x" % stun_get_method_str(rhex[:4])
-            if res_mth == STUN_METHOD_ALLOCATE:
-                refresh  = threading.Timer(3,stun_refresh_request,(sock,host,port))
-                refresh.start()
-            n -=1
-
-def stun_setLogin(sock,host,port):
-    response_result = []
-    uid = "ab8f5f82ff423db42d97c7177dc38920"
-    stun_connect_peer_with_uuid(buf,uid,'lcy','test') 
-    print "send buf",buf
-    sdata = binascii.a2b_hex(''.join(buf))
-    last_request = buf
-    sock.bind(('',54321))
-    #sock.sendto(sdata,(host,port))
-    sock.connect((host,port))
-    sock.send(sdata)
-    while True:
-        data,addr = sock.recvfrom(2048)
-        if not data:
-            break
-        else:
-            myrecv = binascii.b2a_hex(data)
-            print "data  new ",myrecv
-            rdict = stun_handle_response(myrecv,response_result)
-            if rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
-                print "Message Error",rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1]
-                continue
-
-            if rdict['rmethod'] == STUN_METHOD_BINDING:
-                print "thread start"
-                response_result = []
-                #refresh  = threading.Timer(3,stun_refresh_request,(sock,host,port))
-                #refresh.start()
-                buf = []
-                #uid = "ab8f91f82ff423db42d977177d365e84"
-                #uid = "ce8f91f82ff423da42d977177d365963"
-                uid = "ab8f5f82ff423db42d97c7177dc38920"
-                #uid = "ab8f5f82ff423db42d97c7177dc31159"
-                stun_connect_peer_with_uuid(buf,uid,'lcy','test') 
-                last_request = buf
-                sock.send(binascii.a2b_hex(''.join(buf)))
-            elif rdict['rmethod'] == STUN_METHOD_REFRESH:
-                #refresh  = threading.Timer(3,stun_refresh_request,(sock,host,port))
-                #refresh.start()
-                print "app refresh time"
-            elif rdict['rmethod'] == STUN_METHOD_CONNECT:
-                if rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
-                    pass
-                # 可以去连接对端了
-                else:
-                    if rdict.has_key(STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS):
-                        phost = rdict[STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS][-2:]
-                        break
-            else:
-                print "Command error"
-    srvport = sock.getsockname()[1]
-    sock.close()
-    #time.sleep(3)
-    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    if len(phost) != 2: return
-    print "phost",phost
-    hhh = socket.inet_ntoa(binascii.unhexlify("%x" % (phost[1] ^ STUN_MAGIC_COOKIE)))
-    ppp = phost[0] ^  (STUN_MAGIC_COOKIE >> 16)
-    print "xor phost",  hhh,ppp
-
-    print "connect peer",hhh,ppp
-    sock.bind(('',srvport))
-    print "local",sock.getsockname()
-    try:
-        sock.connect((hhh,ppp))
-        print "remote",sock.getpeername()
-        sock.send("Hi I'm app")
-        while True:
-            data = sock.recv(2048)
-            sock.send("Hi I'm app")
+        try:
+            data,addr = sock.recvfrom(2048)
             if not data:
                 break
             else:
-                print data
-                sock.send("I'am app %s" % time.time())
-            time.sleep(1)
-    except:
-        print "connect peer occur error"
+                rhex = binascii.hexlify(data)
+                res_mth = "%04x" % stun_get_method_str(int(rhex[:4],16))
+                if res_mth == STUN_METHOD_ALLOCATE:
+                    t = ThreadRefreshTime(sock)
+                    t.start()
+                n -=1
+        except IOError:
+            print "sock error"
 
-def connect_turn_server():
-    srv_host = '183.234.21.52'
-    #srv_host = '192.168.56.1'
-    srv_port = 3478
-    #srv_port = 3478
-    #sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    stun_setLogin(sock,srv_host,srv_port)
+class ThreadRefreshTime(threading.Thread):
+    def __init__(self,sock):
+        threading.Thread.__init__(self)
+        self.sock = sock
 
+    def run(self):
+        while self.sock:
+            stun_refresh_request(self.sock)
+            time.sleep(10)
 
 ehost = [] # 外部地址
 phost = [] # 对端地址
+tlist = []
+nclient = 1
 def main():
-    tss = []
-    for i  in xrange(100):
-        t = threading.Thread(target=device_allocate_login,('192.168.8.9',3478))
+    if len(sys.argv) < 2:
+        print "请在后写一个数量"
+    try:
+        nclient = sys.argv[1]
+    except:
+        return
+    nclient = int(nclient)
+    for i  in xrange(nclient):
+        print i,"client now start"
+        t = threading.Thread(target=device_allocate_login,args=('192.168.8.9',3478))
         t.start()
-        tss.append(t)
+        tlist.append(t)
+        time.sleep(1)
 
 
 if __name__ == '__main__':
