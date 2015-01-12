@@ -524,14 +524,13 @@ def get_devices_table(tname):
 
 
 def find_device_state(uid):
-    tuid= binascii.unhexlify(binascii.hexlify(uid)[:UUID_SIZE*2])
-    vendor = uid[-16:-8]
-    print "find uuid is",tuid
+    vendor = binascii.hexlify(uid)[-16:-8]
+    print "find uuid is",uid,"vendor is",vendor
     dbcon = engine.connect()
     mirco_devices = get_devices_table(vendor)
     if not mirco_devices.exists(engine):
         return None
-    s = sql.select([mirco_devices]).where(mirco_devices.c.devid == tuid)
+    s = sql.select([mirco_devices]).where(mirco_devices.c.devid == uid[:UUID_SIZE])
     try:
         result = dbcon.execute(s)
         return result.fetchall()
@@ -542,14 +541,13 @@ def find_device_state(uid):
 
 def update_newdevice(host,uid,data):
     '''添加新的小机到数据库'''
-    print "uid is",uid[:UUID_SIZE*2],"vendor is",uid[-16:-8]
-    vendor = uid[-16:-8]
+    vendor = uid[-8:]
+    print "uid is",uid[:UUID_SIZE*2],"vendor is",vendor
     tuid = binascii.unhexlify(uid[:UUID_SIZE*2])
     dbcon = engine.connect()
     mirco_devices = get_devices_table(vendor)
     if not mirco_devices.exists(engine):
         mirco_devices.create(engine)
-    #metadata.create_all(engine)
     print "tuid len",len(binascii.hexlify(tuid))
     s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == tuid)
     row = ''
@@ -564,7 +562,6 @@ def update_newdevice(host,uid,data):
     if not row: # 找不到这个UUID 就插入新的
         ins = mirco_devices.insert().values(devid=tuid,is_active=True,
                 is_online=True,chost=[ipadr,ipprt],data=data,last_login_time=datetime.now())
-        result = dbcon.execute(ins)
         try:
             result = dbcon.execute(ins)
         except:
