@@ -223,10 +223,10 @@ def stun_add_fingerprint(buf):
 
 def stun_refresh_request(sock):
     buf =[]
-    print sock.fileno(),"refresh time"
     stun_struct_refresh_request(buf)
     sdata = binascii.a2b_hex(''.join(buf))
-    sock.send(sdata)
+    if sock:
+        sock.send(sdata)
 
 
 
@@ -377,7 +377,6 @@ def device_allocate_login(host,port):
                 break
             else:
                 rhex = binascii.hexlify(data)
-                print rhex
                 res_mth = "%04x" % stun_get_method_str(int(rhex[:4],16))
                 if res_mth == STUN_METHOD_ALLOCATE:
                     t = ThreadRefreshTime(sock)
@@ -409,6 +408,7 @@ def main():
         return
     nclient = int(nclient)
     for i  in xrange(nclient):
+        print i,"client now start"
         t = threading.Thread(target=device_allocate_login,args=('192.168.8.9',3478))
         t.start()
         tlist.append(t)
