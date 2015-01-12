@@ -154,7 +154,7 @@ def check_crc_is_valid(buf): # 检查包的CRC
     return True
 
 def handle_client_request(buf,fileno):
-    print "handle allocate request\n"
+    #print "handle allocate request\n"
     blen = len(buf)
 
     if not check_crc_is_valid(buf):
@@ -186,7 +186,6 @@ def handle_client_request(buf,fileno):
             res['isok'] = False
             res['eattr'] = buf[hexpos:4]
             print "Unkown Attribute",res['eattr'],buf[hexpos:]
-            print "buf is",buf
             return  stun_attr_error_response(method,res)
         else:
             hexpos += n
@@ -199,7 +198,6 @@ def handle_client_request(buf,fileno):
     else:
         print "Unkown Methed"
         return stun_unkown_method_error(res)
-    print "response_result",response_result
 
 def stun_unkown_method_error(buf,res):
     buf = []
@@ -304,12 +302,10 @@ def stun_auth_error_response(mehtod,tid):
     return (buf)
 
 def handle_register_request(res):
-    print "register now"
     if app_user_register(res[STUN_ATTRIBUTE_USERNAME][-1],
             binascii.hexlify(res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])):
          # 用户名已经存了。
         return check_user_error(res)
-    print "register success"
     return register_success(res[STUN_ATTRIBUTE_USERNAME][-1],res['tid'])
 
 def register_success(buf,uname,tid):
@@ -322,7 +318,6 @@ def register_success(buf,uname,tid):
 
 def handle_chkuser_request(res):
     f = check_user_in_database(res[STUN_ATTRIBUTE_USERNAME][-1])
-    print "res",res
     if f:
         return check_user_error(res)
     else:
@@ -345,10 +340,10 @@ def check_user_sucess(buf,res):
     return (buf)
 
 def check_uuid_valid(uhex):
-    print "uuid whole",uhex
+    #print "uuid whole",uhex
     ucrc = get_crc32(uhex[:-8])
     crcstr = "%08x" % ((ucrc ^ 0x6a686369) & 0xFFFFFFFF)
-    print "crcstr is",crcstr,"buf crc is",uhex[-8:]
+    #print "crcstr is",crcstr,"buf crc is",uhex[-8:]
     if crcstr != uhex[-8:]:
         return False
     else:
@@ -378,7 +373,7 @@ def handle_allocate_request(res):
     update_newdevice(res['host'],tuid[:-8],res[STUN_ATTRIBUTE_DATA][-1])
     mdict['uuids'][tuid] = res['fileno'] # 保存uuid 后面做查询
     mdict['actives'][res['fileno']] = res[STUN_ATTRIBUTE_UUID]
-    print "device login , sock is",res['fileno'],"uuid is",tuid
+    #print "device login , sock is",res['fileno'],"uuid is",tuid
     return binding_sucess(res['tid'],res['host'])
 
 def app_user_auth_success(res):
@@ -426,6 +421,7 @@ def refresh_sucess(tid,ntime): # 刷新成功
 
 def update_refresh_time(fileno,ntime):
     #print "refresh new time",ntime
+    #print "fileno",fileno,"refresh_sucess"
     mdict['timer'][fileno] = time.time()+ntime
 
 def app_user_register(user,pwd):
@@ -525,7 +521,7 @@ def get_devices_table(tname):
 
 def find_device_state(uid):
     vendor = binascii.hexlify(uid)[-16:-8]
-    print "find uuid is",uid,"vendor is",vendor
+    #print "find uuid is",uid,"vendor is",vendor
     dbcon = engine.connect()
     mirco_devices = get_devices_table(vendor)
     if not mirco_devices.exists(engine):
@@ -542,13 +538,13 @@ def find_device_state(uid):
 def update_newdevice(host,uid,data):
     '''添加新的小机到数据库'''
     vendor = uid[-8:]
-    print "uid is",uid[:UUID_SIZE*2],"vendor is",vendor
+    #print "vendor is",vendor
+    #print "uid is",uid[:UUID_SIZE*2],"vendor is",vendor
     tuid = binascii.unhexlify(uid[:UUID_SIZE*2])
     dbcon = engine.connect()
     mirco_devices = get_devices_table(vendor)
     if not mirco_devices.exists(engine):
         mirco_devices.create(engine)
-    print "tuid len",len(binascii.hexlify(tuid))
     s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == tuid)
     row = ''
     try:
@@ -558,7 +554,7 @@ def update_newdevice(host,uid,data):
         print "select mirco_devices occur error"
     ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
     ipprt = host[1] & 0xFFFF
-    print "host %d:%d" % (ipadr,ipprt)
+    #print "host %d:%d" % (ipadr,ipprt)
     if not row: # 找不到这个UUID 就插入新的
         ins = mirco_devices.insert().values(devid=tuid,is_active=True,
                 is_online=True,chost=[ipadr,ipprt],data=data,last_login_time=datetime.now())
@@ -566,7 +562,7 @@ def update_newdevice(host,uid,data):
             result = dbcon.execute(ins)
         except:
             print "mirco_devices insert devid=%s occur error" % tuid
-        print "insert new devices result fetchall"
+        #print "insert new devices result fetchall"
     else:
         upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
                 last_login_time=datetime.now()).where(mirco_devices.c.devid == tuid)
@@ -630,7 +626,7 @@ def clean_timeout_sock(fileno): # 清除超时的连接
         if mdict['timer'][fileno] < time.time():
             epoll.unregister(fileno)
             mdict['timer'].pop(fileno)
-            print "delete fileno",fileno
+            #print "mdict[uuids] is",mdict['uuids']
             if mdict['clients'].has_key(fileno):
                 mdict['clients'][fileno].close()
             for n in [ p for p in  [mdict[x] for x in store] if p.has_key(fileno)]:
@@ -640,7 +636,7 @@ def mirco_devices_logout(devid):
     uhex = binascii.hexlify(devid)
     vendor = uhex[-16:-8]
     tuid = uhex[:UUID_SIZE*2]
-
+    print "update status for tuid",tuid
     mtable = get_devices_table(vendor)
     conn = engine.connect()
     ss = mtable.update().values(is_online=False).where(mtable.c.devid == tuid)
@@ -667,6 +663,7 @@ def sock_fail_pass(fileno):
     if mdict['actives'].has_key(fileno): #更新相应的数据库在线状态
         attr = mdict['actives'].get(fileno)
         aname = "%04x" % attr[0]
+        print "aname is",aname
         if aname == STUN_ATTRIBUTE_USERNAME:
             app_user_logout(attr[-1])
         elif aname == STUN_ATTRIBUTE_UUID:
@@ -695,7 +692,11 @@ def Server():
             events = epoll.poll(1)
             for fileno,event in events:
                 if fileno == srvsocket.fileno(): #新的连接
-                    conn,addr = srvsocket.accept()
+                    try:
+                        conn,addr = srvsocket.accept()
+                    except:
+                        print "Too many files opened"
+                        continue
                     #print "new accept",conn.fileno()
                     print "new clients",addr
                     conn.setblocking(0)
