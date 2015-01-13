@@ -82,17 +82,21 @@ STUN_HEADER_FMT='!HHI12s'
 STUN_DEFAULT_ALLOCATE_LIFETIME=int(600)
 UCLIENT_SESSION_LIFETIME=int(160)
 
+STUN_UUID_VENDOR='20sI'
+STUN_UVC='16s4sI' # uuid , vendor ,crc32
+
 STUN_MAGIC_COOKIE=0x2112A442
 SOCK_BUFSIZE=2048
 UUID_SIZE=0x20
 CRCMASK=0x5354554e
+CRCPWD=0x6a686369
 HEX4B=16
 HEX2B=8
 
 
 
 def get_crc32(str):
-    return binascii.crc32(binascii.a2b_hex(str.lower()))
+    return binascii.crc32(binascii.unhexlify(str.lower()))
 
 def gen_tid():
     a = ''.join(random.choice('0123456789ABCDEF') for i in range(24))
@@ -145,8 +149,6 @@ def stun_init_command_str(msg_type,buf,tid):
     buf.append(tid)
 
 def check_crc_is_valid(buf): # 检查包的CRC
-    if len(buf) < 17:  # 包太小
-        return False
     crc = struct.unpack('!HHI',binascii.unhexlify(buf[-16:]))
     rcrc =(get_crc32(buf[:-16]) ^ CRCMASK) & 0xFFFFFFFF
     if crc[-1] != rcrc:
@@ -229,8 +231,7 @@ def handle_app_connect_peer_request(res):
        return  stun_mirco_device_error("Not Authentication ",res['tid']) # APP端必须带用认证信息才能发起连接.
 
     # 检查用户名与密码
-    result = app_user_login(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
-    if not result:
+    if not app_user_login(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]):
         return stun_auth_error_response(STUN_METHOD_CONNECT,res['tid'])
 
     app_user_update_status(res[STUN_ATTRIBUTE_USERNAME][-1],res['host'])
@@ -245,8 +246,9 @@ def handle_app_connect_peer_request(res):
         if rlist[1] == False: # 设备没有激活
             return  stun_mirco_device_error("device disabled",res['tid'])
 
-        if rlist[3] and mdict['uuids'].has_key(binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
-            sock = mdict['uuids'][binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])]
+        huid = binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])
+        if rlist[3] and mdict['uuids'].has_key(huid): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
+            sock = mdict['uuids'][huid]
             try:#这里先去告诉小机，有一个客户端要连接它
                 print "send ask package to the mirco_devices",mdict['clients'][sock].getpeername()
                 asktimer = threading.Timer(10,stun_ask_mirco_devices_timeout,
@@ -318,7 +320,7 @@ def register_success(buf,uname,tid):
 
 def handle_chkuser_request(res):
     f = check_user_in_database(res[STUN_ATTRIBUTE_USERNAME][-1])
-    if f:
+    if f is None:
         return check_user_error(res)
     else:
         return check_user_sucess(res)
@@ -340,26 +342,23 @@ def check_user_sucess(buf,res):
     return (buf)
 
 def check_uuid_valid(uhex):
-    #print "uuid whole",uhex
     ucrc = get_crc32(uhex[:-8])
-    crcstr = "%08x" % ((ucrc ^ 0x6a686369) & 0xFFFFFFFF)
-    #print "crcstr is",crcstr,"buf crc is",uhex[-8:]
-    if crcstr != uhex[-8:]:
-        return False
-    else:
-        return True
+    crcstr = "%08x" % ((ucrc ^ CRCPWD) & 0xFFFFFFFF)
+    return cmp(crcstr,uhex[-8:])
 
 def handle_allocate_request(res):
-    tuid = binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])
+    suid = struct.unpack(STUN_UVC,res[STUN_ATTRIBUTE_UUID][-1])
+    huid = binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])
     if res.has_key(STUN_ATTRIBUTE_UUID):
-        if not check_uuid_valid(tuid):
+        if 0 != check_uuid_valid(huid):
             print "UUID crc32 wrong"
             res['eattr'] = binascii.hexlify("UUID CRC Wrong") # 错误的UUID格式
             return stun_attr_error_response(res['method'],res)
 
-        n = [ x for x in binascii.unhexlify(tuid[:UUID_SIZE*2]) if x > 'f' or x < '0']
-        if len(n) > 0:
+        n = [ x for x in binascii.hexlify(suid[0]) if x > 'f' or x < '0']
+        if len(n) > 0 or res[STUN_ATTRIBUTE_UUID][1] < 24:
             res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
+            print "UUID Format Wrong"
             return stun_attr_error_response(res['method'],res)
     else:
         res['eattr'] = binascii.hexlify("Not Found UUID")
@@ -370,8 +369,8 @@ def handle_allocate_request(res):
     if not res.has_key(STUN_ATTRIBUTE_DATA):
         res[STUN_ATTRIBUTE_DATA]=(0,'')
 
-    update_newdevice(res['host'],tuid[:-8],res[STUN_ATTRIBUTE_DATA][-1])
-    mdict['uuids'][tuid] = res['fileno'] # 保存uuid 后面做查询
+    update_newdevice(res['host'],res[STUN_ATTRIBUTE_UUID][-1],res[STUN_ATTRIBUTE_DATA][-1])
+    mdict['uuids'][huid] = res['fileno'] # 保存uuid 后面做查询
     mdict['actives'][res['fileno']] = res[STUN_ATTRIBUTE_UUID]
     #print "device login , sock is",res['fileno'],"uuid is",tuid
     return binding_sucess(res['tid'],res['host'])
@@ -430,8 +429,7 @@ def app_user_register(user,pwd):
     #print "register new account %s,%s" % (user,pwd)
     sss = sql.select([account]).where(account.c.uname == user)
     res = dbcon.execute(sss)
-    rrr = res.fetchall()
-    if rrr:
+    if res.fetchall():
         return True
     else:
         ins = account.insert().values(uname=user,pwd=pwd)
@@ -440,8 +438,6 @@ def app_user_register(user,pwd):
         except:
             print "account tables insert uname=%s occur error" % user
         return False
-    #print "result fetchall",result.fetchall()
-    #return result
 
 def app_user_update_status(user,host):
     status_tables = get_account_status_table()
@@ -478,20 +474,20 @@ def app_user_login(user,pwd):
 def get_account_status_table():
     metadata = MetaData()
     table = Table('account_status',metadata,
-            Column('uname',pgsql.VARCHAR(255)),
-            Column('is_login',pgsql.BOOLEAN),
-            Column('last_login_time',pgsql.TIME),
-            Column('chost',pgsql.ARRAY(pgsql.BIGINT))
+            Column('uname',None,ForeignKey('account.uname')),
+            Column('is_login',pgsql.BOOLEAN,nullable=False),
+            Column('last_login_time',pgsql.TIME,nullable=False),
+            Column('chost',pgsql.ARRAY(pgsql.BIGINT),nullable=False)
             )
     return table
 
 def get_account_table():
     metadata = MetaData()
     account = Table('account',metadata,
-            Column('uname',pgsql.VARCHAR(255)),
+            Column('uname',pgsql.VARCHAR(255),primary_key=True),
             Column('pwd',pgsql.TEXT),
-            Column('is_active',pgsql.BOOLEAN),
-            Column('reg_time',pgsql.TIME)
+            Column('is_active',pgsql.BOOLEAN,nullable=False),
+            Column('reg_time',pgsql.TIME,nullable=False)
             )
     return account
 
@@ -500,11 +496,7 @@ def check_user_in_database(uname):
     dbcon = engine.connect()
     s = sql.select([account.c.uname]).where(account.c.uname == uname)
     result = dbcon.execute(s)
-    row = result.fetchall()
-    if row:
-        return 1
-    else:
-        return 0
+    return result.fetchall()
 
 def get_devices_table(tname):
     metadata = MetaData()
@@ -520,13 +512,14 @@ def get_devices_table(tname):
 
 
 def find_device_state(uid):
-    vendor = binascii.hexlify(uid)[-16:-8]
+    suid = struct.unpack(STUN_UVC,uid)
+    vendor = binascii.hexlify(suid[1])
     #print "find uuid is",uid,"vendor is",vendor
     dbcon = engine.connect()
     mirco_devices = get_devices_table(vendor)
     if not mirco_devices.exists(engine):
         return None
-    s = sql.select([mirco_devices]).where(mirco_devices.c.devid == uid[:UUID_SIZE])
+    s = sql.select([mirco_devices]).where(mirco_devices.c.devid == binascii.hexlify(suid[0]))
     try:
         result = dbcon.execute(s)
         return result.fetchall()
@@ -537,12 +530,12 @@ def find_device_state(uid):
 
 def update_newdevice(host,uid,data):
     '''添加新的小机到数据库'''
-    vendor = uid[-8:]
-    #print "vendor is",vendor
+    pair = struct.unpack(STUN_UVC,uid)
+    tuid = binascii.hexlify(pair[0])
+    #print "vendor is",binascii.hexlify(pair[1])
     #print "uid is",uid[:UUID_SIZE*2],"vendor is",vendor
-    tuid = binascii.unhexlify(uid[:UUID_SIZE*2])
     dbcon = engine.connect()
-    mirco_devices = get_devices_table(vendor)
+    mirco_devices = get_devices_table(binascii.hexlify(pair[1]))
     if not mirco_devices.exists(engine):
         mirco_devices.create(engine)
     s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == tuid)
@@ -597,7 +590,11 @@ def stun_get_first_attr(response,res):
     else:
         return 0
     attr_size = struct.calcsize(fmt)
-    res[attr_name] = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
+    try:
+        res[attr_name] = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
+    except:
+        print "struct.unpack() error attr_name",attr_name,'buf is',response
+        return 0
     if res.has_key(STUN_ATTRIBUTE_LIFETIME): # 请求的时间大于服务器的定义的，使用服务端的定义 # 请求的时间大于服务器的定义的，使用服务端的定义
         if res[STUN_ATTRIBUTE_LIFETIME][-1] > UCLIENT_SESSION_LIFETIME:
             res[STUN_ATTRIBUTE_LIFETIME] = list(res[STUN_ATTRIBUTE_LIFETIME])
@@ -633,16 +630,15 @@ def clean_timeout_sock(fileno): # 清除超时的连接
                 del n
 
 def mirco_devices_logout(devid):
-    uhex = binascii.hexlify(devid)
-    vendor = uhex[-16:-8]
-    tuid = uhex[:UUID_SIZE*2]
-    print "update status for tuid",tuid
+    suid = struct.unpack(STUN_UVC,devid)
+    vendor = binascii.hexlify(suid[1])
+    #print "update status for tuid",binascii.hexlify(suid[0])
     mtable = get_devices_table(vendor)
     conn = engine.connect()
-    ss = mtable.update().values(is_online=False).where(mtable.c.devid == tuid)
+    ss = mtable.update().values(is_online=False).where(mtable.c.devid == binascii.hexlify(suid[0]))
     try:
         res = conn.execute(ss)
-    except :
+    except IOError:
         print "update status error"
 
 def app_user_logout(uname):
@@ -708,6 +704,9 @@ def Server():
                 elif event & select.EPOLLIN: # 读取socket 的数据
                     try:
                         mdict['requests'][fileno] = mdict['clients'][fileno].recv(SOCK_BUFSIZE)
+                        if len(mdict['requests'][fileno]) < 17: #包太小
+                            epoll.modify(fileno,select.EPOLLHUP)
+                            continue
                         mdict['responses'][fileno] = handle_client_request(binascii.b2a_hex(mdict['requests'][fileno]),fileno)
                         mdict['requests'].pop(fileno)
                         epoll.modify(fileno,select.EPOLLOUT)
@@ -739,7 +738,6 @@ def Server():
         epoll.close()
         srvsocket.close()
 
-
 dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
               STUN_METHOD_ALLOCATE:handle_allocate_request, # 小机登录方法
               STUN_METHOD_CHECK_USER:handle_chkuser_request,
@@ -754,6 +752,14 @@ for x in store:
 
 epoll = select.epoll()
 engine = create_engine('postgresql://postgres@localhost:5432/nath',pool_size=20,max_overflow=2)
+atable = get_account_table()
+if not atable.exists(engine):
+    atable.create(engine)
+
+stable = get_account_status_table()
+if not stable.exists(engine):
+    stable.create(engine)
+
 port = 3478
 Server()
 
