@@ -350,8 +350,8 @@ def stun_handle_response(response,result):
 #### 模拟小机登录
 def gen_uuid():
     ruuid = str(uuid.uuid4()).replace('-','')
-    tt = binascii.hexlify(ruuid)+ binascii.hexlify('test')
-    ruuid = tt + "%08x" % get_uuid_crc32(tt)
+    tt = ''.join([ruuid,binascii.hexlify('test')])
+    ruuid = ''.join([tt,("%08x" % get_uuid_crc32(tt))])
     return ruuid
 
 def device_struct_allocate():
@@ -384,6 +384,7 @@ def device_allocate_login(host,port):
                 n -=1
         except IOError:
             print "sock error"
+    sock.close()
 
 class ThreadRefreshTime(threading.Thread):
     def __init__(self,sock):
@@ -392,7 +393,14 @@ class ThreadRefreshTime(threading.Thread):
 
     def run(self):
         while self.sock:
-            stun_refresh_request(self.sock)
+            buf = []
+            stun_struct_refresh_request(buf)
+            sdata = binascii.a2b_hex(''.join(buf))
+            try:
+                self.sock.send(sdata)
+            except:
+                print "socket has closed"
+                return
             time.sleep(10)
 
 ehost = [] # 外部地址
@@ -409,10 +417,9 @@ def main():
     nclient = int(nclient)
     for i  in xrange(nclient):
         print i,"client now start"
-        t = threading.Thread(target=device_allocate_login,args=('192.168.8.9',3478))
+        t = threading.Thread(target=device_allocate_login,args=('120.24.235.68',3478))
         t.start()
         tlist.append(t)
-        time.sleep(1)
 
 
 if __name__ == '__main__':
