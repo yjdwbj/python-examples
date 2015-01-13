@@ -186,7 +186,7 @@ def stun_login_request(buf,uname,pwd):
 
 def stun_connect_peer_with_uuid(buf,uuid,uname,pwd):
     stun_init_command_str(STUN_METHOD_CONNECT,buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,binascii.hexlify(uuid))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,uuid)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(uname))
     obj = hashlib.sha256()
     obj.update(pwd)
@@ -337,7 +337,7 @@ def stun_handle_response(response,result):
         else:
             hexpos += n
     if iserr and rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
-        print "Occur error ",binascii.unhexlify(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1])
+        #print "Occur error ",binascii.unhexlify(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1])
         return rdict
 
     if res_mth == STUN_METHOD_BINDING: # 登录
@@ -366,7 +366,7 @@ def stun_setLogin(sock,host,port):
     xor_addr = ''
     response_result = []
     #stun_contract_allocate_request(buf)
-    #stun_register_request(buf,'test','1234')
+    stun_register_request(buf,'test','1234')
     #stun_check_user_valid(buf,'lcy')
     #stun_login_request(buf,'lcy','test') 
     #stun_struct_refresh_request(buf)
@@ -374,11 +374,11 @@ def stun_setLogin(sock,host,port):
     #uid = "ce8f91f82ff423da42d977177d365963"
     uid = "ab8f5f82ff423db42d97c7177dc38920"
     #uid = "ab8f5f82ff423db42d97c7177dc31159"
-    stun_connect_peer_with_uuid(buf,uid,'lcy','test') 
+    #stun_connect_peer_with_uuid(buf,uid,'lcy','test') 
     print "send buf",buf
     sdata = binascii.a2b_hex(''.join(buf))
     last_request = buf
-    sock.bind(('',54321))
+    sock.bind(('',0))
     #sock.sendto(sdata,(host,port))
     sock.connect((host,port))
     sock.send(sdata)
@@ -455,7 +455,7 @@ def stun_setLogin(sock,host,port):
 
                         
 def connect_turn_server():
-    srv_host = '183.234.21.52'
+    srv_host = '120.24.235.68'
     #srv_host = '192.168.56.1'
     srv_port = 3478
     #srv_port = 3478

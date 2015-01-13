@@ -420,6 +420,7 @@ def main():
         t = threading.Thread(target=device_allocate_login,args=('120.24.235.68',3478))
         t.start()
         tlist.append(t)
+        time.sleep(1)
 
 
 if __name__ == '__main__':

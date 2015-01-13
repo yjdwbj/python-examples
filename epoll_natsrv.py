@@ -296,12 +296,12 @@ def stun_attr_error_response(method,res):
     stun_add_fingerprint(buf)
     return (buf)
 
-def stun_auth_error_response(mehtod,tid):
+def stun_auth_error_response(method,tid):
     buf = []
     stun_init_command_str(stun_make_error_response(method),buf,tid)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,"Unauthorised")
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,binascii.hexlify("Unauthorised"))
     stun_add_fingerprint(buf)
-    return (buf)
+    return buf
 
 def handle_register_request(res):
     if app_user_register(res[STUN_ATTRIBUTE_USERNAME][-1],
@@ -310,7 +310,7 @@ def handle_register_request(res):
         return check_user_error(res)
     return register_success(res[STUN_ATTRIBUTE_USERNAME][-1],res['tid'])
 
-def register_success(buf,uname,tid):
+def register_success(uname,tid):
     buf = []
     stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf,tid)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(uname))
@@ -334,7 +334,7 @@ def check_user_error(res):
     return (buf)
 
 
-def check_user_sucess(buf,res):
+def check_user_sucess(res):
     buf = []
     stun_init_command_str(stun_make_success_response(STUN_METHOD_CHECK_USER),buf,res['tid'])
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(res[STUN_ATTRIBUTE_USERNAME][-1]))
@@ -429,14 +429,14 @@ def app_user_register(user,pwd):
     #print "register new account %s,%s" % (user,pwd)
     sss = sql.select([account]).where(account.c.uname == user)
     res = dbcon.execute(sss)
-    if res.fetchall():
+    if len(res.fetchall()):
         return True
     else:
-        ins = account.insert().values(uname=user,pwd=pwd)
+        ins = account.insert().values(uname=user,pwd=pwd,is_active=True,reg_time=datetime.now())
         try:
             dbcon.execute(ins)
         except:
-            print "account tables insert uname=%s occur error" % user
+            print "app_user_register error",user
         return False
 
 def app_user_update_status(user,host):
@@ -467,18 +467,19 @@ def app_user_login(user,pwd):
     s = sql.select([account]).where(and_(account.c.uname == user,account.c.pwd == binascii.hexlify(pwd),
         account.c.is_active == True))
     result = dbcon.execute(s)
-    #print "result fetchall",result.fetchall()
-    return result
+    row = result.fetchall()
+    return len(row)
 
 
 def get_account_status_table():
     metadata = MetaData()
     table = Table('account_status',metadata,
-            Column('uname',None,ForeignKey('account.uname')),
+            Column('uname',pgsql.VARCHAR(255)),
             Column('is_login',pgsql.BOOLEAN,nullable=False),
             Column('last_login_time',pgsql.TIME,nullable=False),
             Column('chost',pgsql.ARRAY(pgsql.BIGINT),nullable=False)
             )
+    p = relationship("account_status",backref="account")
     return table
 
 def get_account_table():
@@ -754,11 +755,31 @@ epoll = select.epoll()
 engine = create_engine('postgresql://postgres@localhost:5432/nath',pool_size=20,max_overflow=2)
 atable = get_account_table()
 if not atable.exists(engine):
-    atable.create(engine)
+    engine.connect().execute("""
+    CREATE TABLE account
+(
+  uname character varying(255) NOT NULL,
+  pwd text,
+  is_active boolean NOT NULL DEFAULT true,
+  reg_time timestamp with time zone DEFAULT now(),
+  CONSTRAINT account_pkey PRIMARY KEY (uname)
+)
+""")
 
 stable = get_account_status_table()
 if not stable.exists(engine):
-    stable.create(engine)
+    engine.connect().execute('''
+CREATE TABLE account_status
+(
+  uname character varying(255) NOT NULL,
+  is_login boolean NOT NULL DEFAULT false,
+  last_login_time timestamp with time zone DEFAULT now(),
+  chost bigint[] NOT NULL DEFAULT '{0,0}'::bigint[],
+  CONSTRAINT account_status_uname_fkey FOREIGN KEY (uname)
+      REFERENCES account (uname) MATCH SIMPLE
+      ON UPDATE NO ACTION ON DELETE NO ACTION
+)
+''')
 
 port = 3478
 Server()
