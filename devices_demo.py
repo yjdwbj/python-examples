@@ -13,7 +13,7 @@ import hmac
 import hashlib
 import uuid
 import sys
-
+import pickle
 
 
 STUN_METHOD_BINDING='0001'
@@ -350,8 +350,10 @@ def stun_handle_response(response,result):
 #### 模拟小机登录
 def gen_uuid():
     ruuid = str(uuid.uuid4()).replace('-','')
+    global uuidbin
     tt = ''.join([ruuid,binascii.hexlify('test')])
     ruuid = ''.join([tt,("%08x" % get_uuid_crc32(tt))])
+    pickle.dump(binascii.unhexlify(ruuid),uuidbin)
     return ruuid
 
 def device_struct_allocate():
@@ -394,6 +396,7 @@ class ThreadRefreshTime(threading.Thread):
     def run(self):
         while self.sock:
             buf = []
+            print "refresh time",self.sock
             stun_struct_refresh_request(buf)
             sdata = binascii.a2b_hex(''.join(buf))
             try:
@@ -407,7 +410,10 @@ ehost = [] # 外部地址
 phost = [] # 对端地址
 tlist = []
 nclient = 1
+#uuidbin = None
+uuidbin = None
 def main():
+    global uuidbin
     if len(sys.argv) < 2:
         print "请在后写一个数量"
     try:
@@ -415,12 +421,14 @@ def main():
     except:
         return
     nclient = int(nclient)
+    uuidbin = open('uuid.bin','w')
     for i  in xrange(nclient):
         print i,"client now start"
         t = threading.Thread(target=device_allocate_login,args=('120.24.235.68',3478))
         t.start()
         tlist.append(t)
         time.sleep(1)
+    uuidbin.close()
 
 
 if __name__ == '__main__':

@@ -233,6 +233,10 @@ def handle_app_connect_peer_request(res):
     # 检查用户名与密码
     if not app_user_login(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]):
         return stun_auth_error_response(STUN_METHOD_CONNECT,res['tid'])
+    if check_uuid_format(res[STUN_ATTRIBUTE_UUID][-1]):
+        res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
+        print "UUID Format Wrong"
+        return stun_attr_error_response(res['method'],res)
 
     app_user_update_status(res[STUN_ATTRIBUTE_USERNAME][-1],res['host'])
     mdict['actives'][res['fileno']] = res[STUN_ATTRIBUTE_USERNAME]
@@ -249,6 +253,9 @@ def handle_app_connect_peer_request(res):
         huid = binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])
         if rlist[3] and mdict['uuids'].has_key(huid): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
             sock = mdict['uuids'][huid]
+            if not mdict['clients'].has_key(sock):
+                return  stun_mirco_device_error('device offline',res['tid'])
+
             try:#这里先去告诉小机，有一个客户端要连接它
                 print "send ask package to the mirco_devices",mdict['clients'][sock].getpeername()
                 asktimer = threading.Timer(10,stun_ask_mirco_devices_timeout,
@@ -320,11 +327,14 @@ def register_success(uname,tid):
 
 def handle_chkuser_request(res):
     f = check_user_in_database(res[STUN_ATTRIBUTE_USERNAME][-1])
-    if f is None:
+    if f != 0:
         return check_user_error(res)
     else:
         return check_user_sucess(res)
 
+def check_uuid_format(uid):
+    n = [ x for x in binascii.hexlify(uid[0]) if x > 'f' or x < '0']
+    return  len(n) > 0 or uid[1] < 24
 
 def check_user_error(res):
     buf = []
@@ -344,6 +354,7 @@ def check_user_sucess(res):
 def check_uuid_valid(uhex):
     ucrc = get_crc32(uhex[:-8])
     crcstr = "%08x" % ((ucrc ^ CRCPWD) & 0xFFFFFFFF)
+    #print "my crc",crcstr,'rcrc',uhex[-8:]
     return cmp(crcstr,uhex[-8:])
 
 def handle_allocate_request(res):
@@ -355,8 +366,7 @@ def handle_allocate_request(res):
             res['eattr'] = binascii.hexlify("UUID CRC Wrong") # 错误的UUID格式
             return stun_attr_error_response(res['method'],res)
 
-        n = [ x for x in binascii.hexlify(suid[0]) if x > 'f' or x < '0']
-        if len(n) > 0 or res[STUN_ATTRIBUTE_UUID][1] < 24:
+        if check_uuid_format(res[STUN_ATTRIBUTE_UUID][-1]):
             res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
             print "UUID Format Wrong"
             return stun_attr_error_response(res['method'],res)
@@ -497,7 +507,7 @@ def check_user_in_database(uname):
     dbcon = engine.connect()
     s = sql.select([account.c.uname]).where(account.c.uname == uname)
     result = dbcon.execute(s)
-    return result.fetchall()
+    return len(result.fetchall())
 
 def get_devices_table(tname):
     metadata = MetaData()

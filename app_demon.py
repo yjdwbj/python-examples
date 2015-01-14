@@ -11,7 +11,7 @@ import threading
 import time
 import hmac
 import hashlib
-import uuid
+import uuid,pickle
 
 
 DEFAULTS = {
@@ -358,16 +358,57 @@ def stun_handle_response(response,result):
     return rdict
 
 
-def stun_setLogin(sock,host,port):
+def handle_connect_devid(conn,uid,uname,pwd):
     buf = []
+    response_result = []
+    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+    stun_connect_peer_with_uuid(buf,uid,'test','1234') 
+    sdata = binascii.a2b_hex(''.join(buf))
+    last_request = buf
+    sock.connect(conn)
+    sock.send(sdata)
+    while True:
+        data,addr = sock.recvfrom(2048)
+        if not data:
+            break
+        else:
+            myrecv = binascii.b2a_hex(data)
+            print "data  new ",myrecv
+            rdict = stun_handle_response(myrecv,response_result)
+            if rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
+                print "Message Error",rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1]
+                break
+    sock.close()
+
+
+
+
+def connect_devid_from_file(host,port):
+    ufile = open('uuid.bin','r')
+    while True:
+        try:
+            rid = pickle.load(ufile)
+            t = threading.Thread(target=handle_connect_devid,args=((host,port),binascii.hexlify(rid),'lcy','test'))
+            t.start()
+        except EOFError:
+            break
+    ufile.close()
+
+
+
+def stun_setLogin(host,port):
+    buf = []
+    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     global last_request
     global success_allocate
     xor_port = 0
     xor_addr = ''
     response_result = []
     #stun_contract_allocate_request(buf)
-    stun_register_request(buf,'test','1234')
-    #stun_check_user_valid(buf,'lcy')
+    #stun_register_request(buf,'test','1234')
+    stun_check_user_valid(buf,'lcy')
     #stun_login_request(buf,'lcy','test') 
     #stun_struct_refresh_request(buf)
     #uid = "ab8f91f82ff423db42d977177d365e84"
@@ -460,9 +501,8 @@ def connect_turn_server():
     srv_port = 3478
     #srv_port = 3478
     #sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    stun_setLogin(sock,srv_host,srv_port)
+    #connect_devid_from_file(srv_host,srv_port)
+    stun_setLogin(srv_host,srv_port)
 
 
 ehost = [] # 外部地址
