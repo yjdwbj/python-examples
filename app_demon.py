@@ -184,7 +184,8 @@ def stun_login_request(buf,uname,pwd):
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     stun_add_fingerprint(buf)
 
-def stun_connect_peer_with_uuid(buf,uuid,uname,pwd):
+def stun_connect_peer_with_uuid(uuid,uname,pwd):
+    buf = []
     stun_init_command_str(STUN_METHOD_CONNECT,buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,uuid)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(uname))
@@ -192,6 +193,7 @@ def stun_connect_peer_with_uuid(buf,uuid,uname,pwd):
     obj.update(pwd)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,obj.hexdigest())
     stun_add_fingerprint(buf)
+    return buf
 
 
     
@@ -363,7 +365,7 @@ def handle_connect_devid(conn,uid,uname,pwd):
     response_result = []
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    stun_connect_peer_with_uuid(buf,uid,'test','1234') 
+    buf = stun_connect_peer_with_uuid(uid,'test','1234') 
     sdata = binascii.a2b_hex(''.join(buf))
     last_request = buf
     sock.connect(conn)
@@ -396,6 +398,17 @@ def connect_devid_from_file(host,port):
     ufile.close()
 
 
+def gen_uuid():
+    ruuid = str(uuid.uuid4()).replace('-','')
+    tt = ''.join([ruuid,binascii.hexlify('test')])
+    ruuid = ''.join([tt,("%08x" % get_uuid_crc32(tt))])
+    return ruuid
+
+def get_uuid_crc32(str):
+    v = get_crc32(str) & 0xFFFFFFFF
+    return v ^ 0x6a686369
+
+
 
 def stun_setLogin(host,port):
     buf = []
@@ -408,14 +421,14 @@ def stun_setLogin(host,port):
     response_result = []
     #stun_contract_allocate_request(buf)
     #stun_register_request(buf,'test','1234')
-    stun_check_user_valid(buf,'lcy')
+    #stun_check_user_valid(buf,'lcy')
     #stun_login_request(buf,'lcy','test') 
     #stun_struct_refresh_request(buf)
     #uid = "ab8f91f82ff423db42d977177d365e84"
     #uid = "ce8f91f82ff423da42d977177d365963"
     uid = "ab8f5f82ff423db42d97c7177dc38920"
     #uid = "ab8f5f82ff423db42d97c7177dc31159"
-    #stun_connect_peer_with_uuid(buf,uid,'lcy','test') 
+    buf = stun_connect_peer_with_uuid(gen_uuid(),'test','1234') 
     print "send buf",buf
     sdata = binascii.a2b_hex(''.join(buf))
     last_request = buf
@@ -445,7 +458,7 @@ def stun_setLogin(host,port):
                 #uid = "ce8f91f82ff423da42d977177d365963"
                 uid = "ab8f5f82ff423db42d97c7177dc38920"
                 #uid = "ab8f5f82ff423db42d97c7177dc31159"
-                stun_connect_peer_with_uuid(buf,uid,'lcy','test') 
+                buf = stun_connect_peer_with_uuid(uid,'lcy','test') 
                 last_request = buf
                 sock.send(binascii.a2b_hex(''.join(buf)))
             elif rdict['rmethod'] == STUN_METHOD_REFRESH:
@@ -496,7 +509,7 @@ def stun_setLogin(host,port):
 
                         
 def connect_turn_server():
-    srv_host = '120.24.235.68'
+    srv_host = '192.168.8.9'
     #srv_host = '192.168.56.1'
     srv_port = 3478
     #srv_port = 3478
