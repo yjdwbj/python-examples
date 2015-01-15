@@ -1,22 +1,31 @@
 #coding=utf-8
+#####################################################################
+# lcy
+#                                                                   #
+#                                                                   #
+#
+#
+####################################################################
 import socket
-import select
 import time
 import struct
 import binascii
 import threading
 import uuid
+import sys
 
 from datetime import datetime
-
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,MetaData,DateTime,Boolean,SmallInteger,VARCHAR
 from sqlalchemy import sql,and_
-from sqlalchemy.orm import relationship,backref
 from sqlalchemy.dialects import postgresql as pgsql
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy import types as sytypes
+sys.path.insert(0,'/usr/local/lib/python2.7/dist-packages/psycopg2')
+import _psycopg
+sys.modules['psycopg2._psycopg'] = _psycopg
+sys.path.pop(0)
+import psycopg2
+
+import select
 
 
 STUN_METHOD_BINDING='0001'
@@ -174,6 +183,7 @@ def handle_client_request(buf,fileno):
             mdict['clients'][fileno].close()
             del mdict['clients'][fileno]
             return
+
     res = {}
     res['tid'] = binascii.hexlify(reqhead[-1]).lower()
     res['host'] = mdict['clients'][fileno].getpeername()
@@ -233,6 +243,7 @@ def handle_app_connect_peer_request(res):
     # 检查用户名与密码
     if not app_user_login(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]):
         return stun_auth_error_response(STUN_METHOD_CONNECT,res['tid'])
+
     if check_uuid_format(res[STUN_ATTRIBUTE_UUID][-1]):
         res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
         print "UUID Format Wrong"
@@ -489,7 +500,6 @@ def get_account_status_table():
             Column('last_login_time',pgsql.TIME,nullable=False),
             Column('chost',pgsql.ARRAY(pgsql.BIGINT),nullable=False)
             )
-    p = relationship("account_status",backref="account")
     return table
 
 def get_account_table():
@@ -633,12 +643,10 @@ def clean_timeout_sock(fileno): # 清除超时的连接
     if mdict['timer'].has_key(fileno):
         if mdict['timer'][fileno] < time.time():
             epoll.unregister(fileno)
-            mdict['timer'].pop(fileno)
             #print "mdict[uuids] is",mdict['uuids']
             if mdict['clients'].has_key(fileno):
                 mdict['clients'][fileno].close()
-            for n in [ p for p in  [mdict[x] for x in store] if p.has_key(fileno)]:
-                del n
+            remove_fileno_resources(fileno)
 
 def mirco_devices_logout(devid):
     suid = struct.unpack(STUN_UVC,devid)
@@ -676,14 +684,16 @@ def sock_fail_pass(fileno):
         elif aname == STUN_ATTRIBUTE_UUID:
             mirco_devices_logout(attr[-1])
 
-    for n in [p for p  in  [mdict[x] for x in store] if p.has_key(fileno)]:
-        n.pop(fileno)
-    for n in  [ x for x in  mdict['uuids'] if mdict.get(x) == fileno]:
-        mdict['uuids'].pop(n)
+    remove_fileno_resources(fileno)
+
+def remove_fileno_resources(fileno):
+    for k in store:
+        if mdict[k].has_key(fileno):
+            mdict[k].pop(fileno)
 
 
 
-def Server():
+def Server(port):
     srvsocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     srvsocket.bind(('',port))
@@ -792,6 +802,8 @@ CREATE TABLE account_status
 ''')
 
 port = 3478
-Server()
+
+if __name__ == '__main__':
+    Server(port)
 
 
