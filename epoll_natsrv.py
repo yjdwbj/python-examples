@@ -51,25 +51,16 @@ STUN_ATTRIBUTE_USERNAME='0006'
 STUN_ATTRIBUTE_MESSAGE_INTEGRITY='0008'
 STUN_ATTRIBUTE_MESSAGE_ERROR_CODE='0009'
 STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES='000a'
-STUN_ATTRIBUTE_REALM='0014'
-STUN_ATTRIBUTE_NONCE='0015'
-STUN_ATTRIBUTE_REQUESTED_ADDRESS_FAMILY='0017'
 STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS='0020'
 OLD_STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS='8020'
 
 
 STUN_ATTRIBUTE_CHANNEL_NUMBER='000c'
 STUN_ATTRIBUTE_LIFETIME='000d'
-STUN_ATTRIBUTE_BANDWIDTH='0010'
 STUN_ATTRIBUTE_XOR_PEER_ADDRESS='0012'
 STUN_ATTRIBUTE_DATA='0013'
-STUN_ATTRIBUTE_XOR_RELAYED_ADDRESS='0016'
-STUN_ATTRIBUTE_EVENT_PORT='0018'
 STUN_ATTRIBUTE_REQUESTED_TRANSPORT='0019'
 STUN_ATTRIBUTE_DONT_FRAGMENT='001a'
-STUN_ATTRIBUTE_TIMER_VAL='0021'
-STUN_ATTRIBUTE_RESERVATION_TOKEN='0022'
-
 
 STUN_ATTRIBUTE_SOFTWARE='8022'
 STUN_ATTRIBUTE_ALTERNATE_SERVER='8023'
@@ -79,10 +70,6 @@ STUN_ATTRIBUTE_DATABASE_RES='8002'
 STUN_ATTRIBUTE_REGISTER_SUCCESS='8003'
 STUN_ATTRIBUTE_VENDOR='8004'
 
-STUN_ATTRIBUTE_TRANSPORT_TCP_VALUE=int(6)
-STUN_ATTRIBUTE_TRANSPORT_UDP_VALUE=int(17)
-STUN_ATTRIBUTE_TRANSPORT_TLS_VALUE=int(56)
-STUN_ATTRIBUTE_TRANSPORT_DTLS_VALUE=int(250)
 
 STUN_HEADER_LENGTH=int(20)
 STUN_HEADER_FMT='!HHI12s'
@@ -244,7 +231,7 @@ def handle_app_connect_peer_request(res):
     if not app_user_login(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]):
         return stun_auth_error_response(STUN_METHOD_CONNECT,res['tid'])
 
-    if check_uuid_format(res[STUN_ATTRIBUTE_UUID][-1]):
+    if check_uuid_format(res[STUN_ATTRIBUTE_UUID]):
         res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
         print "UUID Format Wrong"
         return stun_attr_error_response(res['method'],res)
@@ -323,7 +310,7 @@ def stun_auth_error_response(method,tid):
 
 def handle_register_request(res):
     if app_user_register(res[STUN_ATTRIBUTE_USERNAME][-1],
-            binascii.hexlify(res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])):
+            res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]):
          # 用户名已经存了。
         return check_user_error(res)
     return register_success(res[STUN_ATTRIBUTE_USERNAME][-1],res['tid'])
@@ -344,7 +331,7 @@ def handle_chkuser_request(res):
         return check_user_sucess(res)
 
 def check_uuid_format(uid):
-    n = [ x for x in binascii.hexlify(uid[0]) if x > 'f' or x < '0']
+    n = [ x for x in binascii.hexlify(uid[-1]) if x > 'f' or x < '0']
     return  len(n) > 0 or uid[1] < 24
 
 def check_user_error(res):
@@ -377,7 +364,7 @@ def handle_allocate_request(res):
             res['eattr'] = binascii.hexlify("UUID CRC Wrong") # 错误的UUID格式
             return stun_attr_error_response(res['method'],res)
 
-        if check_uuid_format(res[STUN_ATTRIBUTE_UUID][-1]):
+        if check_uuid_format(res[STUN_ATTRIBUTE_UUID]):
             res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
             print "UUID Format Wrong"
             return stun_attr_error_response(res['method'],res)
@@ -485,7 +472,7 @@ def app_user_update_status(user,host):
 def app_user_login(user,pwd):
     account = get_account_table()
     dbcon = engine.connect()
-    s = sql.select([account]).where(and_(account.c.uname == user,account.c.pwd == binascii.hexlify(pwd),
+    s = sql.select([account]).where(and_(account.c.uname == user,account.c.pwd == pwd,
         account.c.is_active == True))
     result = dbcon.execute(s)
     row = result.fetchall()
@@ -506,7 +493,7 @@ def get_account_table():
     metadata = MetaData()
     account = Table('account',metadata,
             Column('uname',pgsql.VARCHAR(255),primary_key=True),
-            Column('pwd',pgsql.TEXT),
+            Column('pwd',pgsql.BYTEA),
             Column('is_active',pgsql.BOOLEAN,nullable=False),
             Column('reg_time',pgsql.TIME,nullable=False)
             )
@@ -779,7 +766,7 @@ if not atable.exists(engine):
     CREATE TABLE account
 (
   uname character varying(255) NOT NULL,
-  pwd text,
+  pwd BYTEA,
   is_active boolean NOT NULL DEFAULT true,
   reg_time timestamp with time zone DEFAULT now(),
   CONSTRAINT account_pkey PRIMARY KEY (uname)
