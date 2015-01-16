@@ -24,8 +24,12 @@ import _psycopg
 sys.modules['psycopg2._psycopg'] = _psycopg
 sys.path.pop(0)
 import psycopg2
-
+import hashlib
 import select
+import logging
+from logging import handlers
+
+
 
 
 STUN_METHOD_BINDING='0001'
@@ -184,7 +188,7 @@ def handle_client_request(buf,fileno):
         if n == 0:
             res['isok'] = False
             res['eattr'] = buf[hexpos:4]
-            print "Unkown Attribute",res['eattr'],buf[hexpos:]
+            log.error("Unkown Attribute %s %s",res['eattr'],buf[hexpos:])
             return  stun_attr_error_response(method,res)
         else:
             hexpos += n
@@ -192,10 +196,16 @@ def handle_client_request(buf,fileno):
     if res.has_key(STUN_ATTRIBUTE_LIFETIME):
         update_refresh_time(fileno,res.get(STUN_ATTRIBUTE_LIFETIME)[-1])
 
+    if res.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][1] != 32:
+        res['eattr'] = binascii.hexlify('Password is to short')
+        log.error("Pasword is to short. Host: %s:%d" % mdict['clients'][fileno].getpeername())
+        return  stun_attr_error_response(method,res)
+
+
     if dictMethod.has_key(method):
         return  dictMethod[method](res)
     else:
-        print "Unkown Methed"
+        log.error("Unkown Methed")
         return stun_unkown_method_error(res)
 
 def stun_unkown_method_error(buf,res):
@@ -233,7 +243,7 @@ def handle_app_connect_peer_request(res):
 
     if check_uuid_format(res[STUN_ATTRIBUTE_UUID]):
         res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
-        print "UUID Format Wrong"
+        log.warnnig("UUID Format wrong. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
         return stun_attr_error_response(res['method'],res)
 
     app_user_update_status(res[STUN_ATTRIBUTE_USERNAME][-1],res['host'])
@@ -273,7 +283,7 @@ def stun_ask_mirco_devices_timeout(msg,tid,sock):
         try:
             epoll.modify(sock,select.EPOLLOUT)
         except:
-            print "app sock %d has closed" % sock
+            log.warnnig("app sock %d has closed" % sock)
 
 
 def stun_connect_address(host,res):
@@ -360,16 +370,17 @@ def handle_allocate_request(res):
     huid = binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])
     if res.has_key(STUN_ATTRIBUTE_UUID):
         if 0 != check_uuid_valid(huid):
-            print "UUID crc32 wrong"
+            log.warnnig("UUID crc32 wrong. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
             res['eattr'] = binascii.hexlify("UUID CRC Wrong") # 错误的UUID格式
             return stun_attr_error_response(res['method'],res)
 
         if check_uuid_format(res[STUN_ATTRIBUTE_UUID]):
             res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
-            print "UUID Format Wrong"
+            log.warnnig("UUID Format wrong. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
             return stun_attr_error_response(res['method'],res)
     else:
         res['eattr'] = binascii.hexlify("Not Found UUID")
+        log.warnnig("Not UUID Attribute. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
         return stun_attr_error_response(res['method'],res)
 
 
@@ -431,6 +442,7 @@ def update_refresh_time(fileno,ntime):
     #print "fileno",fileno,"refresh_sucess"
     mdict['timer'][fileno] = time.time()+ntime
 
+
 def app_user_register(user,pwd):
     account = get_account_table()
     dbcon = engine.connect()
@@ -440,11 +452,14 @@ def app_user_register(user,pwd):
     if len(res.fetchall()):
         return True
     else:
-        ins = account.insert().values(uname=user,pwd=pwd,is_active=True,reg_time=datetime.now())
+        obj = hashlib.sha256()
+        obj.update(user)
+        obj.update(pwd)
+        ins = account.insert().values(uname=user,pwd=obj.digest(),is_active=True,reg_time=datetime.now())
         try:
             dbcon.execute(ins)
         except:
-            print "app_user_register error",user
+            log.error("app_user_register error %s",user)
         return False
 
 def app_user_update_status(user,host):
@@ -465,14 +480,17 @@ def app_user_update_status(user,host):
     try:
         result = dbcon.execute(sss)
     except:
-        print type(sss),"execute occur error"
+        log.error("Update User Status to DB Occur Error %s:%d" % host)
         pass
 
 
 def app_user_login(user,pwd):
     account = get_account_table()
     dbcon = engine.connect()
-    s = sql.select([account]).where(and_(account.c.uname == user,account.c.pwd == pwd,
+    obj = hashlib.sha256()
+    obj.update(user)
+    obj.update(pwd)
+    s = sql.select([account]).where(and_(account.c.uname == user,account.c.pwd == obj.digest(),
         account.c.is_active == True))
     result = dbcon.execute(s)
     row = result.fetchall()
@@ -532,7 +550,7 @@ def find_device_state(uid):
         result = dbcon.execute(s)
         return result.fetchall()
     except:
-        print "DataError",str(s)
+        log.error("Find UUID From DB Occur Error. UUID is %s" % binascii.hexlify(uuid))
         return None
 
 
@@ -552,7 +570,7 @@ def update_newdevice(host,uid,data):
         result = dbcon.execute(s)
         row = result.fetchall()
     except:
-        print "select mirco_devices occur error"
+        log.error("Select UUID From DB Occur Error. UUID is %s" % tuid)
     ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
     ipprt = host[1] & 0xFFFF
     #print "host %d:%d" % (ipadr,ipprt)
@@ -562,7 +580,7 @@ def update_newdevice(host,uid,data):
         try:
             result = dbcon.execute(ins)
         except:
-            print "mirco_devices insert devid=%s occur error" % tuid
+            log.error("Insert UUID To DB Occur Error. UUID is %s" % tuid)
         #print "insert new devices result fetchall"
     else:
         upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
@@ -570,7 +588,7 @@ def update_newdevice(host,uid,data):
         try:
             result = dbcon.execute(upd)
         except:
-            print "mirco_devices update occur error"
+            log.error("Update UUID To DB Occur Error. UUID is %s" % tuid)
 
 def stun_get_first_attr(response,res):
     attr_name = response[:4]
@@ -601,7 +619,7 @@ def stun_get_first_attr(response,res):
     try:
         res[attr_name] = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
     except:
-        print "struct.unpack() error attr_name",attr_name,'buf is',response
+        log.error("struct.unpack() error attr_name %s , buf is %s" % (attr_name,response))
         return 0
     if res.has_key(STUN_ATTRIBUTE_LIFETIME): # 请求的时间大于服务器的定义的，使用服务端的定义 # 请求的时间大于服务器的定义的，使用服务端的定义
         if res[STUN_ATTRIBUTE_LIFETIME][-1] > UCLIENT_SESSION_LIFETIME:
@@ -645,7 +663,8 @@ def mirco_devices_logout(devid):
     try:
         res = conn.execute(ss)
     except IOError:
-        print "update status error"
+        log.error("Update UUID  Logout Status To DB Occur Error. UUID is %s" % binascii.hexlify(suid[0]))
+        return 0
 
 def app_user_logout(uname):
     print uname,"logout"
@@ -655,17 +674,16 @@ def app_user_logout(uname):
     try:
         res = conn.execute(ss)
     except :
-        print "update status error"
+        log.error("Update User  Logout Status To DB Occur Error. User is %s" % uname)
 
 
 def sock_fail_pass(fileno):
     # sock 关闭时产生的异常处理
-    print "fileno error",fileno
+    log.warnnig('fileno error')
     epoll.unregister(fileno)
     if mdict['actives'].has_key(fileno): #更新相应的数据库在线状态
         attr = mdict['actives'].get(fileno)
         aname = "%04x" % attr[0]
-        print "aname is",aname
         if aname == STUN_ATTRIBUTE_USERNAME:
             app_user_logout(attr[-1])
         elif aname == STUN_ATTRIBUTE_UUID:
@@ -686,7 +704,7 @@ def Server(port):
     srvsocket.bind(('',port))
     srvsocket.listen(1)
     srvsocket.setblocking(0)
-    print "Start Server",srvsocket.getsockname()
+    log.info("Start Server")
     epoll.register(srvsocket.fileno(),select.EPOLLIN)
     mthread = CheckSesionThread()
     mthread.setDaemon(True)
@@ -699,15 +717,16 @@ def Server(port):
                     try:
                         conn,addr = srvsocket.accept()
                     except:
-                        print "Too many files opened"
+                        log.error("Too many file opened")
                         continue
                     #print "new accept",conn.fileno()
-                    print "new clients",addr
+                    #print "new clients",addr
+                    log.info("new clientsi %s:%d" % addr)
                     conn.setblocking(0)
                     mdict['clients'][conn.fileno()] = conn
                     #print "mdict[clients]", mdict
                     mdict['responses'][conn.fileno()] = []
-                    #mdict['timer'][conn.fileno()] = 6
+                    mdict['timer'][conn.fileno()] = 10
                     epoll.register(conn.fileno(),select.EPOLLIN)
                 elif event & select.EPOLLIN: # 读取socket 的数据
                     try:
@@ -789,6 +808,15 @@ CREATE TABLE account_status
 ''')
 
 port = 3478
+
+log = logging.getLogger("NatSrv")
+log.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(name)-12s %(asctime)s %(levelname)-8s %(message)s','%a, %d %b %Y %H:%M:%S',)
+file_handler = handlers.RotatingFileHandler("nath.log",maxBytes=5242880,backupCount=10,encoding=None)
+log.addHandler(file_handler)
+
+
+
 
 if __name__ == '__main__':
     Server(port)
