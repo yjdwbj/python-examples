@@ -13,6 +13,7 @@ import binascii
 import threading
 import uuid
 import sys
+import argparse
 
 from datetime import datetime
 from sqlalchemy import create_engine
@@ -92,6 +93,7 @@ CRCMASK=0x5354554e
 CRCPWD=0x6a686369
 HEX4B=16
 HEX2B=8
+FINDDEV_TIMEOUT=10 #查找小机的超时设置
 
 
 
@@ -160,7 +162,8 @@ def handle_client_request(buf,fileno):
     blen = len(buf)
 
     if not check_crc_is_valid(buf):
-        print "CRC wrong"
+        log.info("Crc Wrong. Host: %s:%d" % mdict['clients'][fileno].getpeername())
+        log.info("CRC32 is %s" % buf[-8:])
         epoll.unregister(fileno)
         mdict['clients'][fileno].close()
         del mdict['clients'][fileno]
@@ -170,6 +173,7 @@ def handle_client_request(buf,fileno):
     method = '%04x' % reqhead[0]
     if not mdict['timer'].has_key(fileno):
         if method == STUN_METHOD_REFRESH:  # 非法刷新请求
+            log.info("Wrong Request. Host: %s:%d" % mdict['clients'][fileno].getpeername())
             epoll.unregister(fileno)
             mdict['clients'][fileno].close()
             del mdict['clients'][fileno]
@@ -188,7 +192,7 @@ def handle_client_request(buf,fileno):
         if n == 0:
             res['isok'] = False
             res['eattr'] = buf[hexpos:4]
-            log.error("Unkown Attribute %s %s",res['eattr'],buf[hexpos:])
+            log.error("Unkown Attribute %s %s" % (res['eattr'],buf[hexpos:]))
             return  stun_attr_error_response(method,res)
         else:
             hexpos += n
@@ -265,14 +269,15 @@ def handle_app_connect_peer_request(res):
                 return  stun_mirco_device_error('device offline',res['tid'])
 
             try:#这里先去告诉小机，有一个客户端要连接它
-                print "send ask package to the mirco_devices",mdict['clients'][sock].getpeername()
-                asktimer = threading.Timer(10,stun_ask_mirco_devices_timeout,
+                #print "send ask package to the mirco_devices",mdict['clients'][sock].getpeername()
+                mdict['timer'][sock] += FINDDEV_TIMEOUT
+                asktimer = threading.Timer(FINDDEV_TIMEOUT,stun_ask_mirco_devices_timeout,
                     ("Check mirco_devices timeout",res['tid'],res['fileno']))
                 asktimer.start()
                 mdict['responses'][sock] = stun_connect_address(res['host'],res)
                 epoll.modify(sock,select.EPOLLOUT)
             except IOError:
-                print sock,"microc_devices sock has closed"
+                log.error("microc_devices sock has closed")
         else:
             return  stun_mirco_device_error('device offline',res['tid'])
 
@@ -283,7 +288,7 @@ def stun_ask_mirco_devices_timeout(msg,tid,sock):
         try:
             epoll.modify(sock,select.EPOLLOUT)
         except:
-            log.warnnig("app sock %d has closed" % sock)
+            log.error("app sock %d has closed" % sock)
 
 
 def stun_connect_address(host,res):
@@ -322,6 +327,7 @@ def handle_register_request(res):
     if app_user_register(res[STUN_ATTRIBUTE_USERNAME][-1],
             res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]):
          # 用户名已经存了。
+        log.debug("User has Exist!i %s" % res[STUN_ATTRIBUTE_USERNAME][-1])
         return check_user_error(res)
     return register_success(res[STUN_ATTRIBUTE_USERNAME][-1],res['tid'])
 
@@ -330,12 +336,14 @@ def register_success(uname,tid):
     stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf,tid)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(uname))
     stun_add_fingerprint(buf)
+    log.debug("Regsiter is success %s" % uname)
     return (buf)
 
 
 def handle_chkuser_request(res):
     f = check_user_in_database(res[STUN_ATTRIBUTE_USERNAME][-1])
     if f != 0:
+        log.debug("User Exist %s" % res[STUN_ATTRIBUTE_USERNAME][-1])
         return check_user_error(res)
     else:
         return check_user_sucess(res)
@@ -357,6 +365,7 @@ def check_user_sucess(res):
     stun_init_command_str(stun_make_success_response(STUN_METHOD_CHECK_USER),buf,res['tid'])
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(res[STUN_ATTRIBUTE_USERNAME][-1]))
     stun_add_fingerprint(buf)
+    log.debug("User not register! %s" % res[STUN_ATTRIBUTE_USERNAME][-1])
     return (buf)
 
 def check_uuid_valid(uhex):
@@ -459,7 +468,7 @@ def app_user_register(user,pwd):
         try:
             dbcon.execute(ins)
         except:
-            log.error("app_user_register error %s",user)
+            log.error("app_user_register error %s" % user)
         return False
 
 def app_user_update_status(user,host):
@@ -492,7 +501,10 @@ def app_user_login(user,pwd):
     obj.update(pwd)
     s = sql.select([account]).where(and_(account.c.uname == user,account.c.pwd == obj.digest(),
         account.c.is_active == True))
-    result = dbcon.execute(s)
+    try:
+        result = dbcon.execute(s)
+    except:
+        log.error("(Login) Select User From DB Occur Error. UUID is %s" % tuid)
     row = result.fetchall()
     return len(row)
 
@@ -521,7 +533,11 @@ def check_user_in_database(uname):
     account = get_account_table()
     dbcon = engine.connect()
     s = sql.select([account.c.uname]).where(account.c.uname == uname)
-    result = dbcon.execute(s)
+    try:
+        result = dbcon.execute(s)
+    except:
+        log.error("Check User %s" % uname)
+        log.error("from DB Occur Error. Host: %s:%d" % mdict['clients'][fileno].getpeername())
     return len(result.fetchall())
 
 def get_devices_table(tname):
@@ -647,6 +663,7 @@ def clean_timeout_sock(fileno): # 清除超时的连接
     #print 'mdict[timer][%d]' % fileno,mdict['timer'][fileno]
     if mdict['timer'].has_key(fileno):
         if mdict['timer'][fileno] < time.time():
+            log.debug("Client %s:%d life time is end,close it" % mdict['clients'][fileno].getpeername())
             epoll.unregister(fileno)
             #print "mdict[uuids] is",mdict['uuids']
             if mdict['clients'].has_key(fileno):
@@ -679,7 +696,7 @@ def app_user_logout(uname):
 
 def sock_fail_pass(fileno):
     # sock 关闭时产生的异常处理
-    log.warnnig('fileno error')
+    log.info('fileno error')
     epoll.unregister(fileno)
     if mdict['actives'].has_key(fileno): #更新相应的数据库在线状态
         attr = mdict['actives'].get(fileno)
@@ -726,36 +743,47 @@ def Server(port):
                     mdict['clients'][conn.fileno()] = conn
                     #print "mdict[clients]", mdict
                     mdict['responses'][conn.fileno()] = []
-                    mdict['timer'][conn.fileno()] = 10
+                    # 默认新连接必须在下面的时间内做出反应，不然服务器就在线程里关闭这个连接。
+                    mdict['timer'][conn.fileno()] = 30
                     epoll.register(conn.fileno(),select.EPOLLIN)
                 elif event & select.EPOLLIN: # 读取socket 的数据
                     try:
                         mdict['requests'][fileno] = mdict['clients'][fileno].recv(SOCK_BUFSIZE)
                         if len(mdict['requests'][fileno]) < 17: #包太小
+                            log.info("Packet is too small. Host: %s:%d" % mdict['clients'][fileno].getpeername())
                             epoll.modify(fileno,select.EPOLLHUP)
                             continue
-                        mdict['responses'][fileno] = handle_client_request(binascii.b2a_hex(mdict['requests'][fileno]),fileno)
+                        rbuf = handle_client_request(binascii.b2a_hex(mdict['requests'][fileno]),fileno)
+                        if rbuf:
+                            mdict['responses'][fileno] = rbuf
                         mdict['requests'].pop(fileno)
                         epoll.modify(fileno,select.EPOLLOUT)
                     except IOError:
                         sock_fail_pass(fileno)
+                        log.debug("sock has closed %d" % fileno)
                 elif event & select.EPOLLOUT:
                     try:
-                        if not mdict['responses'][fileno]: #连接命令的时候返回是NULL
+                        if not mdict['responses'].has_key(fileno): #连接命令的时候返回是NULL
                             #epoll.modify(fileno,select.EPOLLIN)
+                            log.info("responses is null. Host: %s:%d" % mdict['clients'][fileno].getpeername())
                             continue
                         nbyte =  mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
                         #print "send %d byte" % nbyte
-                        if not stun_is_success_response_str(mdict['responses'][fileno][0][:4]): # 不正确的请求，关闭它。
-                            mdict['clients'][fileno].close()
-                            epoll.unregister(fileno)
-                            mdict['clients'].pop(fileno)
-                        else:
-                            epoll.modify(fileno,select.EPOLLIN)
+#                        if not stun_is_success_response_str(mdict['responses'][fileno][0][:4]): # 不正确的请求，关闭它。
+#                            log.info("illegal request , Host: %s:%d" % mdict['clients'][fileno].getpeername())
+#                            log.info("buf is %s " % ''.join(mdict['responses'][fileno]))
+#                            mdict['clients'][fileno].close()
+#                            epoll.unregister(fileno)
+#                            mdict['clients'].pop(fileno)
+#                        else:
                         mdict['responses'].pop(fileno)
+                        epoll.modify(fileno,select.EPOLLIN)
                     except IOError:
+                        log.debug("sock has closed %d" % fileno)
                         sock_fail_pass(fileno)
                 elif event & select.EPOLLHUP:
+                    log.debug("sock has hup %d" % fileno)
+                    log.info("sock is hup , Host: %s:%d" % mdict['clients'][fileno].getpeername())
                     #print "Client is close",mdict['clients'][fileno].getpeername()
                     epoll.unregister(fileno)
                     mdict['clients'][fileno].close()
@@ -764,6 +792,56 @@ def Server(port):
         epoll.unregister(srvsocket.fileno())
         epoll.close()
         srvsocket.close()
+
+def get_log_level(id):
+    r = None
+    if id == 0:
+        r = logging.NOTSET
+    elif id == 1:
+        r = logging.DEBUG
+    elif id == 2:
+        r = logging.INFO
+    elif id == 3:
+        r = logging.WARNING
+    elif id == 4:
+        r = logging.ERROR
+    elif id == 5:
+        r = logging.CRITICAL
+    else:
+        r = None
+    return r
+
+def make_argument_parser():
+    parser = argparse.ArgumentParser(
+            formatter_class = argparse.ArgumentDefaultsHelpFormatter
+            )
+    parser.add_argument('-d',action='store',dest='loglevel',type=int,help='''set Logging to Debug level\
+            CRITTICAL == 5,
+            ERROR = 4,
+            WARNING = 3,
+            INFO = 2(defult),
+            DEBUG = 1,
+            NOTEST = 0''')
+    parser.add_argument('-H',action='store',dest='srv_port',type=int,help='Set Services Port')
+    parser.add_argument('--version',action='version',version=__version__)
+    return parser
+
+__version__ = '0.1.0'
+
+DebugLevel = logging.INFO
+try:
+    options = make_argument_parser().parse_args()
+    DebugLevel = get_log_level(options.loglevel)
+    if not options.srv_port:
+        port = 3478
+    else:
+        port = options.srv_port
+except:
+    port = 3478
+    pass
+
+
+
 
 dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
               STUN_METHOD_ALLOCATE:handle_allocate_request, # 小机登录方法
@@ -807,12 +885,13 @@ CREATE TABLE account_status
 )
 ''')
 
-port = 3478
 
 log = logging.getLogger("NatSrv")
 log.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(name)-12s %(asctime)s %(levelname)-8s %(message)s','%a, %d %b %Y %H:%M:%S',)
 file_handler = handlers.RotatingFileHandler("nath.log",maxBytes=5242880,backupCount=10,encoding=None)
+
+file_handler.setFormatter(formatter)
 log.addHandler(file_handler)
 
 

@@ -504,10 +504,7 @@ def stun_setLogin(host,port):
             time.sleep(1)
     except:
         print "connect peer occur error"
-  
-                
 
-                        
 def connect_turn_server():
     srv_host = '192.168.8.9'
     #srv_host = '192.168.56.1'
