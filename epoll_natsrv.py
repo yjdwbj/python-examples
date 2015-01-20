@@ -663,7 +663,7 @@ def clean_timeout_sock(fileno): # 清除超时的连接
     #print 'mdict[timer][%d]' % fileno,mdict['timer'][fileno]
     if mdict['timer'].has_key(fileno):
         if mdict['timer'][fileno] < time.time():
-            log.debug("Client %s:%d life time is end,close it" % mdict['clients'][fileno].getpeername())
+            log.debug("Client %d life time is end,close it" % )
             epoll.unregister(fileno)
             #print "mdict[uuids] is",mdict['uuids']
             if mdict['clients'].has_key(fileno):
@@ -765,7 +765,8 @@ def Server(port):
                     try:
                         if not mdict['responses'].has_key(fileno): #连接命令的时候返回是NULL
                             #epoll.modify(fileno,select.EPOLLIN)
-                            log.info("responses is null. Host: %s:%d" % mdict['clients'][fileno].getpeername())
+                            log.debug("responses is null. Host: %s:%d" % mdict['clients'][fileno].getpeername())
+                            epoll.modify(fileno,select.EPOLLWRBAND)
                             continue
                         nbyte =  mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
                         #print "send %d byte" % nbyte
@@ -782,8 +783,9 @@ def Server(port):
                         log.debug("sock has closed %d" % fileno)
                         sock_fail_pass(fileno)
                 elif event & select.EPOLLHUP:
-                    log.debug("sock has hup %d" % fileno)
-                    log.info("sock is hup , Host: %s:%d" % mdict['clients'][fileno].getpeername())
+                    #log.debug("sock has hup %d" % fileno)
+                    #log.info("sock is hup , Host: %s:%d" % mdict['clients'][fileno].getpeername())
+                    #sock_fail_pass(fileno)
                     #print "Client is close",mdict['clients'][fileno].getpeername()
                     epoll.unregister(fileno)
                     mdict['clients'][fileno].close()
@@ -828,17 +830,16 @@ def make_argument_parser():
 
 __version__ = '0.1.0'
 
-DebugLevel = logging.INFO
-try:
-    options = make_argument_parser().parse_args()
+options = make_argument_parser().parse_args()
+if options.loglevel:
     DebugLevel = get_log_level(options.loglevel)
-    if not options.srv_port:
-        port = 3478
-    else:
-        port = options.srv_port
-except:
+else:
+    DebugLevel = logging.INFO
+
+if not options.srv_port:
     port = 3478
-    pass
+else:
+    port = options.srv_port
 
 
 
@@ -887,7 +888,7 @@ CREATE TABLE account_status
 
 
 log = logging.getLogger("NatSrv")
-log.setLevel(logging.DEBUG)
+log.setLevel(DebugLevel)
 formatter = logging.Formatter('%(name)-12s %(asctime)s %(levelname)-8s %(message)s','%a, %d %b %Y %H:%M:%S',)
 file_handler = handlers.RotatingFileHandler("nath.log",maxBytes=5242880,backupCount=10,encoding=None)
 
