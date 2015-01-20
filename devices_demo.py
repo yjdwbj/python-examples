@@ -396,7 +396,6 @@ class ThreadRefreshTime(threading.Thread):
     def run(self):
         while self.sock:
             buf = []
-            print "refresh time",self.sock
             stun_struct_refresh_request(buf)
             sdata = binascii.a2b_hex(''.join(buf))
             try:
@@ -422,11 +421,18 @@ def main():
         return
     nclient = int(nclient)
     uuidbin = open('uuid.bin','w')
+    n = 5
     for i  in xrange(nclient):
         print i,"client now start"
-        t = threading.Thread(target=device_allocate_login,args=('120.24.235.68',3478))
-        t.start()
-        tlist.append(t)
+        try:
+            t = threading.Thread(target=device_allocate_login,args=('192.168.8.9',3478))
+            t.start()
+        except IOError:
+            print "too many files opened"
+        if n == 0:
+            time.sleep(1)
+            n=15
+        n -=1
     uuidbin.close()
 
 

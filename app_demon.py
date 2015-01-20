@@ -361,6 +361,7 @@ def stun_handle_response(response,result):
 
 
 def handle_connect_devid(conn,uid,uname,pwd):
+    global last_request
     buf = []
     response_result = []
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
@@ -420,15 +421,18 @@ def stun_setLogin(host,port):
     xor_addr = ''
     response_result = []
     #stun_contract_allocate_request(buf)
-    #stun_register_request(buf,'test','1234')
-    #stun_check_user_valid(buf,'lcy')
+    #stun_register_request(buf,'jh','1234')
+    #stun_register_request(buf,'lcy','1234')
+    #stun_check_user_valid(buf,'lcy333')
     #stun_login_request(buf,'lcy','test') 
     #stun_struct_refresh_request(buf)
     #uid = "ab8f91f82ff423db42d977177d365e84"
     #uid = "ce8f91f82ff423da42d977177d365963"
     uid = "ab8f5f82ff423db42d97c7177dc38920"
     #uid = "ab8f5f82ff423db42d97c7177dc31159"
-    buf = stun_connect_peer_with_uuid(gen_uuid(),'test','1234') 
+    uid ='19357888aa07418584391d0adb61e79026537166'
+    ruuid = ''.join([uid,("%08x" % get_uuid_crc32(uid))])
+    buf = stun_connect_peer_with_uuid(ruuid,'lcy','1234') 
     print "send buf",buf
     sdata = binascii.a2b_hex(''.join(buf))
     last_request = buf
@@ -458,7 +462,7 @@ def stun_setLogin(host,port):
                 #uid = "ce8f91f82ff423da42d977177d365963"
                 uid = "ab8f5f82ff423db42d97c7177dc38920"
                 #uid = "ab8f5f82ff423db42d97c7177dc31159"
-                buf = stun_connect_peer_with_uuid(uid,'lcy','test') 
+                buf = stun_connect_peer_with_uuid(uid,'lcy','1234') 
                 last_request = buf
                 sock.send(binascii.a2b_hex(''.join(buf)))
             elif rdict['rmethod'] == STUN_METHOD_REFRESH:
@@ -477,7 +481,7 @@ def stun_setLogin(host,port):
                 print "Command error"
     srvport = sock.getsockname()[1]
     sock.close()
-    #time.sleep(3)
+    time.sleep(3)
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     if len(phost) != 2: return
@@ -504,9 +508,13 @@ def stun_setLogin(host,port):
             time.sleep(1)
     except:
         print "connect peer occur error"
+  
+                
 
+                        
 def connect_turn_server():
-    srv_host = '192.168.8.9'
+    srv_host = '120.24.235.68'
+    #srv_host = '192.168.8.9'
     #srv_host = '192.168.56.1'
     srv_port = 3478
     #srv_port = 3478
