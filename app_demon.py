@@ -430,7 +430,9 @@ def stun_setLogin(host,port):
     #uid = "ce8f91f82ff423da42d977177d365963"
     uid = "ab8f5f82ff423db42d97c7177dc38920"
     #uid = "ab8f5f82ff423db42d97c7177dc31159"
+    #uid ="aaa7de16db28436dbccfc9481c18a0ce26537166"
     uid ='19357888aa07418584391d0adb61e79026537166'
+    #uid='2860014389504773b2c2b7252d3eb8b074657374'
     ruuid = ''.join([uid,("%08x" % get_uuid_crc32(uid))])
     buf = stun_connect_peer_with_uuid(ruuid,'lcy','1234') 
     print "send buf",buf
@@ -440,6 +442,7 @@ def stun_setLogin(host,port):
     #sock.sendto(sdata,(host,port))
     sock.connect((host,port))
     sock.send(sdata)
+    phost = ()
     while True:
         data,addr = sock.recvfrom(2048)
         if not data:
@@ -480,34 +483,38 @@ def stun_setLogin(host,port):
             else:
                 print "Command error"
     srvport = sock.getsockname()[1]
+    print phost
     sock.close()
-    time.sleep(3)
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    if len(phost) != 2: return
+    if len(phost) != 2:
+        return
     print "phost",phost
     hhh = socket.inet_ntoa(binascii.unhexlify("%x" % (phost[1] ^ STUN_MAGIC_COOKIE)))
     ppp = phost[0] ^  (STUN_MAGIC_COOKIE >> 16)
     print "xor phost",  hhh,ppp
-
     print "connect peer",hhh,ppp
     sock.bind(('',srvport))
     print "local",sock.getsockname()
-    try:
-        sock.connect((hhh,ppp))
-        print "remote",sock.getpeername()
-        sock.send("Hi I'm app")
-        while True:
-            data = sock.recv(2048)
+    n = 20
+    while n > 0:
+        try:
+            sock.connect((hhh,ppp))
+            print "remote",sock.getpeername()
             sock.send("Hi I'm app")
-            if not data:
-                break
-            else:
-                print data
-                sock.send("I'am app %s" % time.time())
-            time.sleep(1)
-    except:
-        print "connect peer occur error"
+            while True:
+                data = sock.recv(2048)
+                sock.send("Hi I'm app")
+                if not data:
+                    break
+                else:
+                    print data
+                    sock.send("I'am app %s" % time.time())
+                time.sleep(1)
+        except:
+            print "connect peer occur error"
+        n -=1
+        time.sleep(1)
   
                 
 
