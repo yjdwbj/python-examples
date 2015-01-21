@@ -14,6 +14,7 @@ import hashlib
 import uuid
 import sys
 import pickle
+import select
 
 
 STUN_METHOD_BINDING='0001'
@@ -238,11 +239,11 @@ def stun_struct_refresh_request(buf):
 ########## handle response packets ##############
 
 def stun_make_type(method):
-    method  = method & 0x0FFF
+    method  = int(method,16) & 0x0FFF
     return ((method & 0x000F) | ((method & 0x0070) << 1) | ((method & 0x0380) << 2) | ((method & 0x0C00) << 2))
 
 def stun_make_success_response(method):
-    return ((stun_make_type(method) & 0xFEEF) | 0x0100)
+    return "%04x" % ((stun_make_type(method) & 0xFEEF) | 0x0100)
 
 def stun_get_method_str(method):
     id = method & 0x3FFF 
@@ -289,28 +290,19 @@ def get_first_attr(response,res):
     pos += attr_size*2
     return pos
 
-def stun_handle_response(response,result):
+def stun_handle_response(response):
     global last_request
     global channel_number
     res = -1
     ss = struct.Struct(STUN_STRUCT_FMT)
     hexpos = struct.calcsize(STUN_STRUCT_FMT)*2
     rdict = {}
-    rdict['header'] = recv_header = ss.unpack(binascii.unhexlify(response[:hexpos]))
-    send_header = ss.unpack(binascii.a2b_hex(''.join(last_request[:4])))
+    reqhead = recv_header = ss.unpack(binascii.unhexlify(response[:hexpos]))
+    rdict['tid'] = binascii.hexlify(reqhead[-1])
+    #send_header = ss.unpack(binascii.a2b_hex(''.join(last_request[:4])))
     res_mth = "%04x" % stun_get_method_str(recv_header[0])
     rdict['rmethod'] = res_mth
     #print "This method is",res_mth,"send method is",send_header[0]
-    result.append(res_mth)
-    result.append('%04x' % recv_header[1])
-    result.append('%04x' % recv_header[2])
-    result.append(binascii.hexlify(recv_header[3]))
-    if res_mth !=  ("%04x" % send_header[0]):
-        print "Received wrong response method:",response[:4],"expected :",last_request[0]
-        return rdict
-    if cmp(recv_header[3:],send_header[3:]) != 0:
-        print "Received wrong response tranid; trying again...."
-        return  rdict
     iserr = False
     if stun_is_success_response_str(recv_header[0]) == False:
         print "Not success response"
@@ -328,23 +320,6 @@ def stun_handle_response(response,result):
             hexpos += n
     if iserr and rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
         print "Occur error ",binascii.unhexlify(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1])
-        return rdict
-
-    if res_mth == STUN_METHOD_BINDING: # 登录
-        print "Allocate success_allocate"
-        res = STUN_METHOD_BINDING
-    elif res_mth == STUN_METHOD_REFRESH: #刷新
-        res = STUN_METHOD_REFRESH
-        pass  # 这里暂略过，假定时间一直有效
-    elif res_mth == STUN_METHOD_CONNECT: # 连接小机
-        print "handle connect"
-        res = STUN_METHOD_CONNECT
-    elif res_mth ==STUN_METHOD_CHECK_USER: #注册时，检查用户名
-        print "Check User"
-        res = res_mth
-    elif res_mth == STUN_METHOD_REGISTER: #注册新的用户名
-        print "Register"
-        res = res_mth
     return rdict
 
 #### 模拟小机登录
@@ -352,7 +327,11 @@ def gen_uuid():
     ruuid = str(uuid.uuid4()).replace('-','')
     global uuidbin
     tt = ''.join([ruuid,binascii.hexlify('test')])
+    tt= "2860014389504773b2c2b7252d3eb8b074657374"
+    tt='19357888aa07418584391d0adb61e79026537166'
     ruuid = ''.join([tt,("%08x" % get_uuid_crc32(tt))])
+    print ruuid
+    return ruuid
     pickle.dump(binascii.unhexlify(ruuid),uuidbin)
     return ruuid
 
@@ -366,11 +345,31 @@ def device_struct_allocate():
     stun_add_fingerprint(buf)
     return buf
 
+def stun_connect_address(res):
+    buf = []
+    host = res[STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS][-2:]
+    stun_init_command_str(STUN_METHOD_CONNECT,buf)
+    buf[-1] = res['tid']
+    print buf
+    #mip = "0001%04x%08x" % (host[1]^ (STUN_MAGIC_COOKIE >> 16),
+    #        STUN_MAGIC_COOKIE ^ (int(binascii.hexlify(socket.inet_aton(host[0])),16)))
+    print "host is",host
+    mip = "0001%04x%08x" % host
+    print "mip is ",mip
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS,mip)
+    if res.has_key(STUN_ATTRIBUTE_DATA): #转发小机的基本信息
+        stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify(res[STUN_ATTRIBUTE_DATA][-1]))
+    stun_add_fingerprint(buf)
+    return (buf)
+
+
+
 def device_allocate_login(host,port):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     sock.connect((host,port))
     sock.send(binascii.unhexlify(''.join(device_struct_allocate())))
+    phost =()
     n = 50
     while n > 0:
         try:
@@ -381,12 +380,88 @@ def device_allocate_login(host,port):
                 rhex = binascii.hexlify(data)
                 res_mth = "%04x" % stun_get_method_str(int(rhex[:4],16))
                 if res_mth == STUN_METHOD_ALLOCATE:
-                    t = ThreadRefreshTime(sock)
-                    t.start()
+                    #t = ThreadRefreshTime(sock)
+                    #t.start()
+                    pass
+                elif res_mth == STUN_METHOD_CONNECT:
+                    res = stun_handle_response(rhex)
+                    if res.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
+                        print res[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1]
+                    
+                    if res.has_key(STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS):
+                        phost = res[STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS][-2:]
+                        cbuf = stun_connect_address(res) 
+                        sock.send(binascii.unhexlify(''.join(cbuf)))
+                        break
                 n -=1
         except IOError:
             print "sock error"
+    localport = sock.getsockname()[1]
     sock.close()
+    if not phost:
+        print "not devices"
+    
+    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+    hhh = socket.inet_ntoa(binascii.unhexlify("%x" % (phost[1] ^ STUN_MAGIC_COOKIE)))
+    ppp = phost[0] ^  (STUN_MAGIC_COOKIE >> 16)
+    sock.bind(('',localport))
+    sock.setblocking(0)
+    try:
+        print "connect to",hhh,ppp
+        sock.connect((hhh,ppp))
+    except:
+        print "already connect app"
+    #sock.close()
+    #sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    #sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+    #sock.bind(('',localport))
+    sock.listen(1)
+    #sock.setblocking(0)
+    epoll = select.epoll()
+    epoll.register(sock.fileno(),select.EPOLLIN)
+
+    #t = threading.Timer(5,send_initial_packet,(sock,(hhh,ppp)))
+    #t.start()
+    print "local",sock.getsockname()
+    clients = {}
+    try:
+        while True:
+            events = epoll.poll(1)
+            
+            for fileno,event in events:
+                if fileno == sock.fileno():
+                    try:
+                        conn,addr = sock.accept()
+                    except:
+                        continue
+                    clients[conn.fileno()] = conn
+                    epoll.register(conn.fileno(),select.EPOLLIN)
+                elif event & select.EPOLLIN:
+                    data = clients[fileno].recv(2048)
+                    print data
+                    epoll.modify(fileno,select.EPOLLOUT)
+                elif event & select.EPOLLOUT:
+                    clients[fileno].send("tetssss")
+                    epoll.modify(fileno,select.EPOLLIN)
+                elif event & select.EPOLLHUP:
+                    epoll.unregister(fileno)
+                    clients[fileno].close()
+                    clients.pop(fileno)
+
+    finally:
+        epoll.unregister(sock.fileno())
+        epoll.close()
+        sock.close()
+
+
+def send_initial_packet(sock,host):
+    try:
+        sock.connect(host)
+    except:
+        print "threading connect host"
+    
+    
 
 class ThreadRefreshTime(threading.Thread):
     def __init__(self,sock):
@@ -403,7 +478,7 @@ class ThreadRefreshTime(threading.Thread):
             except:
                 print "socket has closed"
                 return
-            time.sleep(10)
+            time.sleep(30)
 
 ehost = [] # 外部地址
 phost = [] # 对端地址
@@ -411,7 +486,14 @@ tlist = []
 nclient = 1
 #uuidbin = None
 uuidbin = None
-def main():
+def devid_damon():
+    global uuidbin
+    uuidbin = open('uuid.bin','w')
+    device_allocate_login('120.24.235.68',3478)
+    uuidbin.close()
+
+
+def test_radom_uuid():
     global uuidbin
     if len(sys.argv) < 2:
         print "请在后写一个数量"
@@ -437,5 +519,5 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    devid_damon()
 
