@@ -157,27 +157,36 @@ def check_crc_is_valid(buf): # 检查包的CRC
         return False
     return True
 
+def delete_fileno(fileno):
+    epoll.unregister(fileno)
+    if mdict['clients'].has_key(fileno):
+        mdict['clients'][fileno].close()
+        del mdict['clients'][fileno]
+
+
 def handle_client_request(buf,fileno):
+    """
+    -1 CRC 错误的
+    -2 非法刷新请求
+    0  正常值
+    1  APP的连接请求
+    2  小机的回复
+    """
     #print "handle allocate request\n"
     blen = len(buf)
-
     if not check_crc_is_valid(buf):
         log.info("Crc Wrong. Host: %s:%d" % mdict['clients'][fileno].getpeername())
         log.info("CRC32 is %s" % buf[-8:])
-        epoll.unregister(fileno)
-        mdict['clients'][fileno].close()
-        del mdict['clients'][fileno]
-        return
+        delete_fileno(fileno)
+        return ([],-1)
 
     reqhead = struct.unpack(STUN_HEADER_FMT,binascii.unhexlify(buf[:STUN_HEADER_LENGTH*2]))
     method = '%04x' % reqhead[0]
     if not mdict['timer'].has_key(fileno):
         if method == STUN_METHOD_REFRESH:  # 非法刷新请求
             log.info("Wrong Request. Host: %s:%d" % mdict['clients'][fileno].getpeername())
-            epoll.unregister(fileno)
-            mdict['clients'][fileno].close()
-            del mdict['clients'][fileno]
-            return
+            delete_fileno(fileno)
+            return ([],-2)
 
     res = {}
     res['tid'] = binascii.hexlify(reqhead[-1]).lower()
@@ -193,29 +202,41 @@ def handle_client_request(buf,fileno):
             res['isok'] = False
             res['eattr'] = buf[hexpos:4]
             log.error("Unkown Attribute %s %s" % (res['eattr'],buf[hexpos:]))
-            return  stun_attr_error_response(method,res)
+            return  (stun_attr_error_response(method,res),0)
         else:
             hexpos += n
 
-    if res.has_key(STUN_ATTRIBUTE_LIFETIME):
+    if res.has_key(STUN_ATTRIBUTE_LIFETIME) and method != STUN_METHOD_REFRESH:
         update_refresh_time(fileno,res.get(STUN_ATTRIBUTE_LIFETIME)[-1])
 
     if res.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][1] != 32:
         res['eattr'] = binascii.hexlify('Password is to short')
         log.error("Pasword is to short. Host: %s:%d" % mdict['clients'][fileno].getpeername())
-        return  stun_attr_error_response(method,res)
+        return  (stun_attr_error_response(method,res),0)
 
 
     if dictMethod.has_key(method):
-        return  dictMethod[method](res)
+        if mdict['uuids'].has_key(res['tid']): # 小机收到服务器转发的连接请求，回复APP
+            sock = mdict['uuids'][res['tid']]
+            thost = mdict['clients'][fileno].getpeername()
+            mdict['uuids'].pop(res['tid'])
+            mdict['responses'][sock]  = stun_connect_address(thost,res)
+            epoll.modify(sock,select.EPOLLOUT)
+            return ([],2)
+
+        buf = dictMethod[method](res)
+        if method == STUN_METHOD_CONNECT and not buf:
+            return ([],1)
+        else:
+            return (buf,0)
     else:
         log.error("Unkown Methed")
-        return stun_unkown_method_error(res)
+        return (stun_unkown_method_error(res),0)
 
-def stun_unkown_method_error(buf,res):
+def stun_unkown_method_error(res):
     buf = []
-    stun_init_command_str(stun_make_error_response(res['mehtod']),buf,res['tid'])
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES,res['mehtod'])
+    stun_init_command_str(stun_make_error_response(res['method']),buf,res['tid'])
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES,res['method'])
     stun_add_fingerprint(buf)
     return (buf)
 
@@ -247,7 +268,7 @@ def handle_app_connect_peer_request(res):
 
     if check_uuid_format(res[STUN_ATTRIBUTE_UUID]):
         res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
-        log.warnnig("UUID Format wrong. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
+        log.info("UUID Format wrong. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
         return stun_attr_error_response(res['method'],res)
 
     app_user_update_status(res[STUN_ATTRIBUTE_USERNAME][-1],res['host'])
@@ -379,17 +400,17 @@ def handle_allocate_request(res):
     huid = binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])
     if res.has_key(STUN_ATTRIBUTE_UUID):
         if 0 != check_uuid_valid(huid):
-            log.warnnig("UUID crc32 wrong. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
+            log.info("UUID crc32 wrong. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
             res['eattr'] = binascii.hexlify("UUID CRC Wrong") # 错误的UUID格式
             return stun_attr_error_response(res['method'],res)
 
         if check_uuid_format(res[STUN_ATTRIBUTE_UUID]):
             res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
-            log.warnnig("UUID Format wrong. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
+            log.info("UUID Format wrong. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
             return stun_attr_error_response(res['method'],res)
     else:
         res['eattr'] = binascii.hexlify("Not Found UUID")
-        log.warnnig("Not UUID Attribute. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
+        log.info("Not UUID Attribute. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
         return stun_attr_error_response(res['method'],res)
 
 
@@ -663,7 +684,7 @@ def clean_timeout_sock(fileno): # 清除超时的连接
     #print 'mdict[timer][%d]' % fileno,mdict['timer'][fileno]
     if mdict['timer'].has_key(fileno):
         if mdict['timer'][fileno] < time.time():
-            log.debug("Client %d life time is end,close it" % )
+            log.debug("Client %d life time is end,close it" % fileno )
             epoll.unregister(fileno)
             #print "mdict[uuids] is",mdict['uuids']
             if mdict['clients'].has_key(fileno):
@@ -744,7 +765,7 @@ def Server(port):
                     #print "mdict[clients]", mdict
                     mdict['responses'][conn.fileno()] = []
                     # 默认新连接必须在下面的时间内做出反应，不然服务器就在线程里关闭这个连接。
-                    mdict['timer'][conn.fileno()] = 30
+                    mdict['timer'][conn.fileno()] = 10
                     epoll.register(conn.fileno(),select.EPOLLIN)
                 elif event & select.EPOLLIN: # 读取socket 的数据
                     try:
@@ -754,10 +775,16 @@ def Server(port):
                             epoll.modify(fileno,select.EPOLLHUP)
                             continue
                         rbuf = handle_client_request(binascii.b2a_hex(mdict['requests'][fileno]),fileno)
-                        if rbuf:
-                            mdict['responses'][fileno] = rbuf
+                        if rbuf[1] < 0:  #出错与非法请求关闭就行了
+                            delete_fileno(fileno)
+                        elif rbuf[1] == 1:  # app端的连接小机请求
+                            epoll.modify(fileno,select.EPOLLWRBAND)
+                        elif rbuf[1] == 2:  # 小机端的回答，收到之后不用改状态
+                            continue
+                        else:
+                            mdict['responses'][fileno] = rbuf[0]
+                            epoll.modify(fileno,select.EPOLLOUT)
                         mdict['requests'].pop(fileno)
-                        epoll.modify(fileno,select.EPOLLOUT)
                     except IOError:
                         sock_fail_pass(fileno)
                         log.debug("sock has closed %d" % fileno)
