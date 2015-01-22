@@ -324,16 +324,16 @@ def stun_handle_response(response):
 
 #### 模拟小机登录
 def gen_uuid():
-    ruuid = str(uuid.uuid4()).replace('-','')
-    global uuidbin
-    tt = ''.join([ruuid,binascii.hexlify('test')])
+    #ruuid = str(uuid.uuid4()).replace('-','')
+    #global uuidbin
+    #tt = ''.join([ruuid,binascii.hexlify('test')])
     tt= "2860014389504773b2c2b7252d3eb8b074657374"
-    tt='19357888aa07418584391d0adb61e79026537166'
+    #tt='19357888aa07418584391d0adb61e79026537166'
     ruuid = ''.join([tt,("%08x" % get_uuid_crc32(tt))])
     print ruuid
     return ruuid
-    pickle.dump(binascii.unhexlify(ruuid),uuidbin)
-    return ruuid
+    #pickle.dump(binascii.unhexlify(ruuid),uuidbin)
+    #return ruuid
 
 def device_struct_allocate():
     buf = []
@@ -364,6 +364,7 @@ def stun_connect_address(res):
 
 
 
+
 def device_allocate_login(host,port):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
@@ -373,7 +374,7 @@ def device_allocate_login(host,port):
     n = 50
     while n > 0:
         try:
-            data,addr = sock.recvfrom(2048)
+            data = sock.recv(2048)
             if not data:
                 break
             else:
@@ -395,7 +396,7 @@ def device_allocate_login(host,port):
                         break
                 n -=1
         except IOError:
-            print "sock error"
+            print "unkown sock error"
     localport = sock.getsockname()[1]
     sock.close()
     if not phost:
@@ -406,18 +407,12 @@ def device_allocate_login(host,port):
     hhh = socket.inet_ntoa(binascii.unhexlify("%x" % (phost[1] ^ STUN_MAGIC_COOKIE)))
     ppp = phost[0] ^  (STUN_MAGIC_COOKIE >> 16)
     sock.bind(('',localport))
-    sock.setblocking(0)
     try:
-        print "connect to",hhh,ppp
         sock.connect((hhh,ppp))
     except:
-        print "already connect app"
-    #sock.close()
-    #sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-    #sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    #sock.bind(('',localport))
+        pass
+    sock.setblocking(0)
     sock.listen(1)
-    #sock.setblocking(0)
     epoll = select.epoll()
     epoll.register(sock.fileno(),select.EPOLLIN)
 
@@ -428,7 +423,6 @@ def device_allocate_login(host,port):
     try:
         while True:
             events = epoll.poll(1)
-            
             for fileno,event in events:
                 if fileno == sock.fileno():
                     try:
@@ -461,6 +455,98 @@ def send_initial_packet(sock,host):
     except:
         print "threading connect host"
     
+
+class ThreadConnectApp(threading.Thread):
+    def __init__(self):
+        global gport
+        threading.Thread.__init__(self)
+        self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        self.sock.bind(('',gport))
+        self.sock.setblocking(0)
+        self.sock.listen(1)
+
+    def run(self):
+        sock = self.sock
+        # connect nath server
+        epoll = select.epoll()
+        epoll.register(sock.fileno(),select.EPOLLIN)
+        print "local",sock.getsockname()
+        clients = {}
+        responses = {}
+        try:
+            while True:
+                events = epoll.poll(1)
+                for fileno,event in events:
+                    if fileno == sock.fileno():
+                        try:
+                            conn,addr = sock.accept()
+                        except:
+                            continue
+                        clients[conn.fileno()] = conn
+                        epoll.register(conn.fileno(),select.EPOLLIN)
+                    elif event & select.EPOLLIN:
+                        data = clients[fileno].recv(2048)
+                        print "read",data
+                        epoll.modify(fileno,select.EPOLLOUT)
+                    elif event & select.EPOLLOUT:
+                        clients[fileno].send("tetssss")
+                        epoll.modify(fileno,select.EPOLLIN)
+                    elif event & select.EPOLLHUP:
+                        epoll.unregister(fileno)
+                        clients[fileno].close()
+                        clients.pop(fileno)
+    
+        finally:
+            epoll.unregister(sock.fileno())
+            epoll.close()
+            sock.close()
+
+class ThreadConnectNatSrv(threading.Thread):
+    def __init__(self,addr):
+        global gport
+        threading.Thread.__init__(self)
+        self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        self.sock.bind(('',0))
+        self.port = gport = self.sock.getsockname()[1]
+        self.sock.connect(addr)
+
+    def run(self):
+        global gport
+        sock=self.sock
+        sock.send(binascii.unhexlify(''.join(device_struct_allocate())))
+        while True:
+            data = sock.recv(2048)
+            if not data:
+                print "not data"
+                break
+            else:
+                rhex = binascii.hexlify(data)
+                res_mth = "%04x" % stun_get_method_str(int(rhex[:4],16))
+                if res_mth == STUN_METHOD_ALLOCATE:
+                    t = ThreadRefreshTime(sock)
+                    t.start()
+                elif res_mth == STUN_METHOD_CONNECT:
+                    res = stun_handle_response(rhex)
+                    if res.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
+                        print res[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1]
+                    
+                    if res.has_key(STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS):
+                        phost = res[STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS][-2:]
+                        cbuf = stun_connect_address(res) 
+                        hhh = socket.inet_ntoa(binascii.unhexlify("%x" % (phost[1] ^ STUN_MAGIC_COOKIE)))
+                        ppp = phost[0] ^  (STUN_MAGIC_COOKIE >> 16)
+                        sock.send(binascii.unhexlify(''.join(cbuf)))
+                        tsock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+                        tsock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+                        print "gport is",gport
+                        tsock.bind(('',gport))
+                        tsock.setblocking(0)
+                        tsock.connect((hhh,ppp))
+                        tsock.close()
+                        print "send server"
+                            
     
 
 class ThreadRefreshTime(threading.Thread):
@@ -487,10 +573,17 @@ nclient = 1
 #uuidbin = None
 uuidbin = None
 def devid_damon():
-    global uuidbin
-    uuidbin = open('uuid.bin','w')
+    #global uuidbin
+    #uuidbin = open('uuid.bin','w')
     device_allocate_login('120.24.235.68',3478)
-    uuidbin.close()
+    #devices_services('120.24.235.68',3478)
+    global gport
+    
+    #srvt = ThreadConnectNatSrv(('120.24.235.68',3478))
+    #srvt.start()
+    #appt = ThreadConnectApp()
+    #appt.start()
+    #uuidbin.close()
 
 
 def test_radom_uuid():
