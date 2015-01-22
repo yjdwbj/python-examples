@@ -407,15 +407,26 @@ def device_allocate_login(host,port):
     hhh = socket.inet_ntoa(binascii.unhexlify("%x" % (phost[1] ^ STUN_MAGIC_COOKIE)))
     ppp = phost[0] ^  (STUN_MAGIC_COOKIE >> 16)
     sock.bind(('',localport))
-    try:
-        sock.connect((hhh,ppp))
-    except:
-        pass
+    print "connect to",hhh,ppp
+
+    n = 20
+    sock.settimeout(2)
+    while  n > 0:
+        try:
+            sock.connect((hhh,ppp))
+        except:
+            print "connect fail"
+            pass
+        time.sleep(1)
+        n -=1
+    sock.close()
+    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+    sock.bind(('',localport))
     sock.setblocking(0)
     sock.listen(1)
     epoll = select.epoll()
     epoll.register(sock.fileno(),select.EPOLLIN)
-
     #t = threading.Timer(5,send_initial_packet,(sock,(hhh,ppp)))
     #t.start()
     print "local",sock.getsockname()

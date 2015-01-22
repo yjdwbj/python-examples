@@ -36,10 +36,11 @@ from logging import handlers
 STUN_METHOD_BINDING='0001'
 STUN_METHOD_ALLOCATE='0003'
 STUN_METHOD_REFRESH='0004'
-STUN_METHOD_SEND='0006'
-STUN_METHOD_DATA='0007'
+STUN_METHOD_SEND='0006'   # APP 转发数据的命令
+STUN_METHOD_DATA='0007'   # 小机给APP发数据的命令
 STUN_METHOD_CREATE_PERMISSION='0008'
-STUN_METHOD_CHANNEL_BIND='0009'
+STUN_METHOD_CHANNEL_BIND='0009' # APP邦定小机的命令
+
 
 STUN_METHOD_CONNECT='000a'
 STUN_METHOD_CONNECTION_BIND='000b'
@@ -103,6 +104,9 @@ def get_crc32(str):
 def gen_tid():
     a = ''.join(random.choice('0123456789ABCDEF') for i in range(24))
     return a
+
+def make_uuid(uuid):
+    return ''.join([uuid,'%08x' % get_crc32(uuid)])
 
 def stun_is_success_response_str(mth):
     n = int(mth,16) & 0xFFFF
@@ -175,12 +179,18 @@ def handle_client_request(buf,fileno):
     #print "handle allocate request\n"
     blen = len(buf)
     if not check_crc_is_valid(buf):
-        log.info("Crc Wrong. Host: %s:%d" % mdict['clients'][fileno].getpeername())
-        log.info("CRC32 is %s" % buf[-8:])
+        log.error("Crc Wrong. Host: %s:%d" % mdict['clients'][fileno].getpeername())
+        log.error("CRC32 is %s" % buf[-8:])
         delete_fileno(fileno)
         return ([],-1)
 
-    reqhead = struct.unpack(STUN_HEADER_FMT,binascii.unhexlify(buf[:STUN_HEADER_LENGTH*2]))
+    try:
+        reqhead = struct.unpack(STUN_HEADER_FMT,binascii.unhexlify(buf[:STUN_HEADER_LENGTH*2]))
+    except:
+        log.error("unpack head is wrong  %s" % buf[:STUN_HEADER_LENGTH*2])
+        delete_fileno(fileno)
+        return ([],-1)
+
     method = '%04x' % reqhead[0]
     if not mdict['timer'].has_key(fileno):
         if method == STUN_METHOD_REFRESH:  # 非法刷新请求
@@ -241,12 +251,46 @@ def stun_unkown_method_error(res):
     return (buf)
 
 
+def handle_app_bind_device(res):
+    if res.has_key(STUN_ATTRIBUTE_UUID):
+        ee = check_jluuid(res[STUN_ATTRIBUTE_UUID][-1])
+        if ee:
+            return ee
+    else:
+        res['eattr'] = binascii.hexlify("Not Found UUID")
+        log.info("Not UUID Attribute. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
+        return stun_attr_error_response(res['method'],res)
+    
+    if not mdict['binds'][res['fileno']]：
+        mdict['binds'][res['fileno']] = [res[STUN_ATTRIBUTE_UUID][-1]]
+    else:
+        mdict['binds'][res['fileno']].append(res[STUN_ATTRIBUTE_UUID][-1])
+    return stun_bind_devices_ok(res)
+   
+def stun_bind_devices_ok(res):
+    buf = []
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_CHANNEL_BIND),buf,res['tid'])
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1]))
+    stun_add_fingerprint(buf)
+    return (buf)
+
+
 def handle_app_login_request(res):
+    if res.has_key(STUN_ATTRIBUTE_UUID):
+        ee = check_jluuid(res[STUN_ATTRIBUTE_UUID][-1])
+        if ee:
+            return ee
+    else:
+        res['eattr'] = binascii.hexlify("Not Found UUID")
+        log.info("Not UUID Attribute. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
+        return stun_attr_error_response(res['method'],res)
+    
     result = app_user_login(res[STUN_ATTRIBUTE_USERNAME][-1],res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
     if not result:
         return stun_auth_error_response(STUN_METHOD_BINDING,res['tid'])
     else:
         mdict['actives'][res['fileno']] = res[STUN_ATTRIBUTE_USERNAME]
+        mdict['actives'][res['fileno']] = res[STUN_ATTRIBUTE_UUID]
         app_user_update_status(res[STUN_ATTRIBUTE_USERNAME][-1],res['host'])
         return app_user_auth_success(res)
 
@@ -345,17 +389,19 @@ def stun_auth_error_response(method,tid):
     return buf
 
 def handle_register_request(res):
+    nuuid = str(uuid.uuid4()).replace('-','')
     if app_user_register(res[STUN_ATTRIBUTE_USERNAME][-1],
-            res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]):
+            res[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1],nuuid):
          # 用户名已经存了。
         log.debug("User has Exist!i %s" % res[STUN_ATTRIBUTE_USERNAME][-1])
         return check_user_error(res)
-    return register_success(res[STUN_ATTRIBUTE_USERNAME][-1],res['tid'])
+    return register_success(res[STUN_ATTRIBUTE_USERNAME][-1],res['tid'],make_uuid(''.join[nuuid,'%08x' % 0]))
 
-def register_success(uname,tid):
+def register_success(uname,tid,uuid):
     buf = []
     stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf,tid)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(uname))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,uuid)
     stun_add_fingerprint(buf)
     log.debug("Regsiter is success %s" % uname)
     return (buf)
@@ -395,19 +441,31 @@ def check_uuid_valid(uhex):
     #print "my crc",crcstr,'rcrc',uhex[-8:]
     return cmp(crcstr,uhex[-8:])
 
+def check_jluuid(uuid): # 自定义24B的UUID
+    huid = binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])
+    if 0 != check_uuid_valid(huid):
+        log.info("UUID crc32 wrong. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
+        res['eattr'] = binascii.hexlify("UUID CRC Wrong") # 错误的UUID格式
+        return stun_attr_error_response(res['method'],res)
+
+    if check_uuid_format(res[STUN_ATTRIBUTE_UUID]):
+        res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
+        log.info("UUID Format wrong. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
+        return stun_attr_error_response(res['method'],res)
+
+
 def handle_allocate_request(res):
-    suid = struct.unpack(STUN_UVC,res[STUN_ATTRIBUTE_UUID][-1])
+    try:
+        suid = struct.unpack(STUN_UVC,res[STUN_ATTRIBUTE_UUID][-1])
+    except:
+        log.error('unpck is occur error %s' % binascii.hexlify(suid))
+        return stun_attr_error_response(res['method'],res)
+
     huid = binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])
     if res.has_key(STUN_ATTRIBUTE_UUID):
-        if 0 != check_uuid_valid(huid):
-            log.info("UUID crc32 wrong. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
-            res['eattr'] = binascii.hexlify("UUID CRC Wrong") # 错误的UUID格式
-            return stun_attr_error_response(res['method'],res)
-
-        if check_uuid_format(res[STUN_ATTRIBUTE_UUID]):
-            res['eattr'] = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
-            log.info("UUID Format wrong. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
-            return stun_attr_error_response(res['method'],res)
+        ee = check_jluuid(res[STUN_ATTRIBUTE_UUID][-1])
+        if ee:
+            return ee
     else:
         res['eattr'] = binascii.hexlify("Not Found UUID")
         log.info("Not UUID Attribute. Host:%s:%d" % mdict['clients'][res['fileno']].getpeername())
@@ -473,7 +531,7 @@ def update_refresh_time(fileno,ntime):
     mdict['timer'][fileno] = time.time()+ntime
 
 
-def app_user_register(user,pwd):
+def app_user_register(user,pwd,nuuid):
     account = get_account_table()
     dbcon = engine.connect()
     #print "register new account %s,%s" % (user,pwd)
@@ -485,11 +543,12 @@ def app_user_register(user,pwd):
         obj = hashlib.sha256()
         obj.update(user)
         obj.update(pwd)
-        ins = account.insert().values(uname=user,pwd=obj.digest(),is_active=True,reg_time=datetime.now())
+        ins = account.insert().values(uname=user,pwd=obj.digest(),uuid=nuuid,is_active=True,reg_time=datetime.now())
         try:
             dbcon.execute(ins)
         except:
             log.error("app_user_register error %s" % user)
+            return True
         return False
 
 def app_user_update_status(user,host):
@@ -543,6 +602,7 @@ def get_account_status_table():
 def get_account_table():
     metadata = MetaData()
     account = Table('account',metadata,
+            Column('uuid',pgsql.UUID,primary_key=True),
             Column('uname',pgsql.VARCHAR(255),primary_key=True),
             Column('pwd',pgsql.BYTEA),
             Column('is_active',pgsql.BOOLEAN,nullable=False),
@@ -575,7 +635,11 @@ def get_devices_table(tname):
 
 
 def find_device_state(uid):
-    suid = struct.unpack(STUN_UVC,uid)
+    try:
+        suid = struct.unpack(STUN_UVC,uid)
+    except:
+        log.error('unpck is occur error %s' % binascii.hexlify(uid))
+        return None 
     vendor = binascii.hexlify(suid[1])
     #print "find uuid is",uid,"vendor is",vendor
     dbcon = engine.connect()
@@ -593,7 +657,11 @@ def find_device_state(uid):
 
 def update_newdevice(host,uid,data):
     '''添加新的小机到数据库'''
-    pair = struct.unpack(STUN_UVC,uid)
+    try:
+        pair = struct.unpack(STUN_UVC,uid)
+    except:
+        log.error('unpck is occur error %s' % binascii.hexlify(uid))
+        return 
     tuid = binascii.hexlify(pair[0])
     #print "vendor is",binascii.hexlify(pair[1])
     #print "uid is",uid[:UUID_SIZE*2],"vendor is",vendor
@@ -692,7 +760,11 @@ def clean_timeout_sock(fileno): # 清除超时的连接
             remove_fileno_resources(fileno)
 
 def mirco_devices_logout(devid):
-    suid = struct.unpack(STUN_UVC,devid)
+    try:
+        suid = struct.unpack(STUN_UVC,devid)
+    except:
+        log.error('unpck is occur error %s' % binascii.hexlify(devid))
+        return 0
     vendor = binascii.hexlify(suid[1])
     #print "update status for tuid",binascii.hexlify(suid[0])
     mtable = get_devices_table(vendor)
@@ -876,9 +948,12 @@ dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
               STUN_METHOD_CHECK_USER:handle_chkuser_request,
               STUN_METHOD_REGISTER:handle_register_request,
               STUN_METHOD_BINDING:handle_app_login_request,  # app端登录方法
-              STUN_METHOD_CONNECT:handle_app_connect_peer_request
+              STUN_METHOD_CONNECT:handle_app_connect_peer_request,
+              STUN_METHOD_SEND:handle_app_send_data_to_device, # APP 发给小机的命令
+              STUN_METHOD_DATA:handle_device_send_data_to_app, # 小机发给APP 的命令
+              STUN_METHOD_CHANNEL_BIND:handle_app_bind_device  # APP 绑定小机的命令
               }
-store = ['timer','clients','requests','responses','uuids','actives']
+store = ['timer','clients','requests','responses','uuids','actives','binds']
 mdict = {}
 for x in store:
    mdict[x]={} # 这个嵌套字典就是用来存放运行时的状态与数据的
@@ -890,6 +965,7 @@ if not atable.exists(engine):
     engine.connect().execute("""
     CREATE TABLE account
 (
+  uuid UUID NOT NULL UNQUIE PRIMARY KEY,
   uname character varying(255) NOT NULL,
   pwd BYTEA,
   is_active boolean NOT NULL DEFAULT true,
