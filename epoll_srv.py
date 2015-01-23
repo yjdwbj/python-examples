@@ -157,10 +157,13 @@ def stun_add_fingerprint(buf):
 
 
 def stun_init_command_str(msg_type,buf,tid):
-    buf.append(msg_type)
-    buf.append("%04x" % 0)
-    buf.append("%08x" % STUN_MAGIC_COOKIE)
-    buf.append(tid)
+    buf.append(binascii.hexlify('JL')) # 魔数字
+    buf.append("%04x" % 1) # 版本号
+    buf.append("%04x" % 0) # 长度
+    buf.append("%04x" % 0) # SRC
+    buf.append("%04x" % 0) # DST
+    buf.append(msg_type) # CMD
+    buf.append("%08x" % 0)  # 序列号
 
 def check_crc_is_valid(buf): # 检查包的CRC
     crc = struct.unpack('!HHI',binascii.unhexlify(buf[-16:]))
