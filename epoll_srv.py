@@ -13,6 +13,7 @@ import binascii
 import threading
 import uuid
 import sys
+import unittest
 import argparse
 
 from datetime import datetime
@@ -29,92 +30,8 @@ import hashlib
 import select
 import logging
 from logging import handlers
+from epoll_global import *
 
-
-
-
-STUN_METHOD_BINDING='0001'
-STUN_METHOD_ALLOCATE='0003'
-STUN_METHOD_REFRESH='0004'
-STUN_METHOD_SEND='0006'   # APP 转发数据的命令
-STUN_METHOD_DATA='0007'   # 小机给APP发数据的命令
-#STUN_METHOD_CREATE_PERMISSION='0008'
-STUN_METHOD_CHANNEL_BIND='0009' # APP邦定小机的命令
-STUN_METHOD_NOTIFY='0008'
-
-
-STUN_METHOD_CONNECT='000a'
-STUN_METHOD_CONNECTION_BIND='000b'
-STUN_METHOD_CONNECTION_ATTEMPT='000c'
-
-STUN_METHOD_CHECK_USER='000e'
-STUN_METHOD_REGISTER='000f'
-
-
-# RFC 6062 #
-STUN_ATTRIBUTE_MAPPED_ADDRESS='0001'
-STUN_ATTRIBUTE_CHANGE_REQUEST='0003'
-STUN_ATTRIBUTE_USERNAME='0006'
-STUN_ATTRIBUTE_MESSAGE_INTEGRITY='0008'
-STUN_ATTRIBUTE_MESSAGE_ERROR_CODE='0009'
-STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES='000a'
-STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS='0020'
-OLD_STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS='8020'
-
-
-STUN_ATTRIBUTE_CHANNEL_NUMBER='000c'
-STUN_ATTRIBUTE_LIFETIME='000d'
-STUN_ATTRIBUTE_XOR_PEER_ADDRESS='0012'
-STUN_ATTRIBUTE_DATA='0013'
-STUN_ATTRIBUTE_REQUESTED_TRANSPORT='0019'
-STUN_ATTRIBUTE_DONT_FRAGMENT='001a'
-
-STUN_ATTRIBUTE_SOFTWARE='8022'
-STUN_ATTRIBUTE_ALTERNATE_SERVER='8023'
-STUN_ATTRIBUTE_FINGERPRINT='8028'
-STUN_ATTRIBUTE_UUID='8001'
-STUN_ATTRIBUTE_RUUID='8002'
-STUN_ATTRIBUTE_MUUID='8004'
-STUN_ATTRIBUTE_MRUUID='8005'
-
-STUN_ATTRIBUTE_STATE='8003'
-
-STUN_ONLINE='%08x' % 0
-STUN_OFFLINE='%08x' % 1
-
-
-#error code
-STUN_ERROR_UNKNOWN_ATTR='0401'
-STUN_ERROR_HEAD='0402'
-STUN_ERROR_UNKNOWN_METHOD='0403'
-STUN_ERROR_UNKNOWN_PACKET='0404'
-STUN_ERROR_USER_EXIST='0404'
-STUN_ERROR_UNAUTH='0405'
-STUN_ERROR_DEVICE_OFFLINE='0407'
-STUN_ERROR_FORMAT='0408'
-
-
-
-
-STUN_HEADER_LENGTH=int(20)
-#STUN_HEADER_FMT='!HHI12s'
-STUN_HEADER_FMT='!HHHIIHI' # Magic,version,crc32,src,dst,cmd,seq
-
-#Lifetimes
-STUN_DEFAULT_ALLOCATE_LIFETIME=int(600)
-UCLIENT_SESSION_LIFETIME=int(160)
-
-STUN_UUID_VENDOR='20sI'
-STUN_UVC='16s4sI' # uuid , vendor ,crc32
-
-STUN_MAGIC_COOKIE=0x2112A442
-SOCK_BUFSIZE=2048
-UUID_SIZE=struct.calcsize(STUN_UVC)
-CRCMASK=0x5354554e
-CRCPWD=0x6a686369
-HEX4B=16
-HEX2B=8
-FINDDEV_TIMEOUT=10 #查找小机的超时设置
 
 class GetPkgObj:
     def __init__(self,**kwargs):
@@ -126,96 +43,11 @@ class DictClass:
 
 class ComState: pass
 
-def get_crc32(str):
-    return binascii.crc32(binascii.unhexlify(str.lower()))
-
-def gen_tid():
-    a = ''.join(random.choice('0123456789ABCDEF') for i in range(24))
-    return a
-
-def make_uuid(uuid):
-    return ''.join([uuid,'%08x' % get_crc32(uuid)])
-
-def stun_is_success_response_str(mth):
-    n = int(mth,16) & 0xFFFF
-    return ((n & 0x0110) == 0x0100)
-
-def stun_make_success_response(method):
-    #print "success response %04x" % ((stun_make_type(method) & 0xFEEF) | 0x0100)
-    return '%04x' % ((stun_make_type(method) & 0xFEEF) | 0x0100)
-
-def stun_make_error_response(method):
-    return '%04x' % ((stun_make_type(method) & 0xFEEF) | 0x0110)
-
-def stun_make_type(method):
-    t  = int(method,16) & 0x0FFF
-    t = (( t & 0x000F) | ((t  & 0x0070) << 1) | ((t & 0x0380) << 2) | ((t & 0x0C00) << 2))
-    return t
-
-def stun_attr_append_str(buf,attr,add_value):
-    #buf[1] = "%04x" % (len(''.join(buf)) / 2 - STUN_HEADER_LENGTH)
-    # 属性名，属性长度，属性值
-    buf.append(attr)
-    alen = len(add_value) / 2
-    buf.append("%04x" % alen)
-    buf.append(add_value)
-    # 4Byte 对齐
-    rem4 = (alen & 0x0003)& 0xf
-    if rem4:
-        rem4 = alen+4-rem4
-    while (rem4 -alen) > 0:
-        buf[-1] += '00'
-        rem4 -= 1
-    buf[1] ="%04x" % (len(''.join(buf)) / 2 - STUN_HEADER_LENGTH)
-
-def stun_add_fingerprint(buf):
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
-    crc_str = ''.join(buf[:-3])
-    crcval = get_crc32(crc_str)
-    crcstr = "%08x" % ((crcval  ^ CRCMASK) & 0xFFFFFFFF)
-    buf[-1] = crcstr.replace('-','')
-
-
-def stun_init_command_str(msg_type,buf):
-    buf.append(binascii.hexlify('JL')) # 魔数字
-    buf.append("%04x" % 1) # 版本号
-    buf.append("%04x" % 0) # 长度
-    buf.append("%08x" % 0) # SRC
-    buf.append("%08x" % 0) # DST
-    buf.append(msg_type) # CMD
-    buf.append("%08x" % 0)  # 序列号
-
-def check_crc_is_valid(buf): # 检查包的CRC
-    #crc = struct.unpack('!HHI',binascii.unhexlify(buf[-16:]))
-    crc = struct.unpack('!I',binascii.unhexlify(buf[-8:]))
-    rcrc =(get_crc32(buf[:-8]) ^ CRCMASK) & 0xFFFFFFFF
-    if crc[-1] != rcrc:
-        return False
-    return True
-
 def delete_fileno(fileno):
     epoll.unregister(fileno)
     if gClass.clients.has_key(fileno):
         gClass.clients.get(fileno).close()
         gClass.clients.pop(fileno)
-
-
-
-def parser_stun_package(buf,res):
-    attrdict={}
-    rlen = len(buf)
-    hexpos = 0
-    while hexpos < rlen:
-        n = stun_get_first_attr(buf[hexpos:],attrdict)
-        if n is None:
-            res.eattr = STUN_ERROR_UNKNOWN_ATTR
-            log.error("Unkown Attribute %s %s" % (res['eattr'],buf[hexpos:]))
-            return  (stun_attr_error_response(res),0)
-        else:
-            hexpos += n
-
-    return attrdict
-
 
 
 def handle_client_request(buf,fileno):
@@ -227,13 +59,6 @@ def handle_client_request(buf,fileno):
     2  小机的回复
     """
     #print "handle allocate request\n"
-    blen = len(buf)
-    if not check_crc_is_valid(buf):
-        #log.error("Crc Wrong. Host: %s:%d" % mdict['clients'][fileno].getpeername())
-        log.error("Crc Wrong. Host: %s:%d" % gClass.clients[fileno].getpeername())
-        log.error("CRC32 is %s" % buf[-8:])
-        delete_fileno(fileno)
-        return ([],-1)
 
     try:
         reqhead = struct.unpack(STUN_HEADER_FMT,binascii.unhexlify(buf[:STUN_HEADER_LENGTH*2]))
@@ -255,9 +80,12 @@ def handle_client_request(buf,fileno):
     res.fileno = fileno
     res.method = method
     hexpos = STUN_HEADER_LENGTH*2
-    upkg = parser_stun_package(buf[hexpos:],res)
+    upkg = parser_stun_package(buf[hexpos:-8],res)
     if not (type(upkg) is dict):
-        return upkg
+        res.eattr = STUN_ERROR_UNKNOWN_ATTR
+        log.error("Unkown Attribute %s %s" % (res['eattr'],buf[hexpos:]))
+        return  (stun_attr_error_response(res),0)
+
     res.attrs = upkg
     if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME) and method != STUN_METHOD_REFRESH:
         update_refresh_time(fileno,res.attrs.get(STUN_ATTRIBUTE_LIFETIME)[-1])
@@ -289,20 +117,19 @@ def handle_client_request(buf,fileno):
         log.error("Unkown Method %s %s" % (res['eattr'],buf[hexpos:]))
         return  (stun_attr_error_response(res),0)
 
-def 
+def bind_each_uuid(ustr,fileno):
+    if not gClass.appbinds.has_key(fileno):
+        gClass.appbinds[fileno]={}
+    if gClass.devuuid.has_key(ustr):
+        # 通知在线的小机，有APP要绑定它
+        b = '%08x' % gClass.devuuid[ustr]
+        gClass.appbinds[fileno][ustr]= b
+        gClass.responses[fileno] = notify_peer(''.join([b,STUN_ONLINE]))
+        epoll.modify(gClass.devuuid[ustr],select.EPOLLOUT)
+    else:
+        gClass.appbinds[fileno][ustr]='%08x' % 0xFFFFFFFF
 
-def bind_muluuid(uuids):
-    pos = 0
-    b = binascii.hexlify(uuids)
-    hlen = UUID_SIZE * 2
-    mlist = [b[k:k+hlen] for k in xrange(0,len(b),hlen)]
-    [ n for n mlist if gClass.devuuid.has_key(n) ''.join([n,'%08x' % gClass.devuuid[n]]) else ''.join([n,'%08x' % -1])]
 
-        chk = check_jluuid(b[pos:hlen])
-        if chk:
-            res.eattr = chk
-            log.error("UUID Packet Error. Host:%s:%d" % gClass.clients[res.fileno].getpeername())
-            return stun_attr_error_response(res)
 
 
 def handle_app_bind_device(res):
@@ -314,23 +141,39 @@ def handle_app_bind_device(res):
             log.error("UUID Packet Error. Host:%s:%d" % gClass.clients[res.fileno].getpeername())
             return stun_attr_error_response(res)
     elif res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
-        if bind_muluuid(res.attrs[STUN_ATTRIBUTE_MUUID])
-        
+        mlist =  split_muuid(binascii.hexlify(res.attrs[STUN_ATTRIBUTE_MUUID][-1]))
+        p = [check_jluuid(n) for n in mlist]
+        e = [ x for x in p if x]
+        if len(e):
+            res.eattr = STUN_ERROR_UNKNOWN_PACKET
+            #log.info("Not UUID Attribute. Host:%s:%d" % gClass.clients[res.fileno].getpeername())
+            return stun_attr_error_response(res)
+        [bind_each_uuid(n,res.fileno) for n in mlist]
     else:
         res.eattr = STUN_ERROR_UNKNOWN_PACKET
         log.info("Not UUID Attribute. Host:%s:%d" % gClass.clients[res.fileno].getpeername())
         return stun_attr_error_response(res)
 
-
     return stun_bind_devices_ok(res)
 
+
 def stun_bind_devices_ok(res):
+    """
+    绑定成功，回复APP
+    """
     buf = []
     stun_init_command_str(stun_make_success_response(res.method),buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,binascii.hexlify(res.attrs[STUN_ATTRIBUTE_UUID][-1]))
+    joint = [''.join([k,v]) for k,v in gClass.appbinds[res.fileno].iteritems()]
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MRUUID,''.join(joint))
     stun_add_fingerprint(buf)
     return (buf)
 
+def notify_peer(state_info):
+    buf = []
+    stun_init_command_str(STUN_METHOD_NOTIFY,buf)
+    stun_attr_append_str(STUN_ATTRIBUTE_STATE,state_info)
+    stun_add_fingerprint(buf)
+    return buf
 
 def handle_app_login_request(res):
     gClass.appsock[res.fileno] = tcs = ComState()
@@ -423,7 +266,6 @@ def handle_app_connect_peer_request(res):
     #gClass.actives[res.fileno] = res.attrs[STUN_ATTRIBUTE_USERNAME]
     row = find_device_state(res.attrs[STUN_ATTRIBUTE_UUID][-1])
     #mdict['uuids'][res['tid']] = res['fileno'] # 这里用APP 端TID做键,后面要用到
-    gClass.uuids[] = res.fileno
     if not row:
         res.eattr = binascii.hexlify("!not device!")
         return  stun_attr_error_response(res)
@@ -517,9 +359,6 @@ def handle_chkuser_request(res):
     else:
         return check_user_sucess(res)
 
-def check_uuid_format(uid):
-    n = [ x for x in binascii.hexlify(uid[-1]) if x > 'f' or x < '0']
-    return  len(n) > 0 or uid[1] < 24
 
 
 def check_user_sucess(res):
@@ -530,41 +369,33 @@ def check_user_sucess(res):
     log.debug("User not register! %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
     return (buf)
 
-def check_uuid_valid(uhex):
+def get_jluuid_crc32(uhex):
     ucrc = get_crc32(uhex[:-8])
-    crcstr = "%08x" % ((ucrc ^ CRCPWD) & 0xFFFFFFFF)
+    return "%08x" % ((ucrc ^ CRCPWD) & 0xFFFFFFFF)
+
+def check_uuid_format(uid):
+    n = [ x for x in binascii.hexlify(uid[-1]) if x > 'f' or x < '0']
+    return  len(n) > 0 or uid[1] < 24
+
+def check_uuid_valid(uhex):
     #print "my crc",crcstr,'rcrc',uhex[-8:]
-    return cmp(crcstr,uhex[-8:])
+    return cmp(get_jluuid_crc32(uhex[:-8]),uhex[-8:])
 
 def check_jluuid(huid): # 自定义24B的UUID
-    #huid = binascii.hexlify(res.attrs[STUN_ATTRIBUTE_UUID][-1])
     if 0 != check_uuid_valid(huid):
-        #log.info("UUID crc32 wrong. Host:%s:%d" % gClass.clients[res.fileno].getpeername())
-        #res.eattr = binascii.hexlify("UUID CRC Wrong") # 错误的UUID格式
-        #res.eattr=STUN_ERROR_UNKNOWN_PACKET
-        #return stun_attr_error_response(res)
         return STUN_ERROR_UNKNOWN_PACKET
 
-    if check_uuid_format(res.attrs[STUN_ATTRIBUTE_UUID]):
-        #res.eattr = binascii.hexlify("UUID Format Wrong") # 错误的UUID格式
-        #res.eattr=STUN_ERROR_UNKNOWN_PACKET
+    if check_uuid_format(huid):
         return STUN_ERROR_UNKNOWN_PACKET
-        #log.info("UUID Format wrong. Host:%s:%d" % gClass.clients[res.fileno].getpeername())
-        #return stun_attr_error_response(res)
     return None
 
 def handle_allocate_request(res):
-    try:
-        suid = struct.unpack(STUN_UVC,res.attrs[STUN_ATTRIBUTE_UUID][-1])
-    except:
-        log.error('unpck is occur error %s' % binascii.hexlify(suid))
-        #res.eattr = binascii.hexlify("unpack data occur error")
-        res.eattr=STUN_ERROR_UNKNOWN_PACKET
-        return stun_attr_error_response(res)
-
-    huid = binascii.hexlify(res[STUN_ATTRIBUTE_UUID][-1])
-    if res.has_key(STUN_ATTRIBUTE_UUID):
+    """
+    小机登录服务器的命令，必须要有uuid,data
+    """
+    if res.attrs.has_key(STUN_ATTRIBUTE_UUID):
         chk = check_jluuid(binascii.hexlify(res.attrs[STUN_ATTRIBUTE_UUID][-1]))
+        print 'chk is',chk
         if chk:
             res.eattr = chk
             log.error("UUID Packet Error. Host:%s:%d" % gClass.clients[res.fileno].getpeername())
@@ -576,21 +407,22 @@ def handle_allocate_request(res):
         log.info("Not UUID Attribute. Host:%s:%d" % gClass.clients[res.fileno].getpeername())
         return stun_attr_error_response(res)
 
+    huid = binascii.hexlify(res.attrs[STUN_ATTRIBUTE_UUID][-1])
+    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
+        gClass.timer[res.fileno] = time.time()+ res.attrs.get(STUN_ATTRIBUTE_LIFETIME,0)[-1]
+    else:
+        gClass.timer[res.fileno] = time.time() + UCLIENT_SESSION_LIFETIME
 
-    #mdict['timer'][res['fileno']] = time.time()+ res.get(STUN_ATTRIBUTE_LIFETIME,0)[-1]
-    gClass.timer[res.fileno] = time.time()+ res.attrs.get(STUN_ATTRIBUTE_LIFETIME,0)[-1]
     if not res.attrs.has_key(STUN_ATTRIBUTE_DATA):
-        res[STUN_ATTRIBUTE_DATA]=(0,'')
-
-    update_newdevice(res.host,res.attrs[STUN_ATTRIBUTE_UUID][-1],res.attrs[STUN_ATTRIBUTE_DATA][-1])
-    #mdict['uuids'][huid] = res['fileno'] # 保存uuid 后面做查询
-    gClass.uuids[huid] = res.fileno # 保存uuid 后面做查询
-    #mdict['actives'][res['fileno']] = res[STUN_ATTRIBUTE_UUID]
+        res.data = ''
+    res.vendor = huid[32:40]
+    res.host = gClass.clients[res.fileno].getpeername()
+    res.tuid = huid[:32]
+    update_newdevice(res)
     gClass.actives[res.fileno] = huid
-    #print "device login , sock is",res['fileno'],"uuid is",tuid
     gClass.devsock[res.fileno] = tcs = ComState()
     gClass.devuuid[huid] = res.fileno
-    tcs.uuid = binascii.hexlify(res.attrs[STUN_ATTRIBUTE_UUID][-1])
+    tcs.uuid = huid
     print "login devid is",tcs.uuid
     return device_login_sucess(res)
 
@@ -598,7 +430,7 @@ def app_user_auth_success(res):
     buf = []
     stun_init_command_str(stun_make_success_response(res.method),buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
     stun_add_fingerprint(buf)
     return (buf)
 
@@ -606,13 +438,13 @@ def device_login_sucess(res): # 客服端向服务器绑定自己的IP
     buf = []
     stun_init_command_str(stun_make_success_response(res.method),buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
     stun_add_fingerprint(buf)
     return (buf)
 
 def handle_refresh_request(res):
     update_refresh_time(res.fileno,res.attrs[STUN_ATTRIBUTE_LIFETIME][-1])
-    return refresh_sucess(,res.attrs[STUN_ATTRIBUTE_LIFETIME][-1])
+    return refresh_sucess(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1])
 
 def refresh_sucess(ntime): # 刷新成功
     buf = []
@@ -751,103 +583,41 @@ def find_device_state(uid):
         return None
 
 
-def update_newdevice(host,uid,data):
+def update_newdevice(res):
     '''添加新的小机到数据库'''
-    try:
-        pair = struct.unpack(STUN_UVC,uid)
-    except:
-        log.error('unpck is occur error %s' % binascii.hexlify(uid))
-        return
-    tuid = binascii.hexlify(pair[0])
+    #tuid = binascii.hexlify(pair[0])
     #print "vendor is",binascii.hexlify(pair[1])
     #print "uid is",uid[:UUID_SIZE*2],"vendor is",vendor
     dbcon = engine.connect()
-    mirco_devices = get_devices_table(binascii.hexlify(pair[1]))
+    #mirco_devices = get_devices_table(binascii.hexlify(pair[1]))
+    mirco_devices = get_devices_table(res.vendor)
     if not mirco_devices.exists(engine):
         mirco_devices.create(engine)
-    s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == tuid)
+    s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == res.tuid)
     row = ''
     try:
         result = dbcon.execute(s)
         row = result.fetchall()
     except:
-        log.error("Select UUID From DB Occur Error. UUID is %s" % tuid)
-    ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
-    ipprt = host[1] & 0xFFFF
+        log.error("Select UUID From DB Occur Error. UUID is %s" % res.tuid)
+    ipadr = int(binascii.hexlify(socket.inet_aton(res.host[0])),16) & 0xFFFFFFFF
+    ipprt = res.host[1] & 0xFFFF
     #print "host %d:%d" % (ipadr,ipprt)
     if not row: # 找不到这个UUID 就插入新的
-        ins = mirco_devices.insert().values(devid=tuid,is_active=True,
-                is_online=True,chost=[ipadr,ipprt],data=data,last_login_time=datetime.now())
+        ins = mirco_devices.insert().values(devid=res.tuid,is_active=True,
+                is_online=True,chost=[ipadr,ipprt],data=res.data,last_login_time=datetime.now())
         try:
             result = dbcon.execute(ins)
         except:
-            log.error("Insert UUID To DB Occur Error. UUID is %s" % tuid)
+            log.error("Insert UUID To DB Occur Error. UUID is %s" % res.tuid)
         #print "insert new devices result fetchall"
     else:
-        upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
-                last_login_time=datetime.now()).where(mirco_devices.c.devid == tuid)
+        upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=res.data,
+                last_login_time=datetime.now()).where(mirco_devices.c.devid == res.tuid)
         try:
             result = dbcon.execute(upd)
         except:
-            log.error("Update UUIDTo DB Occur Error. UUID is %s" % tuid)
-
-def get_muluuid_fmt(num):
-    n = 0
-    p = ''
-    while n < num:
-        p = ''.join([p,STUN_UVC])
-        n+=UUID_SIZE
-    return p
-
-def stun_get_first_attr(response,res):
-    attr_name = response[:4]
-    #print "attr_name",attr_name
-    pos = 0
-    fmt ='!HH'
-    vfunc = lambda x: '!HH%ds' % int(x,16)
-
-    vfunc = lambda x: while x > 0:
-    if attr_name == STUN_ATTRIBUTE_LIFETIME:
-        fmt = '!HHI'
-    elif attr_name == STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:
-        fmt = '!HH2sHI'
-    elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
-        fmt = '!HHI'
-    elif attr_name == STUN_ATTRIBUTE_UUID:
-        fmt = vfunc(response[4:8])
-    elif attr_name == STUN_ATTRIBUTE_MESSAGE_INTEGRITY:
-        fmt = vfunc(response[4:8])
-    elif attr_name == STUN_ATTRIBUTE_DATA:
-        fmt = vfunc(response[4:8])
-    elif attr_name == STUN_ATTRIBUTE_USERNAME:
-        fmt = vfunc(response[4:8])
-    elif attr_name == STUN_ATTRIBUTE_MUUID:
-        n = int(strnum,16)
-        if n % UUID_SIZE:
-            return None # 不是UUID_SIZE的倍数，错误的格式
-        fmt = get_muluuid_fmt(n)
-    else:
-        return None
-    attr_size = struct.calcsize(fmt)
-    try:
-        res[attr_name] = struct.unpack(fmt,binascii.unhexlify(response[:attr_size*2]))
-    except:
-        log.error("struct.unpack() error attr_name %s , buf is %s" % (attr_name,response))
-        return None
-    if res.has_key(STUN_ATTRIBUTE_LIFETIME): # 请求的时间大于服务器的定义的，使用服务端的定义 # 请求的时间大于服务器的定义的，使用服务端的定义
-        if res[STUN_ATTRIBUTE_LIFETIME][-1] > UCLIENT_SESSION_LIFETIME:
-            res[STUN_ATTRIBUTE_LIFETIME] = list(res[STUN_ATTRIBUTE_LIFETIME])
-            res[STUN_ATTRIBUTE_LIFETIME][-1] = UCLIENT_SESSION_LIFETIME
-    else:
-        #print "res ",res
-        res[STUN_ATTRIBUTE_LIFETIME] = (int(STUN_ATTRIBUTE_LIFETIME,16),4,UCLIENT_SESSION_LIFETIME)
-    rem4 = attr_size & 0x0003
-    if rem4: # 这里要与客户端一样,4Byte 对齐
-        rem4 = attr_size+4-rem4
-        attr_size += (rem4 - attr_size)
-    pos += attr_size*2
-    #print "res[attr_name]",res,"pos",pos
-    return pos
+            log.error("Update UUIDTo DB Occur Error. UUID is %s" % res.tuid)
 
 class CheckSesionThread(threading.Thread):
     def run(self):
@@ -918,16 +688,6 @@ def remove_fileno_resources(fileno):
     #    if mdict[k].has_key(fileno):
     #        mdict[k].pop(fileno)
 
-def check_packet_length_and_magic(buf):
-    if len(gClass.requests[fileno]) < 17: #包太小
-        #print "gClass.requests[fileno]",binascii.hexlify(gClass.requests[fileno])
-        log.info("recv data is None. Host: %s:%d" % gClass.clients[fileno].getpeername())
-        return True
-    elif binascii.hexlify(buf[:4]) != 'JL':
-        log.info("Unkown type. Host: %s:%d" % gClass.clients[fileno].getpeername())
-        return True
-    else:
-        return False
 
 def Server(port):
     srvsocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
@@ -954,22 +714,21 @@ def Server(port):
                     #print "new clients",addr
                     log.info("new clientsi %s:%d" % addr)
                     conn.setblocking(0)
-                    #mdict['clients'][conn.fileno()] = conn
                     gClass.clients[conn.fileno()] = conn
-                    #print "mdict[clients]", mdict
-                    #mdict['responses'][conn.fileno()] = []
                     gClass.responses[conn.fileno()] = []
-                    # 默认新连接必须在下面的时间内做出反应，不然服务器就在线程里关闭这个连接。
-                    #mdict['timer'][conn.fileno()] = 10
                     gClass.timer[conn.fileno()] = 10
                     epoll.register(conn.fileno(),select.EPOLLIN)
                 elif event & select.EPOLLIN: # 读取socket 的数据
                     try:
                         #mdict['requests'][fileno] = mdict['clients'][fileno].recv(SOCK_BUFSIZE)
                         gClass.requests[fileno] = gClass.clients[fileno].recv(SOCK_BUFSIZE)
-                        if check_packet_length_and_magic(gClass.requests[fileno])
+                        #if check_packet_length_and_magic(gClass.requests[fileno]):
+                        hbuf = binascii.b2a_hex(gClass.requests[fileno])
+                        if check_packet_vaild(hbuf):
+                            print hbuf
+                            log.error('unkown packet format')
                             continue
-                        rbuf = handle_client_request(binascii.b2a_hex(gClass.requests[fileno]),fileno)
+                        rbuf = handle_client_request(hbuf,fileno)
 
                         if rbuf[1] < 0:  #出错与非法请求关闭就行了
                             delete_fileno(fileno)
@@ -1084,12 +843,12 @@ dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
               STUN_METHOD_DATA:handle_device_send_data_to_app, # 小机发给APP 的命令
               STUN_METHOD_CHANNEL_BIND:handle_app_bind_device  # APP 绑定小机的命令
               }
-store = ['timer','clients','requests','responses','uuids','actives','binds','appsock','devsock','devuuid']
+store = ['timer','clients','requests','responses','uuids','actives','appbinds','appsock','devsock','devuuid']
 mdict = {}
 
 gClass = ComState()
 for x in store:
-   mdict[x]={} # 这个嵌套字典就是用来存放运行时的状态与数据的
+   #mdict[x]={} # 这个嵌套字典就是用来存放运行时的状态与数据的
    gClass.__dict__[x] = {}
 
 epoll = select.epoll()
