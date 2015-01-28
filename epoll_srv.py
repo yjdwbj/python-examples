@@ -82,10 +82,11 @@ def handle_client_request(buf,fileno):
     if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME) and res.method != STUN_METHOD_REFRESH:
         update_refresh_time(fileno,res.attrs.get(STUN_ATTRIBUTE_LIFETIME)[-1])
 
-    if res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and res.attrs.get(STUN_ATTRIBUTE_MESSAGE_INTEGRITY)[1] != 32:
+    print 'res.attrs',res.attrs
+    if res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and int(res.attrs.get(STUN_ATTRIBUTE_MESSAGE_INTEGRITY)[1],16) != 32:
         #res.eattr = binascii.hexlify('Password is to short')
-        res.eattr = STUN_ERROR_UNAUTH
-        log.error("Pasword is to short. Host: %s:%d" % gClass.clients[fileno].getpeername())
+        res.eattr = STUN_ERROR_AUTH
+        log.error("Password is to short. Host: %s:%d" % gClass.clients[fileno].getpeername())
         return  (stun_attr_error_response(res),0)
 
     if dictMethod.has_key(res.method):
@@ -119,9 +120,10 @@ def handle_app_bind_device(res):
             log.error("UUID Packet Error. Host:%s:%d" % gClass.clients[res.fileno].getpeername())
             return stun_attr_error_response(res)
     elif res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
-        mlist =  split_muuid(binascii.hexlify(res.attrs[STUN_ATTRIBUTE_MUUID][-1]))
+        mlist =  split_muuid(res.attrs[STUN_ATTRIBUTE_MUUID][-1])
         p = [check_jluuid(n) for n in mlist]
         e = [ x for x in p if x]
+        print "e is",e
         if len(e):
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
             #log.info("Not UUID Attribute. Host:%s:%d" % gClass.clients[res.fileno].getpeername())
@@ -159,14 +161,14 @@ def handle_app_login_request(res):
        res.eattr = binascii.hexlify("Not Authentication")
        return  stun_attr_error_response(res)# APP端必须带用认证信息才能发起连接.
 
-    result = app_user_login(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
+    result = app_user_login(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],
+            res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
     #result = app_user_login(res.attrs[STUN_ATTRIBUTE_UUID][-1],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
     print "login result",result
     if not result:
-        res.eattr = binascii.hexlify("Unauthorised")
+        res.eattr = STUN_ERROR_AUTH
         return  stun_attr_error_response(res)
-    #jluid = ''.join([str(result[0][0]).replace('-',''),'%08x' % 0])
-    #tcs.uuid = make_uuid(jluid)
+
     gClass.actives[res.fileno] = res.attrs[STUN_ATTRIBUTE_USERNAME]
     tcs.name = result[0][1]
     app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],res.host)
@@ -230,7 +232,7 @@ def handle_app_connect_peer_request(res):
 
     # 检查用户名与密码
     if not app_user_login(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]):
-        res.eattr = binascii.hexlify("Unauthorised")
+        res.eattr = STUN_ERROR_AUTH
         return  stun_attr_error_response(res)
 
     chk = check_jluuid(binascii.hexlify(res.attrs[STUN_ATTRIBUTE_UUID][-1]))
@@ -473,11 +475,9 @@ def app_user_login(user,pwd):
     account = get_account_table()
     dbcon = engine.connect()
     obj = hashlib.sha256()
-    #uhex = binascii.hexlify(uid)[:32]
     obj.update(user)
     obj.update(pwd)
     s = sql.select([account]).where(and_(account.c.uname == user,account.c.pwd == obj.digest(),
-    #s = sql.select([account]).where(and_(account.c.uuid  == uhex,account.c.pwd == obj.digest(),
         account.c.is_active == True))
     try:
         result = dbcon.execute(s)

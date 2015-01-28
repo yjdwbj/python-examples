@@ -51,6 +51,14 @@ def stun_login_request(uname,pwd):
     print "login buf is",buf
     return buf
 
+
+def stun_bind_uuids():
+    buf = []
+    stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MUUID,test_bind_ten_random_devid())
+    stun_add_fingerprint(buf)
+    return buf
+
 def stun_connect_peer_with_uuid(uuid,uname,pwd):
     buf = []
     stun_init_command_str(STUN_METHOD_CONNECT,buf)
@@ -121,15 +129,23 @@ def connect_devid_from_file(host,port):
             break
     ufile.close()
 
+def test_bind_ten_random_devid():
+    n = 10
+    u = ''
+    while n > 0:
+        u = ''.join([u,gen_random_jluuid()])
+        n -=1
+    print 'ten uuids',u
+    return u
 
 
 def stun_setLogin(host,port):
-    buf = []
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    response_result = []
     #stun_contract_allocate_request(buf)
-    buf = stun_register_request('jl1','1234')
+    tuser = 'jl7'
+    tpwd = '1234'
+    #buf = stun_register_request(tuser,tpwd)
     #stun_register_request(buf,'lcy','1234')
     #stun_check_user_valid(buf,'lcy333')
     #stun_login_request(buf,'lcy','test') 
@@ -143,6 +159,7 @@ def stun_setLogin(host,port):
     #uid='2860014389504773b2c2b7252d3eb8b074657374'
     #ruuid = ''.join([uid,("%08x" % get_uuid_crc32(uid))])
     #buf = stun_connect_peer_with_uuid(ruuid,'lcy','1234') 
+    buf = stun_login_request(tuser,tpwd)
     print "send buf",buf
     sdata = binascii.a2b_hex(''.join(buf))
     sock.bind(('',0))
@@ -164,7 +181,7 @@ def stun_setLogin(host,port):
             rdict = parser_stun_package(myrecv[STUN_HEADER_LENGTH*2:-8]) # 去头去尾
             if not stun_is_success_response_str(hattr.method):
                 print "server response error"
-                print errDict.get(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1])
+                print errDict.get(binascii.hexlify(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1]))
                 continue
 
             hattr.method = stun_get_type(hattr.method)
@@ -173,18 +190,20 @@ def stun_setLogin(host,port):
                 print "thread start"
                 refresh  = ThreadRefreshTime(sock)
                 refresh.start()
+                # 下面绑定一些UUID
+                sock.send(binascii.unhexlify(''.join(stun_bind_uuids())))
+
             if hattr.method == STUN_METHOD_REGISTER:
-                buf = stun_login_request('jl1','1234')
+                buf = stun_login_request(tuser,tpwd)
                 sock.send(binascii.unhexlify(''.join(buf)))
             elif hattr.method  == STUN_METHOD_REFRESH:
-                #refresh  = threading.Timer(3,stun_refresh_request,(sock,host,port))
-                #refresh.start()
                 print "app refresh time"
             elif hattr.method == STUN_METHOD_CHANNEL_BIND:
                 # 绑定小机命令o
                 pass
             else:
                 print "Command error"
+
     srvport = sock.getsockname()[1]
     print phost
     sock.close()

@@ -228,25 +228,27 @@ def check_jluuid(huid): # 自定义24B的UUID
     return None
 
 def get_muluuid_fmt(num):
-    n = 0
-    p = ''
-    while n < num:
-        p = ''.join([p,STUN_UVC])
-        n+=UUID_SIZE
+    n = 1
+    p = []
+    while n <= num:
+        p.append(UUID_SIZE * n)
+        n+=1
     return p
 
 def read_attributes_from_buf(response):
     attr_name = response[:4]
     pos = 0
-    fmt ='!HH'
-    vfunc = lambda x: '!HH%ds' % int(x,16)
+    fmt = []
+    vfunc = lambda x: [4,8,int(x,16)]
     if attr_name == STUN_ATTRIBUTE_LIFETIME:
-        fmt = '!HHI'
+        #fmt = '!HHI'
+        fmt = vfunc(response[4:8])
     elif attr_name == STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:
         fmt = '!HH2sHI'
     elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
         fmt = '!HHI'
     elif attr_name == STUN_ATTRIBUTE_STATE:
+        #fmt = vfunc(response[4:8])
         fmt = vfunc(response[4:8])
         #fmt = '!HHI'
     elif attr_name == STUN_ATTRIBUTE_UUID:
@@ -261,11 +263,16 @@ def read_attributes_from_buf(response):
     #elif attr_name == STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES:
         fmt = vfunc(response[4:8])
     elif attr_name == STUN_ATTRIBUTE_MUUID:
-        n = int(response[4:8],16)
-        if n % UUID_SIZE:
-            print 'uuid size is wrong',n
+        #n = int(response[4:8],16)
+        fmt = vfunc(response[4:8])
+        if fmt[-1] % UUID_SIZE:
+            print 'uuid size is wrong',fmt[-1]
             return None # 不是UUID_SIZE的倍数，错误的格式
-        fmt = get_muluuid_fmt(n)
+    elif attr_name == STUN_ATTRIBUTE_MRUUID:
+        fmt = vfunc(response[4:8])
+        if fmt[-1] % (UUID_SIZE+4):
+            print 'uuid size is wrong',fmt[-1]
+            return None # 不是UUID_SIZE的倍数，错误的格式
     else:
         print 'unkown attr_name',attr_name
         return None
@@ -280,16 +287,25 @@ def parser_stun_package(buf):
     print "buf len",rlen
     hexpos = 0
     s = 0
-    while hexpos < rlen:
-        fmt = read_attributes_from_buf(buf[hexpos:])
+    tbuf = buf
+    while len(tbuf):
+        fmt = read_attributes_from_buf(tbuf)
         if fmt is None:
             return None
-        attr_size = struct.calcsize(fmt[1])
-        try:
-            attrdict[fmt[0]] = struct.unpack(fmt[1],binascii.unhexlify(buf[hexpos:hexpos+attr_size*2]))
-        except:
-            print "hexpos",hexpos
-            return  None
+        attr_size = fmt[1][-1]
+        rem4 = attr_size & 0x0003
+        if rem4: # 这里要与客户端一样,4Byte 对齐
+            rem4 = attr_size+4-rem4
+            attr_size += (rem4 - attr_size)
+        fmt[1][-1]= 8+attr_size * 2
+
+        l = [tbuf[i:j] for i,j in zip([0]+fmt[1],fmt[1]+[None])]
+        attrdict[fmt[0]] = tuple(l[:3])
+        if len(l) == 4:
+            tbuf=l[3]
+        else:
+            tbuf =[]
+
         if attrdict.has_key(STUN_ATTRIBUTE_LIFETIME): # 请求的时间大于服务器的定义的，使用服务端的定义 # 请求的时间大于服务器的定义的，使用服务端的定义
             if attrdict[STUN_ATTRIBUTE_LIFETIME][-1] > UCLIENT_SESSION_LIFETIME:
                 attrdict[STUN_ATTRIBUTE_LIFETIME] = list(attrdict[STUN_ATTRIBUTE_LIFETIME])
@@ -297,11 +313,7 @@ def parser_stun_package(buf):
         else:
             #print "attrdict ",attrdict
             attrdict[STUN_ATTRIBUTE_LIFETIME] = (int(STUN_ATTRIBUTE_LIFETIME,16),4,UCLIENT_SESSION_LIFETIME)
-        rem4 = attr_size & 0x0003
-        if rem4: # 这里要与客户端一样,4Byte 对齐
-            rem4 = attr_size+4-rem4
-            attr_size += (rem4 - attr_size)
-        hexpos += attr_size*2
+        #hexpos += fmt[1][-1]
 
     return attrdict
 
@@ -309,8 +321,9 @@ def split_muuid(b):
     pos = 0
     #b = binascii.hexlify(uuids)
     hlen = UUID_SIZE * 2
-    mlist = [b[k:k+hlen] for k in xrange(0,len(b),hlen)]
-    return mlist
+    return  [b[k:k+hlen] for k in xrange(0,len(b),hlen)]
+    #return [buf[i:j] for i,j in zip([0]+,STUN_HEAD_CUTS+[None])]
+    #return mlist
 
 def gen_random_jluuid():
     n = ''.join([str(uuid.uuid4()).replace('-',''),binascii.hexlify('test')])
