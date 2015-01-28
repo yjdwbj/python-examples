@@ -72,6 +72,7 @@ def device_struct_allocate():
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('testdata'))
     stun_add_fingerprint(buf)
+    print buf
     return buf
 
 
@@ -177,8 +178,7 @@ class ThreadRefreshTime(threading.Thread):
 
     def run(self):
         while self.sock:
-            buf = []
-            stun_struct_refresh_request(buf)
+            buf = stun_struct_refresh_request()
             sdata = binascii.a2b_hex(''.join(buf))
             try:
                 self.sock.send(sdata)
@@ -195,10 +195,7 @@ def device_login(host):
         sock.connect(host)
     except Exception,err:
         print 'format_exception():'
-        exc_type,exc_value,exc_tb  = sys.exc_info()
-        pprint(traceback.format_exception(exc_type,exc_value,exc_tb))
     buf = ''.join(device_struct_allocate())
-    print buf
     sock.send(binascii.unhexlify(buf))
     while True:
         data = sock.recv(2048)
@@ -206,13 +203,22 @@ def device_login(host):
             break
         else:
             hbuf = binascii.hexlify(data)
-            print hbuf
-            rdict = parser_stun_package(hbuf)
+            print 'recv buf is',hbuf
+            #hdict = get_packet_head_dict(hbuf[:STUN_HEADER_LENGTH*2])
+            hattr = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH*2])
+            rdict = parser_stun_package(hbuf[STUN_HEADER_LENGTH*2:-8])
+            print "method is",hattr.method
             if not rdict:
                 print "server packet is wrong"
                 break # 出错了
-            if rdict.method == STUN_METHOD_ALLOCATE:
-                t = ThreadRefreshTime()
+            if not stun_is_success_response_str(hattr.method):
+                print "error response"
+                break
+            hattr.method = stun_get_type(hattr.method)
+            print "method is",hattr.method
+            if hattr.method == STUN_METHOD_ALLOCATE:
+                print 'start refresh time'
+                t = ThreadRefreshTime(sock)
                 t.start()
 
     print 'sock will close'

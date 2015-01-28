@@ -31,15 +31,13 @@ import select
 import logging
 from logging import handlers
 from epoll_global import *
+import traceback
 
 
 class GetPkgObj:
     def __init__(self,**kwargs):
         self.__dict__.update(kwargs)
 
-class DictClass:
-    def __init__(self,**kwargs):
-        self.__dict__.update(kwargs)
 
 class ComState: pass
 
@@ -59,35 +57,29 @@ def handle_client_request(buf,fileno):
     2  小机的回复
     """
     #print "handle allocate request\n"
-
-    try:
-        reqhead = struct.unpack(STUN_HEADER_FMT,binascii.unhexlify(buf[:STUN_HEADER_LENGTH*2]))
-    except:
-        log.error("unpack head is wrong  %s" % buf[:STUN_HEADER_LENGTH*2])
-        delete_fileno(fileno)
-        return ([],-1)
-
-    method = '%04x' % reqhead[-2]
+    res = get_packet_head_class(buf[:STUN_HEADER_LENGTH*2])
     if not gClass.timer.has_key(fileno):
-        if method == STUN_METHOD_REFRESH:  # 非法刷新请求
+        if res.method == STUN_METHOD_REFRESH:  # 非法刷新请求
             log.info("Wrong Request. Host: %s:%d" % gClass.clients[fileno].getpeername())
             delete_fileno(fileno)
             return ([],-2)
 
-    res = ComState()
+    #res = ComState()
     # = binascii.hexlify(reqhead[-1]).lower()
-    res.host = gClass.clients.get(fileno).getpeername()
-    res.fileno = fileno
-    res.method = method
+    setattr(res,'host',gClass.clients.get(fileno).getpeername())
+    #res.host = gClass.clients.get(fileno).getpeername()
+    #res.fileno = fileno
+    setattr(res,'fileno',fileno)
+    #res.method = method
     hexpos = STUN_HEADER_LENGTH*2
-    upkg = parser_stun_package(buf[hexpos:-8],res)
-    if not (type(upkg) is dict):
-        res.eattr = STUN_ERROR_UNKNOWN_ATTR
-        log.error("Unkown Attribute %s %s" % (res['eattr'],buf[hexpos:]))
+    upkg = parser_stun_package(buf[hexpos:-8])
+    if upkg is None:
+        setattr(res,'eattr',STUN_ERROR_UNKNOWN_ATTR)
+        #res.eattr = STUN_ERROR_UNKNOWN_ATTR
         return  (stun_attr_error_response(res),0)
 
     res.attrs = upkg
-    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME) and method != STUN_METHOD_REFRESH:
+    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME) and res.method != STUN_METHOD_REFRESH:
         update_refresh_time(fileno,res.attrs.get(STUN_ATTRIBUTE_LIFETIME)[-1])
 
     if res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and res.attrs.get(STUN_ATTRIBUTE_MESSAGE_INTEGRITY)[1] != 32:
@@ -96,25 +88,11 @@ def handle_client_request(buf,fileno):
         log.error("Pasword is to short. Host: %s:%d" % gClass.clients[fileno].getpeername())
         return  (stun_attr_error_response(res),0)
 
-
-
-    if dictMethod.has_key(method):
-        #if gClass.uuids.has_key(): # 小机收到服务器转发的连接请求，回复APP
-        #    sock = gClass.uuids[]
-        #    thost = gClass.clients[fileno].getpeername()
-        #    gClass.uuids.pop()
-        #    gClass.responses[sock] = stun_connect_address(thost,res)
-        #    epoll.modify(sock,select.EPOLLOUT)
-        #    return ([],2)
-
-        return  dictMethod[method](res)
-        #if method == STUN_METHOD_CONNECT and not buf:
-        #    return ([],1)
-        #else:
-        #    return (buf,0)
+    if dictMethod.has_key(res.method):
+        return  (dictMethod[res.method](res),0)
     else:
         res.eattr = STUN_ERROR_UNKNOWN_METHOD
-        log.error("Unkown Method %s %s" % (res['eattr'],buf[hexpos:]))
+        log.error("Unkown Method %s %s" % (res.eattr,buf[hexpos:]))
         return  (stun_attr_error_response(res),0)
 
 def bind_each_uuid(ustr,fileno):
@@ -328,7 +306,7 @@ def stun_connect_address(host,res):
 def stun_attr_error_response(res):
     buf = []
     stun_init_command_str(stun_make_error_response(res.method),buf,)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES,res.eattr)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,res.eattr)
     stun_add_fingerprint(buf)
     return (buf)
 
@@ -381,13 +359,6 @@ def check_uuid_valid(uhex):
     #print "my crc",crcstr,'rcrc',uhex[-8:]
     return cmp(get_jluuid_crc32(uhex[:-8]),uhex[-8:])
 
-def check_jluuid(huid): # 自定义24B的UUID
-    if 0 != check_uuid_valid(huid):
-        return STUN_ERROR_UNKNOWN_PACKET
-
-    if check_uuid_format(huid):
-        return STUN_ERROR_UNKNOWN_PACKET
-    return None
 
 def handle_allocate_request(res):
     """
@@ -413,8 +384,6 @@ def handle_allocate_request(res):
     else:
         gClass.timer[res.fileno] = time.time() + UCLIENT_SESSION_LIFETIME
 
-    if not res.attrs.has_key(STUN_ATTRIBUTE_DATA):
-        res.data = ''
     res.vendor = huid[32:40]
     res.host = gClass.clients[res.fileno].getpeername()
     res.tuid = huid[:32]
@@ -529,8 +498,8 @@ def get_account_status_table():
 
 def get_account_table():
     metadata = MetaData()
-    account = Table('%08x' % 0,metadata,
-            Column('uuid',pgsql.UUID,primary_key=True),
+    account = Table('account',metadata,
+            #Column('uuid',pgsql.UUID,primary_key=True),
             Column('uname',pgsql.VARCHAR(255),primary_key=True),
             Column('pwd',pgsql.BYTEA),
             Column('is_active',pgsql.BOOLEAN,nullable=False),
@@ -603,16 +572,20 @@ def update_newdevice(res):
     ipadr = int(binascii.hexlify(socket.inet_aton(res.host[0])),16) & 0xFFFFFFFF
     ipprt = res.host[1] & 0xFFFF
     #print "host %d:%d" % (ipadr,ipprt)
+    data = ''
+    if res.attrs.has_key(STUN_ATTRIBUTE_DATA):
+        data = res.attrs[STUN_ATTRIBUTE_DATA][-1]
+
     if not row: # 找不到这个UUID 就插入新的
         ins = mirco_devices.insert().values(devid=res.tuid,is_active=True,
-                is_online=True,chost=[ipadr,ipprt],data=res.data,last_login_time=datetime.now())
+                is_online=True,chost=[ipadr,ipprt],data=data,last_login_time=datetime.now())
         try:
             result = dbcon.execute(ins)
         except:
             log.error("Insert UUID To DB Occur Error. UUID is %s" % res.tuid)
         #print "insert new devices result fetchall"
     else:
-        upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=res.data,
+        upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
                 last_login_time=datetime.now()).where(mirco_devices.c.devid == res.tuid)
         try:
             result = dbcon.execute(upd)
@@ -723,10 +696,11 @@ def Server(port):
                         #mdict['requests'][fileno] = mdict['clients'][fileno].recv(SOCK_BUFSIZE)
                         gClass.requests[fileno] = gClass.clients[fileno].recv(SOCK_BUFSIZE)
                         #if check_packet_length_and_magic(gClass.requests[fileno]):
-                        hbuf = binascii.b2a_hex(gClass.requests[fileno])
+                        hbuf = binascii.hexlify(gClass.requests[fileno])
                         if check_packet_vaild(hbuf):
                             print hbuf
                             log.error('unkown packet format')
+                            delete_fileno(fileno)
                             continue
                         rbuf = handle_client_request(hbuf,fileno)
 
@@ -753,7 +727,7 @@ def Server(port):
                             log.debug("responses is null. Host: %s:%d" % gClass.clients[fileno].getpeername())
                             epoll.modify(fileno,select.EPOLLWRBAND)
                             continue
-                        #nbyte =  mdict['clients'][fileno].send(binascii.a2b_hex(''.join(mdict['responses'][fileno])))
+                        print 'send buf',gClass.responses[fileno]
                         nbyte =  gClass.clients[fileno].send(binascii.a2b_hex(''.join(gClass.responses[fileno])))
                         #print "send %d byte" % nbyte
 #                        if not stun_is_success_response_str(mdict['responses'][fileno][0][:4]): # 不正确的请求，关闭它。
@@ -856,7 +830,7 @@ engine = create_engine('postgresql://postgres@localhost:5432/nath',pool_size=20,
 atable = get_account_table()
 if not atable.exists(engine):
     engine.connect().execute("""
-    CREATE TABLE "00000000"
+    CREATE TABLE "account"
 (
   uname character varying(255) NOT NULL PRIMAY_KEY,
   pwd BYTEA,
@@ -875,7 +849,7 @@ CREATE TABLE account_status
   last_login_time timestamp with time zone DEFAULT now(),
   chost bigint[] NOT NULL DEFAULT '{0,0}'::bigint[],
   CONSTRAINT account_status_uname_fkey FOREIGN KEY (uname)
-      REFERENCES 00000000 (uname) MATCH SIMPLE
+      REFERENCES account (uname) MATCH SIMPLE
       ON UPDATE NO ACTION ON DELETE NO ACTION
 )
 ''')

@@ -30,6 +30,7 @@ class TestEpollSrv(unittest.TestCase):
         return tn
 
     def test_handle_allocate_request(self):
+        return
         res = dumpclass()
         res.method=STUN_METHOD_ALLOCATE
         res.fileno=5
@@ -60,6 +61,12 @@ class TestEpollSrv(unittest.TestCase):
         [epoll_srv.bind_each_uuid(n,5) for n in mlist]
         assert epoll_srv.gClass.appbinds[5]
         print epoll_srv.gClass.appbinds[5]
+
+    def test_check_packet_vaild(self):
+        buf='4a4c00300000000000000000000000030000000080010018373163cda13c4ca9b9e07ac9bb26d58074657374e1494701000d0004000000a0001300087465737464617461a1c7c346'
+        res = epoll_srv.check_packet_vaild(buf)
+        self.assertEqual(res,0)
+        self.assertFalse(res)
 
 
 
