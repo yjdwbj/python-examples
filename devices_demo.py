@@ -221,10 +221,13 @@ def device_login(host):
             if not rdict:
                 print "server packet is wrong"
                 break # 出错了
-            if hattr.method != STUN_METHOD_SEND:
+            if hattr.method == STUN_METHOD_SEND or hattr.method == STUN_METHOD_INFO:
+                pass
+            else:
                 if not stun_is_success_response_str(hattr.method):
                     print "error response",hattr.method
                     continue
+
             hattr.method = stun_get_type(hattr.method)
             print "method",hattr.method
             if hattr.method == STUN_METHOD_ALLOCATE:
@@ -235,12 +238,13 @@ def device_login(host):
                     stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                     mysock = int(stat[:8],16)
             elif hattr.method == STUN_METHOD_INFO:
+                print "recv server notify"
                 if rdict.has_key(STUN_ATTRIBUTE_STATE):
                     stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                     myconn = int(stat[:8],16)
             elif hattr.method == STUN_METHOD_SEND:
                 print "recv forward packet"
-                if rdict.has_key[STUN_ATTRIBUTE_DATA]:
+                if rdict.has_key(STUN_ATTRIBUTE_DATA):
                     print rdict[STUN_ATTRIBUTE_DATA][-1]
                 dstsock = int(hattr.srcsock,16)
                 buf = send_data_to_app(mysock,dstsock)

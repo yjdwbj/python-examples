@@ -56,6 +56,8 @@ def delete_fileno(fileno):
     if gClass.clients.has_key(fileno):
         gClass.clients.get(fileno).close()
         gClass.clients.pop(fileno)
+    if gClass.requests.has_key(fileno):
+        gClass.requests.pop(fileno)
 
 
 def handle_client_request(buf,fileno):
@@ -70,7 +72,8 @@ def handle_client_request(buf,fileno):
     #print "handle allocate request\n"
     res = get_packet_head_class(buf[:STUN_HEADER_LENGTH*2])
     if not gClass.timer.has_key(fileno):
-        if res.method == STUN_METHOD_REFRESH:  # 非法刷新请求
+        if res.method != STUN_METHOD_ALLOCATE or \
+                res.method != STUN_METHOD_BINDING:  # 非法刷新请求
             log.info(','.join([LOG_ERROR_IILAGE_CLIENT,gClass.clients[fileno].getpeername()[0]]))
             delete_fileno(fileno)
             return ([],-2)
@@ -80,7 +83,7 @@ def handle_client_request(buf,fileno):
         print "forward packet"
         time.sleep(1)
         dstsock = int(res.dstsock,16)
-        srcsoct = int(res.srcsock,16)
+        srcsock = int(res.srcsock,16)
         if gClass.clients.has_key(dstsock):
             gClass.responses[dstsock] = buf
             epoll.modify(dstsock,select.EPOLLOUT)
@@ -107,8 +110,8 @@ def handle_client_request(buf,fileno):
         return  (stun_error_response(res),0)
 
     res.attrs = upkg
-    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME) and res.method != STUN_METHOD_REFRESH:
-        update_refresh_time(fileno,res.attrs.get(STUN_ATTRIBUTE_LIFETIME)[-1])
+    #if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME) and res.method != STUN_METHOD_REFRESH:
+    #   update_refresh_time(fileno,res.attrs.get(STUN_ATTRIBUTE_LIFETIME)[-1])
 
     if res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and int(res.attrs.get(STUN_ATTRIBUTE_MESSAGE_INTEGRITY)[1],16) != 32:
         #res.eattr = binascii.hexlify('Password is to short')
@@ -120,22 +123,24 @@ def handle_client_request(buf,fileno):
         return  (dictMethod[res.method](res),0)
     else:
         res.eattr = STUN_ERROR_UNKNOWN_METHOD
-        log.error(','.join([LOG_ERROR_METHOD,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
+        log.error(','.join([LOG_ERROR_METHOD,res.method,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
         return  (stun_error_response(res),0)
 
 def bind_each_uuid(ustr,fileno):
     if not gClass.appbinds.has_key(fileno):
         gClass.appbinds[fileno]={}
+
     if gClass.devuuid.has_key(ustr):
         # 通知在线的小机，有APP要绑定它
-        b = '%08x' % gClass.devuuid[ustr]
-        gClass.appbinds[fileno][ustr]= b
-        gClass.clients[fileno].send(binascii.unhexlify(\
-                ''.join(notify_peer(''.join([b,STUN_ONLINE])))))
-        #gClass.responses[fileno] = notify_peer(''.join([b,STUN_ONLINE]))
-        #epoll.modify(gClass.devuuid[ustr],select.EPOLLOUT)
+        dstsock = gClass.devuuid[ustr]
+        b = '%08x' % fileno
+        gClass.appbinds[fileno][ustr]= dstsock
+        notifybuf = notify_peer(''.join([b,STUN_ONLINE]))
+        print 'info',notifybuf
+        gClass.responses[dstsock] = notify_peer(''.join([b,STUN_ONLINE]))
+        epoll.modify(dstsock,select.EPOLLOUT)
     else:
-        gClass.appbinds[fileno][ustr]='%08x' % 0xFFFFFFFF
+        gClass.appbinds[fileno][ustr]=0xFFFFFFFF
 
 
 
@@ -173,12 +178,12 @@ def stun_bind_devices_ok(res):
     buf = []
     stun_init_command_str(stun_make_success_response(res.method),buf)
     if res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
-        joint = [''.join([k,v]) for k,v in gClass.appbinds[res.fileno].iteritems()]
+        joint = [''.join([k,'%08x' % v]) for k,v in gClass.appbinds[res.fileno].iteritems()]
         print 'joint is',joint
         stun_attr_append_str(buf,STUN_ATTRIBUTE_MRUUID,''.join(joint))
     else:
         stun_attr_append_str(buf,STUN_ATTRIBUTE_RUUID,\
-                gClass.appbinds[res.fileno][res.attrs[STUN_ATTRIBUTE_UUID][-1]])
+                '%08x' % gClass.appbinds[res.fileno][res.attrs[STUN_ATTRIBUTE_UUID][-1]])
     stun_add_fingerprint(buf)
     return (buf)
 
@@ -198,18 +203,23 @@ def handle_app_login_request(res):
     result = app_user_login(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],
             res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
     #result = app_user_login(res.attrs[STUN_ATTRIBUTE_UUID][-1],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
-    print "login result",result
+    #print "login result",result
     if not result:
         res.eattr = STUN_ERROR_AUTH
         return  stun_error_response(res)
 
     gClass.actives[res.fileno] = res.attrs[STUN_ATTRIBUTE_USERNAME]
-    tcs.name = result[0][1]
+    tcs.name = result[0][0]
+    print "login name",tcs.name
     app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],res.host)
+    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
+        update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
+    else:
+        update_refresh_time(res.fileno,UCLIENT_SESSION_LIFETIME)
     return app_user_auth_success(res)
 
 def handle_app_send_data_to_device(res): # APP 发给小机的命令
-    return 
+    return
     if res.attrs.has_key(STUN_ATTRIBUTE_UUID):
         chk = check_jluuid(binascii.hexlify(res.attrs[STUN_ATTRIBUTE_UUID][-1]))
         if chk:
@@ -397,7 +407,6 @@ def handle_allocate_request(res):
     """
     if res.attrs.has_key(STUN_ATTRIBUTE_UUID):
         chk = check_jluuid(res.attrs[STUN_ATTRIBUTE_UUID][-1])
-        print 'chk is',chk
         if chk:
             res.eattr = chk
             log.error(','.join([LOG_ERROR_UUID,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
@@ -410,9 +419,9 @@ def handle_allocate_request(res):
 
     huid = res.attrs[STUN_ATTRIBUTE_UUID][-1]
     if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
-        gClass.timer[res.fileno] = time.time()+ res.attrs.get(STUN_ATTRIBUTE_LIFETIME,0)[-1]
+        update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
     else:
-        gClass.timer[res.fileno] = time.time() + UCLIENT_SESSION_LIFETIME
+        update_refresh_time(res.fileno,UCLIENT_SESSION_LIFETIME)
 
     res.vendor = huid[32:40]
     res.host = gClass.clients[res.fileno].getpeername()
@@ -422,7 +431,7 @@ def handle_allocate_request(res):
     gClass.devsock[res.fileno] = tcs = ComState()
     gClass.devuuid[huid] = res.fileno
     tcs.uuid = huid
-    print "login devid is",tcs.uuid
+    #print "login devid is",tcs.uuid
     return device_login_sucess(res)
 
 def app_user_auth_success(res):
@@ -442,13 +451,13 @@ def device_login_sucess(res): # 客服端向服务器绑定自己的IP
     return (buf)
 
 def handle_refresh_request(res):
-    update_refresh_time(res.fileno,res.attrs[STUN_ATTRIBUTE_LIFETIME][-1])
+    update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
     return refresh_sucess(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1])
 
 def refresh_sucess(ntime): # 刷新成功
     buf = []
     stun_init_command_str(stun_make_success_response(STUN_METHOD_REFRESH),buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % ntime)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,ntime)
     stun_add_fingerprint(buf)
     return (buf)
     #print "refresh response buf",buf
@@ -461,27 +470,29 @@ def app_user_register(user,pwd):
     account = get_account_table()
     dbcon = engine.connect()
     #print "register new account %s,%s" % (user,pwd)
-    sss = sql.select([account]).where(account.c.uname == user)
+    uname = binascii.unhexlify(user)
+    sss = sql.select([account]).where(account.c.uname == uname)
     res = dbcon.execute(sss)
     if len(res.fetchall()):
         return True
     else:
         obj = hashlib.sha256()
-        obj.update(user)
+        obj.update(uname)
         obj.update(pwd)
-        ins = account.insert().values(uname=user,pwd=obj.digest(),is_active=True,reg_time=datetime.now())
+        ins = account.insert().values(uname=uname,pwd=obj.digest(),is_active=True,reg_time=datetime.now())
         try:
             dbcon.execute(ins)
         except:
-            log.error(','.join([LOG_ERROR_REGISTER,user,str(sys._getframe().f_lineno)]))
+            log.error(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
             return True
         return False
 
 def app_user_update_status(user,host):
+    uname = binascii.unhexlify(user)
     status_tables = get_account_status_table()
     ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
     ipprt = host[1] & 0xFFFF
-    s = sql.select([status_tables]).where(status_tables.c.uname == user)
+    s = sql.select([status_tables]).where(status_tables.c.uname == uname)
     dbcon = engine.connect()
     result = dbcon.execute(s)
     row = result.fetchall()
@@ -491,7 +502,7 @@ def app_user_update_status(user,host):
         #修改
         sss = status_tables.update().values(last_login_time = datetime.now(),chost=[ipadr,ipprt]).where(status_tables.c.uname == user)
     else:
-        sss = status_tables.insert().values(uname=user,is_login=True,chost=[ipadr,ipprt])
+        sss = status_tables.insert().values(uname=uname,is_login=True,chost=[ipadr,ipprt])
     try:
         result = dbcon.execute(sss)
     except:
@@ -500,17 +511,18 @@ def app_user_update_status(user,host):
 
 
 def app_user_login(user,pwd):
+    uname = binascii.unhexlify(user)
     account = get_account_table()
     dbcon = engine.connect()
     obj = hashlib.sha256()
-    obj.update(user)
+    obj.update(uname)
     obj.update(pwd)
-    s = sql.select([account]).where(and_(account.c.uname == user,account.c.pwd == obj.digest(),
+    s = sql.select([account]).where(and_(account.c.uname == uname,account.c.pwd == obj.digest(),
         account.c.is_active == True))
     try:
         result = dbcon.execute(s)
     except:
-        log.error(','.join([LOG_ERROR_DB,user,str(sys._getframe().f_lineno)]))
+        log.error(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
     return result.fetchall()
 
 
@@ -616,19 +628,26 @@ def update_newdevice(res):
 
 class CheckSesionThread(threading.Thread):
     def run(self):
-        #print 'mdict[timer]',mdict['timer']
         while True:
             time.sleep(1)
-            #[clean_timeout_sock(x)  for x in  mdict['timer'].keys()]
             [clean_timeout_sock(x)  for x in  gClass.timer.keys()]
 
+def notify_peer_is_logout(fileno,dstsock):
+    gClass.responses[fileno] =  notify_peer(''.join(['%08x' % dstsock,STUN_OFFLINE]))
+    epoll.modify(fileno,select.EPOLLOUT)
+
 def clean_timeout_sock(fileno): # 清除超时的连接
-    #print 'mdict[timer][%d]' % fileno,mdict['timer'][fileno]
     if gClass.timer.has_key(fileno):
         if gClass.timer[fileno] < time.time():
-            log.debug("Client %d life time is end,close it" % fileno )
+            log.info("Client %d life time is end,close it" % fileno )
+            if gClass.appsock.has_key(fileno):
+                notify_uuid_app_logout(fileno)
+                # APP 应该下线了
+            elif gClass.devsock.has_key(fileno):
+                notify_app_uuid_logout(fileno)
+                # 小机下线，通知APP
+
             epoll.unregister(fileno)
-            #print "mdict[uuids] is",mdict['uuids']
             if gClass.clients.has_key(fileno):
                 gClass.clients[fileno].close()
             remove_fileno_resources(fileno)
@@ -646,8 +665,25 @@ def mirco_devices_logout(devid):
         log.error(','.join([LOG_ERROR_DB,devid,str(sys._getframe().f_lineno)]))
         return 0
 
+
+def notify_uuid_app_logout(fileno):
+    binds = [v for k,v in gClass.appbinds[fileno].iteritems()]
+    gClass.appsock.pop(fileno) # 回收这个APP的BIND资源
+    [notify_peer_is_logout(n,fileno) for n in binds if gClass.devsock.has_key(n)]
+
+def notify_app_uuid_logout(fileno):
+    devid = gClass.devsock[fileno].uuid
+    print "devid",devid,"has logout"
+    binds = [k for k,v in gClass.appbinds.iteritems() if v.has_key(devid)]
+    gClass.devsock.pop(fileno) # 回收这个APP的BIND资源
+    [notify_peer_is_logout(n,fileno) for n in binds if gClass.appsock.has_key(n)]
+    alist = [n for n in binds if gClass.appsock.has_key(n)]
+    print "appbinds list",alist
+    for n in alist:
+        gClass.appbinds[n][devid]=0xFFFFFFFF
+
+
 def app_user_logout(uname):
-    print uname,"logout"
     atable = get_account_status_table()
     conn = engine.connect()
     ss = atable.update().values(is_login=False).where(atable.c.uname == uname)
@@ -655,6 +691,7 @@ def app_user_logout(uname):
         res = conn.execute(ss)
     except :
         log.error(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
+
 def sock_recv_fail(fileno):
     # sock 关闭时产生的异常处理
     epoll.unregister(fileno)
@@ -675,7 +712,7 @@ def sock_send_fail(fileno):
         srcsock = int(phead.srcsock,16)
         gClass.responses[srcsock] = ''.join(stun_error_response(phead))
         epoll.modify(srcsock,select.EPOLLOUT)
-        return
+
     # sock 关闭时产生的异常处理
     epoll.unregister(fileno)
     if gClass.appsock.has_key(fileno): #更新相应的数据库在线状态
@@ -689,12 +726,10 @@ def sock_send_fail(fileno):
 
 def remove_fileno_resources(fileno):
     for k in gClass.__dict__:
+        print 'gClass key is',k
         if gClass.__dict__[k].has_key(fileno):
             gClass.__dict__[k].pop(fileno)
 
-    #for k in store:
-    #    if mdict[k].has_key(fileno):
-    #        mdict[k].pop(fileno)
 
 
 def Server(port):
@@ -728,15 +763,14 @@ def Server(port):
                     epoll.register(conn.fileno(),select.EPOLLIN)
                 elif event & select.EPOLLIN: # 读取socket 的数据
                     try:
-                        #mdict['requests'][fileno] = mdict['clients'][fileno].recv(SOCK_BUFSIZE)
                         gClass.requests[fileno] = gClass.clients[fileno].recv(SOCK_BUFSIZE)
-                        #if check_packet_length_and_magic(gClass.requests[fileno]):
                         hbuf = binascii.hexlify(gClass.requests[fileno])
                         if check_packet_vaild(hbuf):
-                            print hbuf
+                            print 'check packet error',hbuf
                             log.error(','.join([LOG_ERROR_PACKET,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
                             delete_fileno(fileno)
                             continue
+
                         rbuf = handle_client_request(hbuf,fileno)
 
                         if rbuf[1] < 0:  #出错与非法请求关闭就行了
@@ -751,6 +785,8 @@ def Server(port):
                             #mdict['responses'][fileno] = rbuf[0]
                             gClass.responses[fileno] = rbuf[0]
                             epoll.modify(fileno,select.EPOLLOUT)
+                            if gClass.timer.has_key(fileno):
+                                gClass.timer[fileno] = time.time()+UCLIENT_SESSION_LIFETIME
                         #mdict['requests'].pop(fileno)
                         gClass.requests.pop(fileno)
                     except IOError:
@@ -765,8 +801,12 @@ def Server(port):
                             epoll.modify(fileno,select.EPOLLWRBAND)
                             continue
                         print 'send buf',gClass.responses[fileno]
-                        nbyte =  gClass.clients[fileno].send(binascii.a2b_hex(''.join(gClass.responses[fileno])))
+                        nbyte =  gClass.clients[fileno].send(\
+                                binascii.unhexlify(''.join(gClass.responses[fileno])))
                         gClass.responses.pop(fileno)
+                        if gClass.timer.has_key(fileno):
+                            # 给这个联接添加生存时间
+                            gClass.timer[fileno] = time.time()+UCLIENT_SESSION_LIFETIME
                         epoll.modify(fileno,select.EPOLLIN)
                     except IOError:
                         log.debug("sock has closed %d" % fileno)

@@ -62,6 +62,7 @@ STUN_ATTRIBUTE_TRANSPORT_DTLS_VALUE=int(250)
 #Lifetimes
 STUN_DEFAULT_ALLOCATE_LIFETIME=int(600)
 UCLIENT_SESSION_LIFETIME=int(60)
+STR_UCLIENT_SESSION_LIFETIME='%08x' % UCLIENT_SESSION_LIFETIME
 
 STUN_MAGIC_COOKIE=0x2112A442
 STUN_MAGIC_COOKIE_STR = struct.pack("I",STUN_MAGIC_COOKIE)
@@ -70,7 +71,7 @@ STUN_STRUCT_FMT='!HHI12s' # 固定20Byte的头， 类型，长度，魔数，SSI
 
 
 STUN_DEFAULT_ALLOCATE_LIFETIME=int(600)
-UCLIENT_SESSION_LIFETIME=int(160)
+#UCLIENT_SESSION_LIFETIME=int(160)
 
 STUN_UUID_VENDOR='20sI'
 STUN_UVC='16s4sI' # uuireturn check_packet_crc32(buf)
@@ -106,8 +107,8 @@ errDict={STUN_ERROR_UNKNOWN_ATTR:'Unkown attribute',
         STUN_ERROR_FORMAT:'Format error'
         }
 
-STUN_ONLINE='0001'
-STUN_OFFLINE='0000'
+STUN_ONLINE='00000001'
+STUN_OFFLINE='00000000'
 
 STUN_HEAD_CUTS=[4,8,12,20,28,32,40] # 固定长度的包头
 STUN_HEAD_KEY=['magic','version','length','srcsock','dstsock','method','sequence'] # 包头的格式的名称
@@ -309,12 +310,8 @@ def parser_stun_package(buf):
             tbuf =[]
 
         if attrdict.has_key(STUN_ATTRIBUTE_LIFETIME): # 请求的时间大于服务器的定义的，使用服务端的定义 # 请求的时间大于服务器的定义的，使用服务端的定义
-            if attrdict[STUN_ATTRIBUTE_LIFETIME][-1] > UCLIENT_SESSION_LIFETIME:
-                attrdict[STUN_ATTRIBUTE_LIFETIME] = list(attrdict[STUN_ATTRIBUTE_LIFETIME])
-                attrdict[STUN_ATTRIBUTE_LIFETIME][-1] = UCLIENT_SESSION_LIFETIME
-        else:
-            #print "attrdict ",attrdict
-            attrdict[STUN_ATTRIBUTE_LIFETIME] = (int(STUN_ATTRIBUTE_LIFETIME,16),4,UCLIENT_SESSION_LIFETIME)
+            if int(attrdict[STUN_ATTRIBUTE_LIFETIME][-1],16) > UCLIENT_SESSION_LIFETIME:
+                attrdict[STUN_ATTRIBUTE_LIFETIME] = (STUN_ATTRIBUTE_LIFETIME,'0004',STR_UCLIENT_SESSION_LIFETIME)
         #hexpos += fmt[1][-1]
 
     return attrdict

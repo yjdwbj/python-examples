@@ -62,9 +62,9 @@ def stun_bind_uuids():
 def stun_bind_single_uuid():
     buf = []
     stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
-    jluid = '19357888AA07418584391D0ADB61E7902653716613920FBF'
+    #jluid = '19357888AA07418584391D0ADB61E7902653716613920FBF'
+    jluid = 'e68cd4167aea4f85a7242031252be15874657374a860a02f'
     stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,jluid.lower())
-           # 'e68cd4167aea4f85a7242031252be15874657374a860a02f')
     stun_add_fingerprint(buf)
     return buf
 
@@ -159,9 +159,9 @@ def stun_setLogin(host,port):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     #stun_contract_allocate_request(buf)
-    tuser = 'jl7'
+    tuser = 'tjl6'
     tpwd = '1234'
-    #buf = stun_register_request(tuser,tpwd)
+    buf = stun_register_request(tuser,tpwd)
     #stun_register_request(buf,'lcy','1234')
     #stun_check_user_valid(buf,'lcy333')
     #stun_login_request(buf,'lcy','test') 
@@ -196,21 +196,19 @@ def stun_setLogin(host,port):
             hattr = get_packet_head_class(myrecv[:STUN_HEADER_LENGTH*2])
 
             rdict = parser_stun_package(myrecv[STUN_HEADER_LENGTH*2:-8]) # 去头去尾
-            print "rdict is",rdict
             if hattr.method != STUN_METHOD_DATA:
                 if not stun_is_success_response_str(hattr.method):
-                    print "server response error"
+                    print "rdict is",rdict
+                    print "server response error",hattr.method
                     #print rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE]
-                    #print errDict.get(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1])
+                    print errDict.get(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1])
                     continue
 
             hattr.method = stun_get_type(hattr.method)
-            print "recv method is",hattr.method
-
             if hattr.method  == STUN_METHOD_BINDING:
                 print "thread start"
-                refresh  = ThreadRefreshTime(sock)
-                refresh.start()
+                #refresh  = ThreadRefreshTime(sock)
+                #refresh.start()
                 stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                 mysock = int(stat[:8],16)
                 # 下面绑定一些UUID
@@ -223,7 +221,6 @@ def stun_setLogin(host,port):
                 print "app refresh time"
             elif hattr.method == STUN_METHOD_CHANNEL_BIND:
                 # 绑定小机命令o
-                print "rdict is",rdict
                 if rdict.has_key(STUN_ATTRIBUTE_RUUID):
                     dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
                     buf = stun_send_data_to_devid(mysock,dstsock)
@@ -232,6 +229,8 @@ def stun_setLogin(host,port):
             elif hattr.method == STUN_METHOD_DATA:
                 print "recv device peer data",time.time()
                 dstsock = int(hattr.srcsock,16)
+                if rdict.has_key(STUN_ATTRIBUTE_DATA):
+                    print rdict[STUN_ATTRIBUTE_DATA][-1]
                 buf = stun_send_data_to_devid(mysock,dstsock)
                 print "forward buf is",buf
                 sock.send(binascii.unhexlify(''.join(buf)))
