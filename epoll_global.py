@@ -93,7 +93,7 @@ STUN_ERROR_UNKNOWN_PACKET='0404'
 STUN_ERROR_UNKNOWN_METHOD='0403'
 STUN_ERROR_USER_EXIST='0405'
 STUN_ERROR_AUTH='0406'
-STUN_ERROR_DEVOFFLIE='0407'
+STUN_ERROR_DEVOFFLINE='0407'
 STUN_ERROR_FORMAT='0408'
 
 errDict={STUN_ERROR_UNKNOWN_ATTR:'Unkown attribute',
@@ -102,7 +102,7 @@ errDict={STUN_ERROR_UNKNOWN_ATTR:'Unkown attribute',
         STUN_ERROR_UNKNOWN_METHOD:'unkown method',
         STUN_ERROR_USER_EXIST:'User has exist',
         STUN_ERROR_AUTH:'Unauthorized error',
-        STUN_ERROR_DEVOFFLIE:'target devices offline',
+        STUN_ERROR_DEVOFFLINE:'target devices offline',
         STUN_ERROR_FORMAT:'Format error'
         }
 
@@ -169,11 +169,12 @@ def stun_attr_append_str(buf,attr,add_value):
     while (rem4 -alen) > 0:
         buf[-1] += '00'
         rem4 -= 1
-    buf[1] ="%04x" % (len(''.join(buf)) / 2 - STUN_HEADER_LENGTH)
+    buf[2] ="%04x" % (len(''.join(buf)) / 2 )
 
 def stun_add_fingerprint(buf):
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
     buf.append('%08x' % 0)
+    buf[2] = '%04x' % (int(buf[2],16)+4)
     crc_str = ''.join(buf[:-1])
     crcval = get_crc32(crc_str)
     crcstr = "%08x" % ((crcval  ^ CRCMASK) & 0xFFFFFFFF)
@@ -200,10 +201,10 @@ def check_packet_vaild(buf):
         return False
     #return check_packet_crc32(buf)
 
-def stun_attr_error_response(res):
+def stun_error_response(res):
     buf = []
     stun_init_command_str(stun_make_error_response(res.method),buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES,res.eattr)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,res.eattr)
     stun_add_fingerprint(buf)
     return (buf)
 
@@ -253,6 +254,8 @@ def read_attributes_from_buf(response):
         #fmt = '!HHI'
     elif attr_name == STUN_ATTRIBUTE_UUID:
         fmt = vfunc(response[4:8])
+    elif attr_name == STUN_ATTRIBUTE_RUUID:
+        fmt = vfunc(response[4:8])
     elif attr_name == STUN_ATTRIBUTE_MESSAGE_INTEGRITY:
         fmt = vfunc(response[4:8])
     elif attr_name == STUN_ATTRIBUTE_DATA:
@@ -284,7 +287,6 @@ def parser_stun_package(buf):
     #attrdict= DictClass()
     attrdict = {}
     rlen = len(buf)
-    print "buf len",rlen
     hexpos = 0
     s = 0
     tbuf = buf

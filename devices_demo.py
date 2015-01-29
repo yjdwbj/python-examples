@@ -67,7 +67,7 @@ def stun_handle_response(response):
 def device_struct_allocate():
     buf = []
     stun_init_command_str(STUN_METHOD_ALLOCATE,buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,gen_random_jluuid())
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,'e68cd4167aea4f85a7242031252be15874657374a860a02f')
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('testdata'))
@@ -171,6 +171,15 @@ class ThreadConnectNatSrv(threading.Thread):
                         tsock.close()
                         print "send server"
 
+def send_data_to_app(srcsock,dstsock):
+    buf = []
+    stun_init_command_str(STUN_METHOD_DATA,buf)
+    buf[3] = '%08x' % srcsock
+    buf[4] = '%08x' % dstsock
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('wwwwwww'))
+    stun_add_fingerprint(buf)
+    return buf
+
 class ThreadRefreshTime(threading.Thread):
     def __init__(self,sock):
         threading.Thread.__init__(self)
@@ -197,6 +206,8 @@ def device_login(host):
         print 'format_exception():'
     buf = ''.join(device_struct_allocate())
     sock.send(binascii.unhexlify(buf))
+    mysock = 0
+    myconn = []
     while True:
         data = sock.recv(2048)
         if not data:
@@ -207,19 +218,35 @@ def device_login(host):
             #hdict = get_packet_head_dict(hbuf[:STUN_HEADER_LENGTH*2])
             hattr = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH*2])
             rdict = parser_stun_package(hbuf[STUN_HEADER_LENGTH*2:-8])
-            print "method is",hattr.method
             if not rdict:
                 print "server packet is wrong"
                 break # 出错了
-            if not stun_is_success_response_str(hattr.method):
-                print "error response"
-                break
+            if hattr.method != STUN_METHOD_SEND:
+                if not stun_is_success_response_str(hattr.method):
+                    print "error response",hattr.method
+                    continue
             hattr.method = stun_get_type(hattr.method)
-            print "method is",hattr.method
+            print "method",hattr.method
             if hattr.method == STUN_METHOD_ALLOCATE:
                 print 'start refresh time'
                 t = ThreadRefreshTime(sock)
                 t.start()
+                if rdict.has_key(STUN_ATTRIBUTE_STATE):
+                    stat = rdict[STUN_ATTRIBUTE_STATE][-1]
+                    mysock = int(stat[:8],16)
+            elif hattr.method == STUN_METHOD_INFO:
+                if rdict.has_key(STUN_ATTRIBUTE_STATE):
+                    stat = rdict[STUN_ATTRIBUTE_STATE][-1]
+                    myconn = int(stat[:8],16)
+            elif hattr.method == STUN_METHOD_SEND:
+                print "recv forward packet"
+                if rdict.has_key[STUN_ATTRIBUTE_DATA]:
+                    print rdict[STUN_ATTRIBUTE_DATA][-1]
+                dstsock = int(hattr.srcsock,16)
+                buf = send_data_to_app(mysock,dstsock)
+                print "replay forward buf",buf
+                sock.send(binascii.unhexlify(''.join(buf)))
+
 
     print 'sock will close'
     sock.close()

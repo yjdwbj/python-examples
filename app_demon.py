@@ -59,6 +59,26 @@ def stun_bind_uuids():
     stun_add_fingerprint(buf)
     return buf
 
+def stun_bind_single_uuid():
+    buf = []
+    stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
+    jluid = '19357888AA07418584391D0ADB61E7902653716613920FBF'
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,jluid.lower())
+           # 'e68cd4167aea4f85a7242031252be15874657374a860a02f')
+    stun_add_fingerprint(buf)
+    return buf
+
+def stun_send_data_to_devid(srcsock,dstsock):
+    buf = []
+    stun_init_command_str(STUN_METHOD_SEND,buf)
+    buf[3] = '%08x' % srcsock
+    buf[4] = '%08x' % dstsock
+    buf[-1] = '03000000'
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('testdata'))
+    stun_add_fingerprint(buf)
+    return buf
+
+
 def stun_connect_peer_with_uuid(uuid,uname,pwd):
     buf = []
     stun_init_command_str(STUN_METHOD_CONNECT,buf)
@@ -70,8 +90,6 @@ def stun_connect_peer_with_uuid(uuid,uname,pwd):
     stun_add_fingerprint(buf)
     return buf
 
-
-
 def stun_contract_allocate_request(buf):
     stun_init_command_str(STUN_METHOD_BINDING,buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify("lcy"))
@@ -79,8 +97,6 @@ def stun_contract_allocate_request(buf):
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     stun_add_fingerprint(buf)
     print "buf is",buf
-
-
 
 
 def stun_struct_refresh_request():
@@ -165,6 +181,7 @@ def stun_setLogin(host,port):
     sock.bind(('',0))
     sock.connect((host,port))
     sock.send(sdata)
+    mysock = 0
     while True:
         data,addr = sock.recvfrom(2048)
         if not data:
@@ -179,28 +196,46 @@ def stun_setLogin(host,port):
             hattr = get_packet_head_class(myrecv[:STUN_HEADER_LENGTH*2])
 
             rdict = parser_stun_package(myrecv[STUN_HEADER_LENGTH*2:-8]) # 去头去尾
-            if not stun_is_success_response_str(hattr.method):
-                print "server response error"
-                print errDict.get(binascii.hexlify(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1]))
-                continue
+            print "rdict is",rdict
+            if hattr.method != STUN_METHOD_DATA:
+                if not stun_is_success_response_str(hattr.method):
+                    print "server response error"
+                    #print rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE]
+                    #print errDict.get(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1])
+                    continue
 
             hattr.method = stun_get_type(hattr.method)
+            print "recv method is",hattr.method
 
             if hattr.method  == STUN_METHOD_BINDING:
                 print "thread start"
                 refresh  = ThreadRefreshTime(sock)
                 refresh.start()
+                stat = rdict[STUN_ATTRIBUTE_STATE][-1]
+                mysock = int(stat[:8],16)
                 # 下面绑定一些UUID
-                sock.send(binascii.unhexlify(''.join(stun_bind_uuids())))
-
-            if hattr.method == STUN_METHOD_REGISTER:
+                #sock.send(binascii.unhexlify(''.join(stun_bind_uuids())))
+                sock.send(binascii.unhexlify(''.join(stun_bind_single_uuid())))
+            elif hattr.method == STUN_METHOD_REGISTER:
                 buf = stun_login_request(tuser,tpwd)
                 sock.send(binascii.unhexlify(''.join(buf)))
             elif hattr.method  == STUN_METHOD_REFRESH:
                 print "app refresh time"
             elif hattr.method == STUN_METHOD_CHANNEL_BIND:
                 # 绑定小机命令o
-                pass
+                print "rdict is",rdict
+                if rdict.has_key(STUN_ATTRIBUTE_RUUID):
+                    dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
+                    buf = stun_send_data_to_devid(mysock,dstsock)
+                    print "forward buf is",buf
+                    sock.send(binascii.unhexlify(''.join(buf)))
+            elif hattr.method == STUN_METHOD_DATA:
+                print "recv device peer data",time.time()
+                dstsock = int(hattr.srcsock,16)
+                buf = stun_send_data_to_devid(mysock,dstsock)
+                print "forward buf is",buf
+                sock.send(binascii.unhexlify(''.join(buf)))
+
             else:
                 print "Command error"
 
