@@ -69,7 +69,6 @@ def handle_client_request(buf,fileno):
     2  小机的回复
     3  转发命令
     """
-    #print "handle allocate request\n"
     res = get_packet_head_class(buf[:STUN_HEADER_LENGTH*2])
     if not gClass.timer.has_key(fileno):
         if res.method != STUN_METHOD_ALLOCATE or \
@@ -80,7 +79,7 @@ def handle_client_request(buf,fileno):
 
     #判断如果是转发命令就直接转发了。
     if res.method == STUN_METHOD_SEND or res.method == STUN_METHOD_DATA:
-        print "forward packet"
+        #print "forward packet"
         time.sleep(1)
         dstsock = int(res.dstsock,16)
         srcsock = int(res.srcsock,16)
@@ -88,37 +87,29 @@ def handle_client_request(buf,fileno):
         if dstsock == 0xFFFFFFFF or srcsock == 0xFFFFFFFF:
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
             return  (stun_error_response(res),0)
+
         if gClass.clients.has_key(dstsock):
             gClass.responses[dstsock] = buf
             epoll.modify(dstsock,select.EPOLLOUT)
             return ([],3)
-        else:
+        else: # 目标不存在
             res.eattr = STUN_ERROR_DEVOFFLINE
             gClass.responses[dstsock] = ''.join(stun_error_response(res))
             epoll.modify(srcsock,select.EPOLLOUT)
             return ([],3)
 
 
-    #res = ComState()
-    # = binascii.hexlify(reqhead[-1]).lower()
-    setattr(res,'host',gClass.clients.get(fileno).getpeername())
-    #res.host = gClass.clients.get(fileno).getpeername()[0]
-    #res.fileno = fileno
-    setattr(res,'fileno',fileno)
-    #res.method = method
+    res.host= gClass.clients.get(fileno).getpeername()
+    res.fileno=fileno
     hexpos = STUN_HEADER_LENGTH*2
     upkg = parser_stun_package(buf[hexpos:-8])
     if upkg is None:
-        setattr(res,'eattr',STUN_ERROR_UNKNOWN_ATTR)
-        #res.eattr = STUN_ERROR_UNKNOWN_ATTR
+        res.eattr = STUN_ERROR_UNKNOWN_ATTR
         return  (stun_error_response(res),0)
 
     res.attrs = upkg
-    #if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME) and res.method != STUN_METHOD_REFRESH:
-    #   update_refresh_time(fileno,res.attrs.get(STUN_ATTRIBUTE_LIFETIME)[-1])
 
     if res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and int(res.attrs.get(STUN_ATTRIBUTE_MESSAGE_INTEGRITY)[1],16) != 32:
-        #res.eattr = binascii.hexlify('Password is to short')
         res.eattr = STUN_ERROR_AUTH
         log.error(','.join([LOG_ERROR_AUTH,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
         return  (stun_error_response(res),0)
@@ -140,7 +131,7 @@ def bind_each_uuid(ustr,fileno):
         b = '%08x' % fileno
         gClass.appbinds[fileno][ustr]= dstsock
         notifybuf = notify_peer(''.join([b,STUN_ONLINE]))
-        print 'info',notifybuf
+        #print 'info',notifybuf
         gClass.responses[dstsock] = notify_peer(''.join([b,STUN_ONLINE]))
         epoll.modify(dstsock,select.EPOLLOUT)
     else:
@@ -159,7 +150,6 @@ def handle_app_bind_device(res):
         mlist =  split_muuid(res.attrs[STUN_ATTRIBUTE_MUUID][-1])
         p = [check_jluuid(n) for n in mlist]
         e = [ x for x in p if x]
-        print "e is",e
         if len(e):
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
             log.error(','.join([LOG_ERROR_UUID,gClass.clients[res.fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
@@ -179,12 +169,11 @@ def stun_bind_devices_ok(res):
     """
     buf = []
     stun_init_command_str(stun_make_success_response(res.method),buf)
-    jluid = res.attrs[STUN_ATTRIBUTE_UUID][-1]
     if res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
         joint = [''.join([k,'%08x' % v]) for k,v in gClass.appbinds[res.fileno].iteritems()]
-        print 'joint is',joint
         stun_attr_append_str(buf,STUN_ATTRIBUTE_MRUUID,''.join(joint))
     else:
+        jluid = res.attrs[STUN_ATTRIBUTE_UUID][-1]
         stun_attr_append_str(buf,STUN_ATTRIBUTE_RUUID,\
                  ''.join([jluid,'%08x' %gClass.appbinds[res.fileno][jluid]]))
     stun_add_fingerprint(buf)
@@ -212,15 +201,11 @@ def handle_app_login_request(res):
 
     result = app_user_login(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],
             res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
-    #result = app_user_login(res.attrs[STUN_ATTRIBUTE_UUID][-1],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
-    #print "login result",result
     if not result:
         res.eattr = STUN_ERROR_AUTH
         return  stun_error_response(res)
 
-    gClass.actives[res.fileno] = res.attrs[STUN_ATTRIBUTE_USERNAME]
     tcs.name = result[0][0]
-    print "login name",tcs.name
     app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],res.host)
     if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
         update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
@@ -253,9 +238,8 @@ def handle_app_send_data_to_device(res): # APP 发给小机的命令
             return  stun_error_response(res)
 
         huid = res.attrs[STUN_ATTRIBUTE_UUID][-1]
-        #if rlist[3] and mdict['uuids'].has_key(huid): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
-        if rlist[3] and gClass.uuids.has_key(huid): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
-            sock = gClass.uuids.__dict__.get(res.fileno)
+        if rlist[3] and gClass.devuuid.has_key(huid): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
+            sock = getattr(gClass.devuuid,res.fileno)
             if not gClass.clients.has_key(sock):
                 res.eattr = STUN_ERROR_DEVOFFLINE
                 return  stun_error_response(res)
@@ -265,7 +249,6 @@ def handle_app_send_data_to_device(res): # APP 发给小机的命令
                 res.eattr = STUN_ERROR_DEVOFFLINE
                 asktimer = threading.Timer(FINDDEV_TIMEOUT,stun_ask_mirco_devices_timeout, (res))
                 asktimer.start()
-                #mdict['responses'][sock] = stun_connect_address(res['host'],res)
                 gClass.responses[sock] = stun_connect_address(res.host,res)
                 epoll.modify(sock,select.EPOLLOUT)
             except IOError:
@@ -273,11 +256,6 @@ def handle_app_send_data_to_device(res): # APP 发给小机的命令
         else:
             res.eattr = STUN_ERROR_DEVOFFLINE
             return  stun_error_response(res)
-
-
-
-def handle_device_send_data_to_app(res): # 小机发给APP 的命令
-    pass
 
 
 def handle_app_connect_peer_request(res):
@@ -297,10 +275,7 @@ def handle_app_connect_peer_request(res):
         return stun_error_response(res)
 
     app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],res.host)
-    #mdict['actives'][res['fileno']] = res[STUN_ATTRIBUTE_USERNAME]
-    #gClass.actives[res.fileno] = res.attrs[STUN_ATTRIBUTE_USERNAME]
     row = find_device_state(res.attrs[STUN_ATTRIBUTE_UUID][-1])
-    #mdict['uuids'][res['tid']] = res['fileno'] # 这里用APP 端TID做键,后面要用到
     if not row:
         res.eattr = STUN_ERROR_DEVOFFLINE
         return  stun_error_response(res)
@@ -312,24 +287,17 @@ def handle_app_connect_peer_request(res):
             return  stun_error_response(res)
 
         huid = binascii.hexlify(res.attrs[STUN_ATTRIBUTE_UUID][-1])
-        #if rlist[3] and mdict['uuids'].has_key(huid): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
-        if rlist[3] and gClass.uuids.has_key(huid): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
-            #sock = mdict['uuids'][huid]
-            sock = gClass.uuids.sock
-            #if not mdict['clients'].has_key(sock):
+        if rlist[3] and gClass.devuuid.has_key(huid): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
+            sock = getattr(gClass.devuuid,huid)
             if not gClass.clients.has_key(sock):
-                #return  stun_mirco_device_error('device offline',res['tid'])
                 res.eattr = STUN_ERROR_DEVOFFLINE
                 return  stun_error_response(res)
 
             try:#这里先去告诉小机，有一个客户端要连接它
-                #print "send ask package to the mirco_devices",mdict['clients'][sock].getpeername()[0]
-                #mdict['timer'][sock] += FINDDEV_TIMEOUT
                 gClass.timer[sock] += FINDDEV_TIMEOUT
                 res.eattr = STUN_ERROR_DEVOFFLINE
                 asktimer = threading.Timer(FINDDEV_TIMEOUT,stun_ask_mirco_devices_timeout, (res))
                 asktimer.start()
-                #mdict['responses'][sock] = stun_connect_address(res['host'],res)
                 gClass.responses[sock] = stun_connect_address(res.host,res)
                 epoll.modify(sock,select.EPOLLOUT)
             except IOError:
@@ -340,7 +308,7 @@ def handle_app_connect_peer_request(res):
 
 def stun_ask_mirco_devices_timeout(res):
     #超过一定时间，小机没有回复服务器，就假定小机不可以连接，回复APP端一个错误
-    if gClass.uuids.has_key():
+    if gClass.devuuid.has_key(res.fileno):
         gClass.responses[res.fileno] = stun_error_response(res)
         try:
             epoll.modify(res.fileno,select.EPOLLOUT)
@@ -359,10 +327,7 @@ def stun_connect_address(host,res):
     stun_add_fingerprint(buf)
     return (buf)
 
-
-
 def handle_register_request(res):
-    #nuuid = str(uuid.uuid4()).replace('-','')
     if app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],
             res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]):
          # 用户名已经存了。
@@ -374,7 +339,7 @@ def handle_register_request(res):
 def register_success(uname):
     buf = []
     stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(uname))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,uname)
     stun_add_fingerprint(buf)
     log.debug("Regsiter is success %s" % uname)
     return (buf)
@@ -387,8 +352,6 @@ def handle_chkuser_request(res):
         return stun_error_response(res)
     else:
         return check_user_sucess(res)
-
-
 
 def check_user_sucess(res):
     buf = []
@@ -415,8 +378,6 @@ def noify_app_uuid_just_login(sock,uuidstr,devsock):
     epoll.modify(sock,select.EPOLLOUT)
 
 def device_login_notify_app(uuidstr,devsock):
-    print 'uuidstr is', uuidstr
-    print 'appbinds is', gClass.appbinds
     [noify_app_uuid_just_login(k,uuidstr,devsock) for k,v in gClass.appbinds.iteritems() if v.has_key(uuidstr)]
 
 
@@ -428,12 +389,12 @@ def handle_allocate_request(res):
         chk = check_jluuid(res.attrs[STUN_ATTRIBUTE_UUID][-1])
         if chk:
             res.eattr = chk
-            log.error(','.join([LOG_ERROR_UUID,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
+            log.error(','.join([LOG_ERROR_UUID,gClass.clients[res.fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
     else:
         #res.eattr= binascii.hexlify("Not Found UUID")
         res.eattr=STUN_ERROR_UNKNOWN_PACKET
-        log.error(','.join([LOG_ERROR_UUID,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
+        log.error(','.join([LOG_ERROR_UUID,gClass.clients[res.fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
         return stun_error_response(res)
 
     huid = res.attrs[STUN_ATTRIBUTE_UUID][-1]
@@ -447,7 +408,7 @@ def handle_allocate_request(res):
     res.host = gClass.clients[res.fileno].getpeername()
     res.tuid = huid[:32]
     update_newdevice(res)
-    gClass.actives[res.fileno] = huid
+    #gClass.actives[res.fileno] = huid
     gClass.devsock[res.fileno] = tcs = ComState()
     gClass.devuuid[huid] = res.fileno
     tcs.uuid = huid
@@ -480,11 +441,9 @@ def refresh_sucess(ntime): # 刷新成功
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,ntime)
     stun_add_fingerprint(buf)
     return (buf)
-    #print "refresh response buf",buf
 
 def update_refresh_time(fileno,ntime):
     gClass.timer[fileno] = time.time()+ntime
-
 
 def app_user_register(user,pwd):
     account = get_account_table()
@@ -519,7 +478,6 @@ def app_user_update_status(user,host):
     #print "row is",row
     sss = 0
     if row:
-        #修改
         sss = status_tables.update().values(last_login_time = datetime.now(),chost=[ipadr,ipprt]).where(status_tables.c.uname == user)
     else:
         sss = status_tables.insert().values(uname=uname,is_login=True,chost=[ipadr,ipprt])
@@ -608,11 +566,7 @@ def find_device_state(uid):
 
 def update_newdevice(res):
     '''添加新的小机到数据库'''
-    #tuid = binascii.hexlify(pair[0])
-    #print "vendor is",binascii.hexlify(pair[1])
-    #print "uid is",uid[:UUID_SIZE*2],"vendor is",vendor
     dbcon = engine.connect()
-    #mirco_devices = get_devices_table(binascii.hexlify(pair[1]))
     mirco_devices = get_devices_table(res.vendor)
     if not mirco_devices.exists(engine):
         mirco_devices.create(engine)
@@ -654,22 +608,19 @@ class CheckSesionThread(threading.Thread):
 
 def notify_peer_is_logout(fileno,dstsock):
     gClass.responses[fileno] =  notify_peer(''.join(['%08x' % dstsock,STUN_OFFLINE]))
-    epoll.modify(fileno,select.EPOLLOUT)
+    try:
+        epoll.modify(fileno,select.EPOLLOUT)
+    except:
+        log.error(''.join([LOG_ERROR_PACKET,\
+                'socket error %d' % fileno,str(sys._getframe().f_lineno)]))
 
 def clean_timeout_sock(fileno): # 清除超时的连接
     if gClass.timer.has_key(fileno):
         if gClass.timer[fileno] < time.time():
             log.info("Client %d life time is end,close it" % fileno )
-            if gClass.appsock.has_key(fileno):
-                notify_uuid_app_logout(fileno)
-                # APP 应该下线了
-            elif gClass.devsock.has_key(fileno):
-                notify_app_uuid_logout(fileno)
-                # 小机下线，通知APP
-
-            epoll.unregister(fileno)
-            if gClass.clients.has_key(fileno):
-                gClass.clients[fileno].close()
+            dealwith_sock_close_update_binds(fileno)
+            dealwith_sock_close_update_db(fileno)
+            delete_fileno(fileno)
             remove_fileno_resources(fileno)
 
 def mirco_devices_logout(devid):
@@ -687,21 +638,22 @@ def mirco_devices_logout(devid):
 
 
 def notify_uuid_app_logout(fileno):
-    binds = [v for k,v in gClass.appbinds[fileno].iteritems()]
-    gClass.appsock.pop(fileno) # 回收这个APP的BIND资源
-    [notify_peer_is_logout(n,fileno) for n in binds if gClass.devsock.has_key(n)]
+    # app 下线，通知小机
+    #binds = [v for k,v in gClass.appbinds[fileno].iteritems()]
+    if gClass.appbinds.has_key(fileno):
+        binds = gClass.appbinds[fileno].values()
+        gClass.appsock.pop(fileno) # 回收这个APP的BIND资源
+        [notify_peer_is_logout(n,fileno) for n in binds if gClass.devsock.has_key(n)]
 
 def notify_app_uuid_logout(fileno):
+    # 小机下线，通知APP
     devid = gClass.devsock[fileno].uuid
-    print "devid",devid,"has logout"
+    #print "devid",devid,"has logout"
     binds = [k for k,v in gClass.appbinds.iteritems() if v.has_key(devid)]
-    gClass.devsock.pop(fileno) # 回收这个APP的BIND资源
     [notify_peer_is_logout(n,fileno) for n in binds if gClass.appsock.has_key(n)]
     alist = [n for n in binds if gClass.appsock.has_key(n)]
-    print "appbinds list",alist
     for n in alist:
         gClass.appbinds[n][devid]=0xFFFFFFFF
-
 
 def app_user_logout(uname):
     atable = get_account_status_table()
@@ -712,17 +664,24 @@ def app_user_logout(uname):
     except :
         log.error(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
 
-def sock_recv_fail(fileno):
-    # sock 关闭时产生的异常处理
-    epoll.unregister(fileno)
+
+def dealwith_sock_close_update_db(fileno):
+    # socket 关闭，更新数据库
     if gClass.appsock.has_key(fileno): #更新相应的数据库在线状态
+        #print "appsock is",gClass.appsock
         app_user_logout(gClass.appsock[fileno].name)
         gClass.appsock.pop(fileno)
     elif gClass.devsock.has_key(fileno):
         mirco_devices_logout(gClass.devsock[fileno].uuid)
         gClass.devsock.pop(fileno)
-    remove_fileno_resources(fileno)
 
+def dealwith_sock_close_update_binds(fileno):
+    if gClass.appsock.has_key(fileno):
+        notify_uuid_app_logout(fileno)
+        # APP 应该下线了
+    elif gClass.devsock.has_key(fileno):
+        notify_app_uuid_logout(fileno)
+        # 小机下线，通知APP
 
 def sock_send_fail(fileno):
     # 要检查一下是不是转发失败了，要通知发送方
@@ -735,21 +694,21 @@ def sock_send_fail(fileno):
 
     # sock 关闭时产生的异常处理
     epoll.unregister(fileno)
-    if gClass.appsock.has_key(fileno): #更新相应的数据库在线状态
-        app_user_logout(gClass.appsock[fileno].name)
-        gClass.appsock.pop(fileno)
-    elif gClass.devsock.has_key(fileno):
-        mirco_devices_logout(gClass.devsock[fileno].uuid)
-        gClass.devsock.pop(fileno)
+    dealwith_sock_close_update_db(fileno)
+    dealwith_sock_close_update_binds(fileno)
+    remove_fileno_resources(fileno)
 
+def sock_recv_fail(fileno):
+    # sock 关闭时产生的异常处理
+    epoll.unregister(fileno)
+    dealwith_sock_close_update_binds(fileno)
+    dealwith_sock_close_update_db(fileno)
     remove_fileno_resources(fileno)
 
 def remove_fileno_resources(fileno):
-    for k in gClass.__dict__:
-        print 'gClass key is',k
-        if gClass.__dict__[k].has_key(fileno):
-            gClass.__dict__[k].pop(fileno)
-
+    clist =[ n for n in [getattr(gClass,k) for k in store] if n.has_key(fileno)]
+    [n.pop(fileno) for n in clist]
+    #print "delete list is",clist,"fileno",fileno
 
 
 def Server(port):
@@ -773,9 +732,7 @@ def Server(port):
                     except:
                         log.error(','.join([LOG_ERROR_FILENO,str(sys._getframe().f_lineno)]))
                         continue
-                    #print "new accept",conn.fileno()
-                    #print "new clients",addr
-                    log.info("new clientsi %s:%d" % addr)
+                    log.info("new client %s:%d" % addr)
                     conn.setblocking(0)
                     gClass.clients[conn.fileno()] = conn
                     gClass.responses[conn.fileno()] = []
@@ -783,16 +740,19 @@ def Server(port):
                     epoll.register(conn.fileno(),select.EPOLLIN)
                 elif event & select.EPOLLIN: # 读取socket 的数据
                     try:
+                        print "requests",gClass.requests,'clients',gClass.clients,'fileno',fileno
+                        if not gClass.clients.has_key(fileno):
+                            delete_fileno(fileno)
+                            continue
+        
                         gClass.requests[fileno] = gClass.clients[fileno].recv(SOCK_BUFSIZE)
                         hbuf = binascii.hexlify(gClass.requests[fileno])
                         if check_packet_vaild(hbuf):
-                            print 'check packet error',hbuf
+                            #print 'check packet error',hbuf
                             log.error(','.join([LOG_ERROR_PACKET,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
                             delete_fileno(fileno)
                             continue
-
                         rbuf = handle_client_request(hbuf,fileno)
-
                         if rbuf[1] < 0:  #出错与非法请求关闭就行了
                             delete_fileno(fileno)
                         elif rbuf[1] == 1:  # app端的连接小机请求
@@ -802,21 +762,17 @@ def Server(port):
                         elif rbuf[1] == 3:
                             continue
                         else:
-                            #mdict['responses'][fileno] = rbuf[0]
                             gClass.responses[fileno] = rbuf[0]
                             epoll.modify(fileno,select.EPOLLOUT)
                             if gClass.timer.has_key(fileno):
                                 gClass.timer[fileno] = time.time()+UCLIENT_SESSION_LIFETIME
-                        #mdict['requests'].pop(fileno)
                         gClass.requests.pop(fileno)
                     except IOError:
                         sock_recv_fail(fileno)
                         log.debug("sock has closed %d" % fileno)
                 elif event & select.EPOLLOUT:
                     try:
-                        #if not mdict['responses'].has_key(fileno): #连接命令的时候返回是NULL
                         if not gClass.responses.has_key(fileno): #连接命令的时候返回是NULL
-                            #epoll.modify(fileno,select.EPOLLIN)
                             log.error(','.join([LOG_ERROR_PACKET,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
                             epoll.modify(fileno,select.EPOLLWRBAND)
                             continue
@@ -887,8 +843,6 @@ else:
     port = options.srv_port
 
 
-
-
 dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
               STUN_METHOD_ALLOCATE:handle_allocate_request, # 小机登录方法
               STUN_METHOD_CHECK_USER:handle_chkuser_request,
@@ -896,16 +850,14 @@ dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
               STUN_METHOD_BINDING:handle_app_login_request,  # app端登录方法
               STUN_METHOD_CONNECT:handle_app_connect_peer_request,
               STUN_METHOD_SEND:handle_app_send_data_to_device, # APP 发给小机的命令
-              STUN_METHOD_DATA:handle_device_send_data_to_app, # 小机发给APP 的命令
+              #STUN_METHOD_DATA:handle_device_send_data_to_app, # 小机发给APP 的命令
               STUN_METHOD_CHANNEL_BIND:handle_app_bind_device  # APP 绑定小机的命令
               }
-store = ['timer','clients','requests','responses','uuids','actives','appbinds','appsock','devsock','devuuid']
-mdict = {}
+#store = ['timer','clients','requests','responses','uuids','actives','appbinds','appsock','devsock','devuuid']
+store = ['timer','clients','requests','responses','appbinds','appsock','devsock','devuuid']
 
 gClass = ComState()
-for x in store:
-   #mdict[x]={} # 这个嵌套字典就是用来存放运行时的状态与数据的
-   gClass.__dict__[x] = {}
+[setattr(gClass,x,{}) for x in store]
 
 epoll = select.epoll()
 engine = create_engine('postgresql://postgres@localhost:5432/nath',pool_size=20,max_overflow=2)
@@ -944,7 +896,7 @@ file_handler = handlers.RotatingFileHandler("nath.log",maxBytes=5242880,backupCo
 
 file_handler.setFormatter(formatter)
 log.addHandler(file_handler)
-log.addHandler(logging.StreamHandler())
+#log.addHandler(logging.StreamHandler())
 
 
 

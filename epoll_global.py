@@ -112,6 +112,7 @@ STUN_OFFLINE='00000000'
 
 STUN_HEAD_CUTS=[4,8,12,20,28,32,40] # 固定长度的包头
 STUN_HEAD_KEY=['magic','version','length','srcsock','dstsock','method','sequence'] # 包头的格式的名称
+__author__ = 'liuchunyang'
 
 
 class DictClass:
@@ -137,7 +138,6 @@ def get_packet_head_class(buf): # 把包头解析成可以识的类属性
     for k in d.keys():
         setattr(cc,k,d.get(k))
     return cc
-
 
 def stun_make_success_response(method):
     #print "success response %04x" % ((stun_make_type(method) & 0xFEEF) | 0x0100)
@@ -296,14 +296,17 @@ def parser_stun_package(buf):
         if fmt is None:
             return None
         attr_size = fmt[1][-1]
+        hexpos = 8+attr_size * 2
         rem4 = attr_size & 0x0003
         if rem4: # 这里要与客户端一样,4Byte 对齐
             rem4 = attr_size+4-rem4
             attr_size += (rem4 - attr_size)
-        fmt[1][-1]= 8+attr_size * 2
+        fmt[1][-1]=  8+attr_size * 2
 
         l = [tbuf[i:j] for i,j in zip([0]+fmt[1],fmt[1]+[None])]
-        attrdict[fmt[0]] = tuple(l[:3])
+        ttt = l[:3]
+        ttt[-1] = ttt[-1][:int(ttt[1],16)*2]
+        attrdict[fmt[0]] = tuple(ttt)
         if len(l) == 4:
             tbuf=l[3]
         else:
@@ -312,7 +315,6 @@ def parser_stun_package(buf):
         if attrdict.has_key(STUN_ATTRIBUTE_LIFETIME): # 请求的时间大于服务器的定义的，使用服务端的定义 # 请求的时间大于服务器的定义的，使用服务端的定义
             if int(attrdict[STUN_ATTRIBUTE_LIFETIME][-1],16) > UCLIENT_SESSION_LIFETIME:
                 attrdict[STUN_ATTRIBUTE_LIFETIME] = (STUN_ATTRIBUTE_LIFETIME,'0004',STR_UCLIENT_SESSION_LIFETIME)
-        #hexpos += fmt[1][-1]
 
     return attrdict
 
@@ -324,7 +326,7 @@ def split_muuid(b):
     #return [buf[i:j] for i,j in zip([0]+,STUN_HEAD_CUTS+[None])]
     #return mlist
 
-def gen_random_jluuid():
-    n = ''.join([str(uuid.uuid4()).replace('-',''),binascii.hexlify('test')])
+def gen_random_jluuid(vendor):
+    n = ''.join([str(uuid.uuid4()).replace('-',''),binascii.hexlify(vendor)])
     return ''.join([n,get_jluuid_crc32(n)])
 

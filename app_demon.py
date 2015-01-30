@@ -23,7 +23,7 @@ class ThreadRefreshTime(threading.Thread):
     def run(self):
         while self.sock:
             self.sock.send(self.rtime)
-            time.sleep(30)
+            time.sleep(50)
 
 
 def stun_register_request(uname,pwd):
@@ -55,15 +55,17 @@ def stun_login_request(uname,pwd):
 def stun_bind_uuids():
     buf = []
     stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_MUUID,test_bind_ten_random_devid())
+    u1 = '19357888AA07418584391D0ADB61E7902653716613920FBF'
+    jluid = 'e68cd4167aea4f85a7242031252be15874657374a860a02f'
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MUUID,''.join([u1.lower(),jluid]))
     stun_add_fingerprint(buf)
     return buf
 
 def stun_bind_single_uuid():
     buf = []
     stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
-    #jluid = '19357888AA07418584391D0ADB61E7902653716613920FBF'
-    jluid = 'e68cd4167aea4f85a7242031252be15874657374a860a02f'
+    jluid = '19357888AA07418584391D0ADB61E7902653716613920FBF'
+    #jluid = 'e68cd4167aea4f85a7242031252be15874657374a860a02f'
     stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,jluid.lower())
     stun_add_fingerprint(buf)
     return buf
@@ -159,7 +161,7 @@ def stun_setLogin(host,port):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     #stun_contract_allocate_request(buf)
-    tuser = 'tjl6'
+    tuser = 'osg'
     tpwd = '1234'
     buf = stun_register_request(tuser,tpwd)
     #stun_register_request(buf,'lcy','1234')
@@ -217,8 +219,9 @@ def stun_setLogin(host,port):
                 mysock = int(stat[:8],16)
                 # 下面绑定一些UUID
                 #sock.send(binascii.unhexlify(''.join(stun_bind_uuids())))
-                print "bind uuid"
-                buf = stun_bind_single_uuid()
+                #print "bind uuid"
+                #buf = stun_bind_single_uuid()
+                buf = stun_bind_uuids()
                 print buf
                 sock.send(binascii.unhexlify(''.join(buf)))
             elif hattr.method == STUN_METHOD_REGISTER:
@@ -231,15 +234,15 @@ def stun_setLogin(host,port):
                 if rdict.has_key(STUN_ATTRIBUTE_RUUID):
                     dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
                     buf = stun_send_data_to_devid(mysock,dstsock)
-                    print "forward buf is",buf
+                    #print "forward buf is",buf
                     sock.send(binascii.unhexlify(''.join(buf)))
             elif hattr.method == STUN_METHOD_DATA:
-                print "recv device peer data",time.time()
+                #print "recv device peer data",time.time()
                 dstsock = int(hattr.srcsock,16)
                 if rdict.has_key(STUN_ATTRIBUTE_DATA):
                     print rdict[STUN_ATTRIBUTE_DATA][-1]
                 buf = stun_send_data_to_devid(mysock,dstsock)
-                print "forward buf is",buf
+                #print "forward buf is",buf
                 sock.send(binascii.unhexlify(''.join(buf)))
             elif hattr.method == STUN_METHOD_INFO:
                 print "recv some server info"
@@ -247,11 +250,34 @@ def stun_setLogin(host,port):
                 if rdict.has_key(STUN_ATTRIBUTE_RUUID):
                     dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
                     buf = stun_send_data_to_devid(mysock,dstsock)
-                    print "forward buf is",buf
+                    #print "forward buf is",buf
                     sock.send(binascii.unhexlify(''.join(buf)))
             else:
                 print "Command error"
     sock.close()
+
+def make_argument_parser():
+    parser = argparse.ArgumentParser(
+            formatter_class = argparse.ArgumentDefaultsHelpFormatter
+            )
+    parser.add_argument
+    parser.add_argument('-n',action='store',dest='vendor',type=str,\
+                help=u'厂商代码，4字节，少于自动补零，多于只取前面的，例如: -n test')
+    parser.add_argument('-f',action='store',dest='uuidfile',type=file,\
+                help=u'UUID 文件，例如： -f file.bin')
+    parser.add_argument('-H',action='store',dest='srv_host',type=str,\
+                help=u'服务器地址, 例如: -H 192.168.8.9:3478')
+    parser.add_argument('-c',action='store',default=100,dest='u_count',type=int,\
+                help=u'随机生成用户个数，例如生成100 用户名： -c 100 . 默认数是100') 
+    parser.add_argument('-b',action='store',default=10, dest='b_count',type=int,\
+                help=u'每个用户绑定UUID的个数，如果此数大于文件里的数量，使用文件里的数值.默认:10 .例如： -c 10') 
+    parser.add_argument('--version',action='version',version=__version__)
+    return parser
+
+
+
+__version__ = '0.0.1'
+
 
 
 
@@ -271,6 +297,31 @@ phost = [] # 对端地址
 def main():
     connect_turn_server()
 
+
 if __name__ == '__main__':
-    main()
+   args = make_argument_parser().parse_args()
+   if not args.srv_host or not args.uuidfile:
+       print make_argument_parser().parse_args(['-h'])
+       exit(1)
+
+   ulist = []
+   while True:
+       try:
+           ulist.append(pickle.load(args.uuidfile))
+       except:
+           break
+   acclist = []
+   for i in xrange(args.c_count):
+       z = str(uuid.uuid4()).replace('-','')
+
+       n = random.randint(0,15)
+       zi = []
+       for y in xrange(n):
+           zi.append(chr(random.randint(97,122)))
+       acclist.append(''.join([z,''.join(zi)]))
+       
+           
+            
+       
+
 

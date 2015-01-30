@@ -14,15 +14,9 @@ import uuid
 import sys
 import pickle
 import select
-import pdb
-import traceback
+import argparse
 
 from epoll_global import *
-
-
-#### Refresh Request ######
-
-
 def stun_struct_refresh_request():
     buf = []
     stun_init_command_str(STUN_METHOD_REFRESH,buf)
@@ -64,10 +58,10 @@ def stun_handle_response(response):
 
 #### 模拟小机登录
 
-def device_struct_allocate():
+def device_struct_allocate(uid):
     buf = []
     stun_init_command_str(STUN_METHOD_ALLOCATE,buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,'e68cd4167aea4f85a7242031252be15874657374a860a02f')
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,uid)
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('testdata'))
@@ -144,7 +138,6 @@ class ThreadConnectNatSrv(threading.Thread):
         while True:
             data = sock.recv(2048)
             if not data:
-                print "not data"
                 break
             else:
                 rhex = binascii.hexlify(data)
@@ -197,14 +190,14 @@ class ThreadRefreshTime(threading.Thread):
             time.sleep(30)
 
 
-def device_login(host):
+def device_login(host,uuid):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     try:
         sock.connect(host)
     except Exception,err:
         print 'format_exception():'
-    buf = ''.join(device_struct_allocate())
+    buf = ''.join(device_struct_allocate(uid))
     sock.send(binascii.unhexlify(buf))
     mysock = 0
     myconn = []
@@ -214,8 +207,6 @@ def device_login(host):
             break
         else:
             hbuf = binascii.hexlify(data)
-            print 'recv buf is',hbuf
-            #hdict = get_packet_head_dict(hbuf[:STUN_HEADER_LENGTH*2])
             hattr = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH*2])
             rdict = parser_stun_package(hbuf[STUN_HEADER_LENGTH*2:-8])
             if not rdict:
@@ -229,7 +220,6 @@ def device_login(host):
                     continue
 
             hattr.method = stun_get_type(hattr.method)
-            print "method",hattr.method
             if hattr.method == STUN_METHOD_ALLOCATE:
                 print 'start refresh time'
                 t = ThreadRefreshTime(sock)
@@ -238,24 +228,34 @@ def device_login(host):
                     stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                     mysock = int(stat[:8],16)
             elif hattr.method == STUN_METHOD_INFO:
-                print "recv server notify"
                 if rdict.has_key(STUN_ATTRIBUTE_STATE):
                     stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                     myconn = int(stat[:8],16)
             elif hattr.method == STUN_METHOD_SEND:
-                print "recv forward packet"
+                #print "recv forward packet"
                 if rdict.has_key(STUN_ATTRIBUTE_DATA):
-                    print rdict[STUN_ATTRIBUTE_DATA][-1]
+                    print rdict[STUN_ATTRIBUTE_DATA][-1],time.time()
                 dstsock = int(hattr.srcsock,16)
                 buf = send_data_to_app(mysock,dstsock)
-                print "replay forward buf",buf
                 sock.send(binascii.unhexlify(''.join(buf)))
 
 
     print 'sock will close'
     sock.close()
 
-
+def make_argument_parser():
+    parser = argparse.ArgumentParser(
+            formatter_class = argparse.ArgumentDefaultsHelpFormatter
+            )
+    parser.add_argument
+    parser.add_argument('-H',action='store',dest='srv_host',type=str,\
+                        help=u'服务器地址 ,例如: -H 192.168.9:3478')
+    parser.add_argument('-p',action='store',default=3478,type=int,\
+                        help=u'服务器端口号，默认是: 3478')
+    parser.add_argument('-f',action='store',dest='uuidfile',type=file,\
+                        help=u'UUID的文件，例如： -f file.bin')
+    parser.add_argument('--version',action='version',version=__version__)
+    return parser
 
 
 
@@ -269,7 +269,7 @@ def devid_damon():
     #global uuidbin
     #uuidbin = open('uuid.bin','w')
     #device_allocate_login('120.24.235.68',3478)
-    device_login(('192.168.8.9',3478))
+    #device_login(('192.168.8.9',3478),uuid)
     #devices_services('120.24.235.68',3478)
     global gport
     #srvt = ThreadConnectNatSrv(('120.24.235.68',3478))
@@ -277,16 +277,9 @@ def devid_damon():
     #appt = ThreadConnectApp()
     #appt.start()
     #uuidbin.close()
-
+       
 
 def test_radom_uuid():
-    global uuidbin
-    if len(sys.argv) < 2:
-        print "请在后写一个数量"
-    try:
-        nclient = sys.argv[1]
-    except:
-        return
     nclient = int(nclient)
     uuidbin = open('uuid.bin','w')
     n = 5
@@ -303,7 +296,32 @@ def test_radom_uuid():
         n -=1
     uuidbin.close()
 
-
+__version__ = '0.0.1'
 if __name__ == '__main__':
-    devid_damon()
+    args = make_argument_parser().parse_args()
+    if not args.srv_host or not args.uuidfile:
+        print make_argument_parser().parse_args(['-h'])
+        exit(1)
+    host = ()
+    print args.uuidfile
+    if ':' in args.srv_host:
+        s = args.srv_host.split(':')
+        try:
+            p = int(s[-1])
+        except:
+            print u'端口格式无法识别'
+            exit(1)
+        host = (s[0],p)
+    else:
+        host = (args.srv_host,args.port)
+        
 
+    uuidfile = args.uuidfile
+    while True:
+        try:
+            uid = pickle.load(args.uuidfile)
+            t = threading.Thread(target=device_login,args=(host,uid))
+            t.start()
+        except EOFError:
+            break
+    
