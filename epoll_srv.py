@@ -84,6 +84,10 @@ def handle_client_request(buf,fileno):
         time.sleep(1)
         dstsock = int(res.dstsock,16)
         srcsock = int(res.srcsock,16)
+        #转发的信息不正确
+        if dstsock == 0xFFFFFFFF or srcsock == 0xFFFFFFFF:
+            res.eattr = STUN_ERROR_UNKNOWN_PACKET
+            return  (stun_error_response(res),0)
         if gClass.clients.has_key(dstsock):
             gClass.responses[dstsock] = buf
             epoll.modify(dstsock,select.EPOLLOUT)
@@ -142,8 +146,6 @@ def bind_each_uuid(ustr,fileno):
     else:
         gClass.appbinds[fileno][ustr]=0xFFFFFFFF
 
-
-
 def handle_app_bind_device(res):
     #绑定小机的命的命令包
     if res.attrs.has_key(STUN_ATTRIBUTE_UUID):
@@ -177,13 +179,14 @@ def stun_bind_devices_ok(res):
     """
     buf = []
     stun_init_command_str(stun_make_success_response(res.method),buf)
+    jluid = res.attrs[STUN_ATTRIBUTE_UUID][-1]
     if res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
         joint = [''.join([k,'%08x' % v]) for k,v in gClass.appbinds[res.fileno].iteritems()]
         print 'joint is',joint
         stun_attr_append_str(buf,STUN_ATTRIBUTE_MRUUID,''.join(joint))
     else:
         stun_attr_append_str(buf,STUN_ATTRIBUTE_RUUID,\
-                '%08x' % gClass.appbinds[res.fileno][res.attrs[STUN_ATTRIBUTE_UUID][-1]])
+                 ''.join([jluid,'%08x' %gClass.appbinds[res.fileno][jluid]]))
     stun_add_fingerprint(buf)
     return (buf)
 
@@ -191,6 +194,13 @@ def notify_peer(state_info):
     buf = []
     stun_init_command_str(STUN_METHOD_INFO,buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_STATE,state_info)
+    stun_add_fingerprint(buf)
+    return buf
+
+def notify_app_bind_islogin(bindinfo):
+    buf = []
+    stun_init_command_str(STUN_METHOD_INFO,buf)
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_RUUID,bindinfo)
     stun_add_fingerprint(buf)
     return buf
 
@@ -242,7 +252,7 @@ def handle_app_send_data_to_device(res): # APP 发给小机的命令
             res.eattr =  STUN_ERROR_DEVOFFLINE
             return  stun_error_response(res)
 
-        huid = binascii.hexlify(res.attrs[STUN_ATTRIBUTE_UUID][-1])
+        huid = res.attrs[STUN_ATTRIBUTE_UUID][-1]
         #if rlist[3] and mdict['uuids'].has_key(huid): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
         if rlist[3] and gClass.uuids.has_key(huid): # 下面是发一个包给小机，确认它一定在线,收到对方确认之后再回复APP
             sock = gClass.uuids.__dict__.get(res.fileno)
@@ -400,6 +410,15 @@ def check_uuid_valid(uhex):
     #print "my crc",crcstr,'rcrc',uhex[-8:]
     return cmp(get_jluuid_crc32(uhex[:-8]),uhex[-8:])
 
+def noify_app_uuid_just_login(sock,uuidstr,devsock):
+    gClass.responses[sock] = notify_app_bind_islogin(''.join([uuidstr,'%08x' % devsock]))
+    epoll.modify(sock,select.EPOLLOUT)
+
+def device_login_notify_app(uuidstr,devsock):
+    print 'uuidstr is', uuidstr
+    print 'appbinds is', gClass.appbinds
+    [noify_app_uuid_just_login(k,uuidstr,devsock) for k,v in gClass.appbinds.iteritems() if v.has_key(uuidstr)]
+
 
 def handle_allocate_request(res):
     """
@@ -418,6 +437,7 @@ def handle_allocate_request(res):
         return stun_error_response(res)
 
     huid = res.attrs[STUN_ATTRIBUTE_UUID][-1]
+    device_login_notify_app(huid,res.fileno)
     if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
         update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
     else:

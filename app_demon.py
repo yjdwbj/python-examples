@@ -34,7 +34,7 @@ def stun_register_request(uname,pwd):
     nmac.update(pwd)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,nmac.hexdigest())
     stun_add_fingerprint(buf)
-    print "register buf is",buf
+    #print "register buf is",buf
     return buf
 
 def stun_login_request(uname,pwd):
@@ -196,29 +196,36 @@ def stun_setLogin(host,port):
             hattr = get_packet_head_class(myrecv[:STUN_HEADER_LENGTH*2])
 
             rdict = parser_stun_package(myrecv[STUN_HEADER_LENGTH*2:-8]) # 去头去尾
-            if hattr.method != STUN_METHOD_DATA:
+            if hattr.method == STUN_METHOD_DATA or hattr.method == STUN_METHOD_INFO:
+                pass
+            else:
                 if not stun_is_success_response_str(hattr.method):
                     print "rdict is",rdict
                     print "server response error",hattr.method
+                    if rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
+                        print errDict.get(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1][:4])
+
                     #print rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE]
-                    print errDict.get(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1])
+                    #print errDict.get(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1])
                     continue
 
             hattr.method = stun_get_type(hattr.method)
             if hattr.method  == STUN_METHOD_BINDING:
-                print "thread start"
                 #refresh  = ThreadRefreshTime(sock)
                 #refresh.start()
                 stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                 mysock = int(stat[:8],16)
                 # 下面绑定一些UUID
                 #sock.send(binascii.unhexlify(''.join(stun_bind_uuids())))
-                sock.send(binascii.unhexlify(''.join(stun_bind_single_uuid())))
+                print "bind uuid"
+                buf = stun_bind_single_uuid()
+                print buf
+                sock.send(binascii.unhexlify(''.join(buf)))
             elif hattr.method == STUN_METHOD_REGISTER:
                 buf = stun_login_request(tuser,tpwd)
                 sock.send(binascii.unhexlify(''.join(buf)))
             elif hattr.method  == STUN_METHOD_REFRESH:
-                print "app refresh time"
+                pass
             elif hattr.method == STUN_METHOD_CHANNEL_BIND:
                 # 绑定小机命令o
                 if rdict.has_key(STUN_ATTRIBUTE_RUUID):
@@ -234,43 +241,19 @@ def stun_setLogin(host,port):
                 buf = stun_send_data_to_devid(mysock,dstsock)
                 print "forward buf is",buf
                 sock.send(binascii.unhexlify(''.join(buf)))
-
+            elif hattr.method == STUN_METHOD_INFO:
+                print "recv some server info"
+                print myrecv
+                if rdict.has_key(STUN_ATTRIBUTE_RUUID):
+                    dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
+                    buf = stun_send_data_to_devid(mysock,dstsock)
+                    print "forward buf is",buf
+                    sock.send(binascii.unhexlify(''.join(buf)))
             else:
                 print "Command error"
-
-    srvport = sock.getsockname()[1]
-    print phost
     sock.close()
-    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    if len(phost) != 2:
-        return
-    print "phost",phost
-    hhh = socket.inet_ntoa(binascii.unhexlify("%x" % (phost[1] ^ STUN_MAGIC_COOKIE)))
-    ppp = phost[0] ^  (STUN_MAGIC_COOKIE >> 16)
-    print "xor phost",  hhh,ppp
-    print "connect peer",hhh,ppp
-    sock.bind(('',srvport))
-    print "local",sock.getsockname()
-    n = 20
-    while n > 0:
-        try:
-            sock.connect((hhh,ppp))
-            print "remote",sock.getpeername()
-            sock.send("Hi I'm app")
-            while True:
-                data = sock.recv(2048)
-                sock.send("Hi I'm app")
-                if not data:
-                    break
-                else:
-                    print data
-                    sock.send("I'am app %s" % time.time())
-                time.sleep(1)
-        except:
-            print "connect peer occur error"
-        n -=1
-        time.sleep(1)
+
+
 
 def connect_turn_server():
     #srv_host = '120.24.235.68'
