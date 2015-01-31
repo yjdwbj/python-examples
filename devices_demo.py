@@ -15,6 +15,7 @@ import sys
 import pickle
 import select
 import argparse
+import signal
 
 from epoll_global import *
 def stun_struct_refresh_request():
@@ -27,35 +28,6 @@ def stun_struct_refresh_request():
 ########## handle response packets ##############
 
 
-def stun_handle_response(response):
-    ss = struct.Struct(STUN_STRUCT_FMT)
-    hexpos = struct.calcsize(STUN_STRUCT_FMT)*2
-    rdict = {}
-    reqhead = recv_header = ss.unpack(binascii.unhexlify(response[:hexpos]))
-    rdict['tid'] = binascii.hexlify(reqhead[-1])
-    #send_header = ss.unpack(binascii.a2b_hex(''.join(last_request[:4])))
-    res_mth = "%04x" % stun_get_method_str(recv_header[0])
-    rdict['rmethod'] = res_mth
-    #print "This method is",res_mth,"send method is",send_header[0]
-    iserr = False
-    if stun_is_success_response_str(recv_header[0]) == False:
-        print "Not success response"
-        iserr = True
-
-    hexpos = 40
-    blen = len(response)
-    while hexpos < blen:
-        n = get_first_attr(response[hexpos:],rdict)
-        if n == 0:
-            print "Unkown Attribute"
-            print "resposes left",response[hexpos:]
-            return rdict
-        else:
-            hexpos += n
-    if iserr and rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
-        print "Occur error ",binascii.unhexlify(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1])
-    return rdict
-
 #### 模拟小机登录
 
 def device_struct_allocate(uid):
@@ -66,7 +38,6 @@ def device_struct_allocate(uid):
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('testdata'))
     stun_add_fingerprint(buf)
-    print buf
     return buf
 
 
@@ -92,8 +63,6 @@ class ThreadConnectApp(threading.Thread):
         epoll = select.epoll()
         epoll.register(sock.fileno(),select.EPOLLIN)
         print "local",sock.getsockname()
-        clients = {}
-        responses = {}
         try:
             while True:
                 events = epoll.poll(1)
@@ -177,17 +146,30 @@ class ThreadRefreshTime(threading.Thread):
     def __init__(self,sock):
         threading.Thread.__init__(self)
         self.sock = sock
+        self._stopevent = threading.Event()
+        self._sleepperiod = 1.0
+        self.rtime = ''.join(stun_struct_refresh_request())
+        self.st = 5
+        self.tt = time.time()+self.st
 
     def run(self):
-        while self.sock:
-            buf = stun_struct_refresh_request()
-            sdata = binascii.a2b_hex(''.join(buf))
-            try:
-                self.sock.send(sdata)
-            except:
-                print "socket has closed"
-                return
-            time.sleep(30)
+        while self.sock and not self._stopevent.isSet():
+            self._stopevent.wait(1)
+            if time.time() > self.tt:
+                self.tt = time.time()+self.st
+                try:
+                    self.sock.send(binascii.unhexlify(self.rtime))
+                    log.info(','.join(['sock','%d' %self.sock.fileno(),'send']))
+                except:
+                    self._stopevent.set()
+
+    def join(self,timeout=None):
+        print 'Exit threading',self.name
+        self.sock.close()
+        self._stopevent.set()
+        threading.Thread.join(self,timeout)
+        
+
 
 
 def device_login(host,uuid):
@@ -197,16 +179,21 @@ def device_login(host,uuid):
         sock.connect(host)
     except Exception,err:
         print 'format_exception():'
-    buf = ''.join(device_struct_allocate(uid))
+    buf = ''.join(device_struct_allocate(uuid))
+
+    log.info(','.join(['sock','%d' % sock.fileno(),'send']))
     sock.send(binascii.unhexlify(buf))
     mysock = 0
     myconn = []
+    global tlist
+    tlist = []
     while True:
         data = sock.recv(2048)
         if not data:
             break
         else:
             hbuf = binascii.hexlify(data)
+            log.info(','.join(['sock','%d' % sock.fileno(),'recv']))
             hattr = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH*2])
             rdict = parser_stun_package(hbuf[STUN_HEADER_LENGTH*2:-8])
             if not rdict:
@@ -221,9 +208,10 @@ def device_login(host,uuid):
 
             hattr.method = stun_get_type(hattr.method)
             if hattr.method == STUN_METHOD_ALLOCATE:
-                print 'start refresh time'
                 t = ThreadRefreshTime(sock)
+                t.setDaemon(True)
                 t.start()
+                tlist.append(t)
                 if rdict.has_key(STUN_ATTRIBUTE_STATE):
                     stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                     mysock = int(stat[:8],16)
@@ -232,16 +220,29 @@ def device_login(host,uuid):
                     stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                     myconn = int(stat[:8],16)
             elif hattr.method == STUN_METHOD_SEND:
-                #print "recv forward packet"
-                if rdict.has_key(STUN_ATTRIBUTE_DATA):
-                    print rdict[STUN_ATTRIBUTE_DATA][-1],time.time()
+                print "recv forward packet"
+                #if rdict.has_key(STUN_ATTRIBUTE_DATA):
+                #    print rdict[STUN_ATTRIBUTE_DATA][-1],time.time()
                 dstsock = int(hattr.srcsock,16)
                 buf = send_data_to_app(mysock,dstsock)
-                sock.send(binascii.unhexlify(''.join(buf)))
-
-
-    print 'sock will close'
+                log.info(','.join(['sock','%d' % sock.fileno(),'send']))
+                try:
+                    sock.send(binascii.unhexlify(''.join(buf)))
+                except:
+                    break
+    log.info(','.join(['sock','%d' % sock.fileno(),'close']))
     sock.close()
+    print u'退出线程'
+
+
+
+def signal_handler(signal, frame):
+        print('You pressed Ctrl+C!')
+        global tlist
+        for n in tlist:
+            time.sleep(0.1)
+            n.join()
+        sys.exit(0)
 
 def make_argument_parser():
     parser = argparse.ArgumentParser(
@@ -249,9 +250,9 @@ def make_argument_parser():
             )
     parser.add_argument
     parser.add_argument('-H',action='store',dest='srv_host',type=str,\
-                        help=u'服务器地址 ,例如: -H 192.168.9:3478')
-    parser.add_argument('-p',action='store',default=3478,type=int,\
-                        help=u'服务器端口号，默认是: 3478')
+            help=u'服务器地址, 端口默认是:3478 ,例如: -H 192.168.9:3478')
+    #parser.add_argument('-p',action='store',default=3478,dest='port',type=int,\
+    #                    help=u'服务器端口号，默认是: 3478')
     parser.add_argument('-f',action='store',dest='uuidfile',type=file,\
                         help=u'UUID的文件，例如： -f file.bin')
     parser.add_argument('--version',action='version',version=__version__)
@@ -279,22 +280,16 @@ def devid_damon():
     #uuidbin.close()
        
 
-def test_radom_uuid():
-    nclient = int(nclient)
-    uuidbin = open('uuid.bin','w')
-    n = 5
-    for i  in xrange(nclient):
-        print i,"client now start"
-        try:
-            t = threading.Thread(target=device_allocate_login,args=('192.168.8.9',3478))
-            t.start()
-        except IOError:
-            print "too many files opened"
-        if n == 0:
-            time.sleep(1)
-            n=15
-        n -=1
-    uuidbin.close()
+global tlist
+log  = logging.getLogger('dev_demo')
+log.setLevel(logging.INFO)
+formatter = logging.Formatter('%(name)-12s %(asctime)s %(levelname)-8s %(message)s','%a, %d %b %Y %H:%M:%S',)
+file_handler = handlers.RotatingFileHandler("devices_demo.log",maxBytes=5242880,backupCount=20,encoding=None)
+
+file_handler.setFormatter(formatter)
+log.addHandler(file_handler)
+log.addHandler(logging.StreamHandler())
+
 
 __version__ = '0.0.1'
 if __name__ == '__main__':
@@ -313,15 +308,26 @@ if __name__ == '__main__':
             exit(1)
         host = (s[0],p)
     else:
-        host = (args.srv_host,args.port)
+        host = (args.srv_host,3478)
         
 
     uuidfile = args.uuidfile
+    n =0
+    tlist = []
     while True:
+        if n == 15:
+            n = 0
+            time.sleep(1)
         try:
             uid = pickle.load(args.uuidfile)
+            log.info(','.join(['Start UUID',uid]))
             t = threading.Thread(target=device_login,args=(host,uid))
             t.start()
         except EOFError:
             break
-    
+        n +=1
+
+    signal.signal(signal.SIGINT, signal_handler)
+    print('Press Ctrl+C')
+    signal.pause()
+

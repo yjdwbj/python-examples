@@ -12,6 +12,7 @@ import time
 import hmac
 import hashlib
 import uuid,pickle
+import argparse
 from epoll_global import *
 
 class ThreadRefreshTime(threading.Thread):
@@ -22,8 +23,12 @@ class ThreadRefreshTime(threading.Thread):
 
     def run(self):
         while self.sock:
-            self.sock.send(self.rtime)
+            nbyte = self.sock.send(self.rtime)
+            log.info(','.join(['sock','%d'%self.sock.fileno(),'send: %d' % nbyte]))
             time.sleep(50)
+
+    def stop(self):
+        self.sock.close()
 
 
 def stun_register_request(uname,pwd):
@@ -48,23 +53,24 @@ def stun_login_request(uname,pwd):
     filed = "%08x" % 30
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     stun_add_fingerprint(buf)
-    print "login buf is",buf
+    #print "login buf is",buf
     return buf
 
 
-def stun_bind_uuids():
+def stun_bind_uuids(jluids):
     buf = []
     stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
-    u1 = '19357888AA07418584391D0ADB61E7902653716613920FBF'
-    jluid = 'e68cd4167aea4f85a7242031252be15874657374a860a02f'
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_MUUID,''.join([u1.lower(),jluid]))
+    #u1 = '19357888AA07418584391D0ADB61E7902653716613920FBF'
+    #jluid = 'e68cd4167aea4f85a7242031252be15874657374a860a02f'
+    #stun_attr_append_str(buf,STUN_ATTRIBUTE_MUUID,''.join([u1.lower(),jluid]))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MUUID,jluids)
     stun_add_fingerprint(buf)
     return buf
 
-def stun_bind_single_uuid():
+def stun_bind_single_uuid(jluid):
     buf = []
     stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
-    jluid = '19357888AA07418584391D0ADB61E7902653716613920FBF'
+    #jluid = '19357888AA07418584391D0ADB61E7902653716613920FBF'
     #jluid = 'e68cd4167aea4f85a7242031252be15874657374a860a02f'
     stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,jluid.lower())
     stun_add_fingerprint(buf)
@@ -157,13 +163,10 @@ def test_bind_ten_random_devid():
     return u
 
 
-def stun_setLogin(host,port):
+def stun_setLogin((addr),ulist,user,pwd):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    #stun_contract_allocate_request(buf)
-    tuser = 'osg'
-    tpwd = '1234'
-    buf = stun_register_request(tuser,tpwd)
+    buf = stun_register_request(user,pwd)
     #stun_register_request(buf,'lcy','1234')
     #stun_check_user_valid(buf,'lcy333')
     #stun_login_request(buf,'lcy','test') 
@@ -177,25 +180,27 @@ def stun_setLogin(host,port):
     #uid='2860014389504773b2c2b7252d3eb8b074657374'
     #ruuid = ''.join([uid,("%08x" % get_uuid_crc32(uid))])
     #buf = stun_connect_peer_with_uuid(ruuid,'lcy','1234') 
-    buf = stun_login_request(tuser,tpwd)
-    print "send buf",buf
+    #buf = stun_login_request(user,pwd)
     sdata = binascii.a2b_hex(''.join(buf))
     sock.bind(('',0))
-    sock.connect((host,port))
+    sock.connect(addr)
     sock.send(sdata)
+    log.info(','.join(['sock','%d'%sock.fileno(),'send']))
     mysock = 0
     while True:
-        data,addr = sock.recvfrom(2048)
+        data = sock.recv(2048)
         if not data:
             break
         else:
             myrecv = binascii.b2a_hex(data)
+            log.info(','.join(['sock','%d'%sock.fileno(),'recv: %d' % (len(myrecv)/2)]))
             print "recv buf",myrecv
             if check_packet_vaild(myrecv): # 校验包头
                 print "unkown packet"
                 break
 
             hattr = get_packet_head_class(myrecv[:STUN_HEADER_LENGTH*2])
+            print "method is",hattr.method
 
             rdict = parser_stun_package(myrecv[STUN_HEADER_LENGTH*2:-8]) # 去头去尾
             if hattr.method == STUN_METHOD_DATA or hattr.method == STUN_METHOD_INFO:
@@ -213,20 +218,26 @@ def stun_setLogin(host,port):
 
             hattr.method = stun_get_type(hattr.method)
             if hattr.method  == STUN_METHOD_BINDING:
-                #refresh  = ThreadRefreshTime(sock)
-                #refresh.start()
+                refresh  = ThreadRefreshTime(sock)
+                refresh.start()
                 stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                 mysock = int(stat[:8],16)
                 # 下面绑定一些UUID
                 #sock.send(binascii.unhexlify(''.join(stun_bind_uuids())))
                 #print "bind uuid"
                 #buf = stun_bind_single_uuid()
-                buf = stun_bind_uuids()
+                #buf = stun_bind_uuids()
+                if len(ulist) > 1:
+                    buf = stun_bind_uuids(''.join(ulist))
+                else:
+                    buf = stun_bind_single_uuid(ulist[0])
                 print buf
-                sock.send(binascii.unhexlify(''.join(buf)))
+                nbyte = sock.send(binascii.unhexlify(''.join(buf)))
+                log.info(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
             elif hattr.method == STUN_METHOD_REGISTER:
-                buf = stun_login_request(tuser,tpwd)
-                sock.send(binascii.unhexlify(''.join(buf)))
+                buf = stun_login_request(user,pwd)
+                nbyte = sock.send(binascii.unhexlify(''.join(buf)))
+                log.info(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
             elif hattr.method  == STUN_METHOD_REFRESH:
                 pass
             elif hattr.method == STUN_METHOD_CHANNEL_BIND:
@@ -235,7 +246,8 @@ def stun_setLogin(host,port):
                     dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
                     buf = stun_send_data_to_devid(mysock,dstsock)
                     #print "forward buf is",buf
-                    sock.send(binascii.unhexlify(''.join(buf)))
+                    nbyte = sock.send(binascii.unhexlify(''.join(buf)))
+                    log.info(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
             elif hattr.method == STUN_METHOD_DATA:
                 #print "recv device peer data",time.time()
                 dstsock = int(hattr.srcsock,16)
@@ -243,7 +255,8 @@ def stun_setLogin(host,port):
                     print rdict[STUN_ATTRIBUTE_DATA][-1]
                 buf = stun_send_data_to_devid(mysock,dstsock)
                 #print "forward buf is",buf
-                sock.send(binascii.unhexlify(''.join(buf)))
+                nbyte = sock.send(binascii.unhexlify(''.join(buf)))
+                log.info(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
             elif hattr.method == STUN_METHOD_INFO:
                 print "recv some server info"
                 print myrecv
@@ -251,7 +264,8 @@ def stun_setLogin(host,port):
                     dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
                     buf = stun_send_data_to_devid(mysock,dstsock)
                     #print "forward buf is",buf
-                    sock.send(binascii.unhexlify(''.join(buf)))
+                    nbyte = sock.send(binascii.unhexlify(''.join(buf)))
+                    log.info(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
             else:
                 print "Command error"
     sock.close()
@@ -261,13 +275,11 @@ def make_argument_parser():
             formatter_class = argparse.ArgumentDefaultsHelpFormatter
             )
     parser.add_argument
-    parser.add_argument('-n',action='store',dest='vendor',type=str,\
-                help=u'厂商代码，4字节，少于自动补零，多于只取前面的，例如: -n test')
     parser.add_argument('-f',action='store',dest='uuidfile',type=file,\
                 help=u'UUID 文件，例如： -f file.bin')
     parser.add_argument('-H',action='store',dest='srv_host',type=str,\
                 help=u'服务器地址, 例如: -H 192.168.8.9:3478')
-    parser.add_argument('-c',action='store',default=100,dest='u_count',type=int,\
+    parser.add_argument('-u',action='store',default=100,dest='u_count',type=int,\
                 help=u'随机生成用户个数，例如生成100 用户名： -c 100 . 默认数是100') 
     parser.add_argument('-b',action='store',default=10, dest='b_count',type=int,\
                 help=u'每个用户绑定UUID的个数，如果此数大于文件里的数量，使用文件里的数值.默认:10 .例如： -c 10') 
@@ -278,16 +290,11 @@ def make_argument_parser():
 
 __version__ = '0.0.1'
 
-
-
-
 def connect_turn_server():
     #srv_host = '120.24.235.68'
     srv_host = '192.168.8.9'
     #srv_host = '192.168.56.1'
     srv_port = 3478
-    #srv_port = 3478
-    #sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     #connect_devid_from_file(srv_host,srv_port)
     stun_setLogin(srv_host,srv_port)
 
@@ -298,28 +305,75 @@ def main():
     connect_turn_server()
 
 
+appname = 'app_demon'
+log = logging.getLogger(__name__)
+log.setLevel(logging.INFO)
+formatter = logging.Formatter('%(name)-12s %(asctime)s %(levelname)-8s %(message)s','%a, %d %b %Y %H:%M:%S',)
+file_handler = handlers.RotatingFileHandler('%s.log' % appname,maxBytes=5242880,backupCount=10,encoding=None)
+
+file_handler.setFormatter(formatter)
+log.addHandler(file_handler)
+log.addHandler(logging.StreamHandler())
+
+
 if __name__ == '__main__':
    args = make_argument_parser().parse_args()
    if not args.srv_host or not args.uuidfile:
        print make_argument_parser().parse_args(['-h'])
        exit(1)
 
+   host = ()
+   if ':' in args.srv_host:
+       s = args.srv_host.split(':')
+       try:
+           p = int(s[-1])
+       except:
+           print u'端口格式无法识别'
+           p = 3478
+       host = (s[0],p)
+   else:
+       host = (args.srv_host,3478)
+
+
    ulist = []
+   log.info(','.join([__name__,'Start']))
    while True:
        try:
            ulist.append(pickle.load(args.uuidfile))
        except:
            break
+   if ulist == []:
+       print u'文件里没有UUID'
+       exit(1)
    acclist = []
-   for i in xrange(args.c_count):
+   bind = args.b_count if args.b_count < len(ulist) else len(ulist)
+   log.info(','.join(['UUID counts','%d' % len(ulist),'(per user)bind count %d' % bind]))
+
+   tbuf = ulist
+   
+   for i in xrange(args.u_count):
        z = str(uuid.uuid4()).replace('-','')
 
        n = random.randint(0,15)
        zi = []
        for y in xrange(n):
            zi.append(chr(random.randint(97,122)))
-       acclist.append(''.join([z,''.join(zi)]))
-       
+       uname = ''.join([z,''.join(zi)])
+       cuts = [bind]
+       muuid = [tbuf[i:j] for i,j in zip([0]+cuts,cuts+[None])]
+
+       if len(muuid) == 2:
+           # start threading
+           t = threading.Thread(target=stun_setLogin,args=(host,muuid[0],uname,uname))
+           t.start()
+           log.info(','.join(['user:%s' % uname,'pwd:%s' % uname,'Starting %s' % t.name]))
+           tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
+
+           
+           
+
+
+
            
             
        

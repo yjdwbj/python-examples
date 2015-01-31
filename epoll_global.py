@@ -96,6 +96,7 @@ STUN_ERROR_USER_EXIST='0405'
 STUN_ERROR_AUTH='0406'
 STUN_ERROR_DEVOFFLINE='0407'
 STUN_ERROR_FORMAT='0408'
+STUN_ERROR_NONE=None
 
 errDict={STUN_ERROR_UNKNOWN_ATTR:'Unkown attribute',
         STUN_ERROR_UNKNOWN_HEAD:'packet head error',
@@ -239,20 +240,16 @@ def get_muluuid_fmt(num):
 
 def read_attributes_from_buf(response):
     attr_name = response[:4]
-    pos = 0
     fmt = []
     vfunc = lambda x: [4,8,int(x,16)]
     if attr_name == STUN_ATTRIBUTE_LIFETIME:
-        #fmt = '!HHI'
         fmt = vfunc(response[4:8])
     elif attr_name == STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:
         fmt = '!HH2sHI'
     elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
         fmt = '!HHI'
     elif attr_name == STUN_ATTRIBUTE_STATE:
-        #fmt = vfunc(response[4:8])
         fmt = vfunc(response[4:8])
-        #fmt = '!HHI'
     elif attr_name == STUN_ATTRIBUTE_UUID:
         fmt = vfunc(response[4:8])
     elif attr_name == STUN_ATTRIBUTE_RUUID:
@@ -264,27 +261,25 @@ def read_attributes_from_buf(response):
     elif attr_name == STUN_ATTRIBUTE_USERNAME:
         fmt = vfunc(response[4:8])
     elif attr_name == STUN_ATTRIBUTE_MESSAGE_ERROR_CODE:
-    #elif attr_name == STUN_ATTRIBUTE_MESSAGE_UNKNOWN_ATTRIBUTES:
         fmt = vfunc(response[4:8])
     elif attr_name == STUN_ATTRIBUTE_MUUID:
         #n = int(response[4:8],16)
         fmt = vfunc(response[4:8])
         if fmt[-1] % UUID_SIZE:
-            print 'uuid size is wrong',fmt[-1]
+            #print 'uuid size is wrong',fmt[-1]
             return None # 不是UUID_SIZE的倍数，错误的格式
     elif attr_name == STUN_ATTRIBUTE_MRUUID:
         fmt = vfunc(response[4:8])
         if fmt[-1] % (UUID_SIZE+4):
-            print 'uuid size is wrong',fmt[-1]
+            #print 'uuid size is wrong',fmt[-1]
             return None # 不是UUID_SIZE的倍数，错误的格式
     else:
-        print 'unkown attr_name',attr_name
+        #print 'unkown attr_name',attr_name
         return None
     return (attr_name,fmt)
 
 def parser_stun_package(buf):
     #if check_packet_vaild(buf): return None
-    print "parser buf is",buf
     #attrdict= DictClass()
     attrdict = {}
     rlen = len(buf)

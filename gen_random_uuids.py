@@ -13,6 +13,7 @@ import sys
 import pickle
 import select
 import argparse
+import os
 
 from epoll_global import *
 
@@ -37,9 +38,20 @@ if __name__ == '__main__':
         print make_argument_parser().parse_args(['-h'])
         exit(-1)
 
-    uuidfd = open(''.join([args.vendor,'.bin']),'w')
+    vendor = ''
+    if len(args.vendor) > 4:
+        vendor = args.vendor[:4]
+    elif len(args.vendor) < 4:
+        vendor = ''.join([args.vendor,'0000'[:4 - len(args.vendor)]])
+    else:
+        vendor = args.vendor
+
+
+    uuidfd = open(''.join([vendor,'.bin']),'w')
     for i in xrange(args.count):
-      uid = gen_random_jluuid(args.vendor)
+      uid = gen_random_jluuid(vendor)
       pickle.dump(uid,uuidfd)
+    
+    print u'文件保存到:',''.join([os.path.abspath('.'),os.path.sep ,vendor,'.bin'])
     uuidfd.close()
 
