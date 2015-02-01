@@ -282,9 +282,10 @@ def devid_damon():
 
 global tlist
 log  = logging.getLogger('dev_demo')
+appname = 'devices_demo'
 log.setLevel(logging.INFO)
 formatter = logging.Formatter('%(name)-12s %(asctime)s %(levelname)-8s %(message)s','%a, %d %b %Y %H:%M:%S',)
-file_handler = handlers.RotatingFileHandler("devices_demo.log",maxBytes=5242880,backupCount=20,encoding=None)
+file_handler = handlers.RotatingFileHandler('%s.log' % appname,maxBytes=LOG_SIZE,backupCount=LOG_COUNT,encoding=None)
 
 file_handler.setFormatter(formatter)
 log.addHandler(file_handler)

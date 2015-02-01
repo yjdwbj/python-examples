@@ -111,6 +111,9 @@ errDict={STUN_ERROR_UNKNOWN_ATTR:'Unkown attribute',
 STUN_ONLINE='00000001'
 STUN_OFFLINE='00000000'
 
+LOG_SIZE=10485760
+LOG_COUNT=20
+
 STUN_HEAD_CUTS=[4,8,12,20,28,32,40] # 固定长度的包头
 STUN_HEAD_KEY=['magic','version','length','srcsock','dstsock','method','sequence'] # 包头的格式的名称
 __author__ = 'liuchunyang'

@@ -752,6 +752,7 @@ def Server(port):
                             delete_fileno(fileno)
                             continue
                         rbuf = gClass.clients[fileno].recv(SOCK_BUFSIZE)
+                        log.info(','.join(['sock %d' % fileno,'recv: %d',len(rbuf)]))
                         if not rbuf:
                             delete_fileno(fileno)
                             continue
@@ -795,6 +796,7 @@ def Server(port):
                         #print 'send buf',gClass.responses[fileno]
                         nbyte =  gClass.clients[fileno].send(\
                                 binascii.unhexlify(''.join(gClass.responses[fileno])))
+                        log.info(','.join(['sock %d' % fileno,'send: %d',nbyte]))
                         gClass.responses.pop(fileno)
                         if gClass.timer.has_key(fileno):
                             # 给这个联接添加生存时间
@@ -846,7 +848,7 @@ def make_argument_parser():
     return parser
 
 __version__ = '0.1.0'
-
+appname = 'epoll_srv'
 options = make_argument_parser().parse_args()
 if options.loglevel:
     DebugLevel = get_log_level(options.loglevel)
@@ -908,7 +910,7 @@ CREATE TABLE account_status
 log = logging.getLogger()
 log.setLevel(DebugLevel)
 formatter = logging.Formatter('%(name)-12s %(asctime)s %(levelname)-8s %(message)s','%a, %d %b %Y %H:%M:%S',)
-file_handler = handlers.RotatingFileHandler("nath.log",maxBytes=5242880,backupCount=10,encoding=None)
+file_handler = handlers.RotatingFileHandler("%s.log" % appname,maxBytes=LOG_SIZE,backupCount=LOG_COUNT,encoding=None)
 
 file_handler.setFormatter(formatter)
 log.addHandler(file_handler)
