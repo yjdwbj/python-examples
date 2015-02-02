@@ -14,20 +14,28 @@ import hashlib
 import uuid,pickle
 import argparse
 from epoll_global import *
+import logging
+from logging import handlers
 
 class ThreadRefreshTime(threading.Thread):
     def __init__(self,sock):
         threading.Thread.__init__(self)
         self.sock = sock
         self.rtime = binascii.unhexlify(''.join(stun_struct_refresh_request()))
+        log.info(','.join([self.name,'Starting','sock %d' % sock.fileno()]))
 
     def run(self):
         while self.sock:
-            nbyte = self.sock.send(self.rtime)
-            log.info(','.join(['sock','%d'%self.sock.fileno(),'send: %d' % nbyte]))
-            time.sleep(50)
+            try:
+                nbyte = self.sock.send(self.rtime)
+                log.info(','.join(['sock','%d'%self.sock.fileno(),'send: %d' % nbyte]))
+            except:
+                log.info(','.join([self.name,'Exiting']))
+                break
+            time.sleep(random.randint(30,55))
 
     def stop(self):
+        log.info(','.join([self.name,'Exiting','sock %d' % self.sock.fileno()]))
         self.sock.close()
 
 
@@ -39,7 +47,6 @@ def stun_register_request(uname,pwd):
     nmac.update(pwd)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,nmac.hexdigest())
     stun_add_fingerprint(buf)
-    #print "register buf is",buf
     return buf
 
 def stun_login_request(uname,pwd):
@@ -82,7 +89,7 @@ def stun_send_data_to_devid(srcsock,dstsock):
     buf[3] = '%08x' % srcsock
     buf[4] = '%08x' % dstsock
     buf[-1] = '03000000'
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('testdata'))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('testdatatestdata'))
     stun_add_fingerprint(buf)
     return buf
 
@@ -104,7 +111,6 @@ def stun_contract_allocate_request(buf):
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     stun_add_fingerprint(buf)
-    print "buf is",buf
 
 
 def stun_struct_refresh_request():
@@ -166,10 +172,8 @@ def test_bind_ten_random_devid():
 def stun_setLogin((addr),ulist,user,pwd):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+    sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
     buf = stun_register_request(user,pwd)
-    #stun_register_request(buf,'lcy','1234')
-    #stun_check_user_valid(buf,'lcy333')
-    #stun_login_request(buf,'lcy','test') 
     #stun_struct_refresh_request(buf)
     #uid = "ab8f91f82ff423db42d977177d365e84"
     #uid = "ce8f91f82ff423da42d977177d365963"
@@ -189,25 +193,23 @@ def stun_setLogin((addr),ulist,user,pwd):
     mysock = 0
     while True:
         data = sock.recv(2048)
+        time.sleep(0.1)
         if not data:
             break
         else:
             myrecv = binascii.b2a_hex(data)
             log.info(','.join(['sock','%d'%sock.fileno(),'recv: %d' % (len(myrecv)/2)]))
-            print "recv buf",myrecv
             if check_packet_vaild(myrecv): # 校验包头
                 print "unkown packet"
                 break
 
             hattr = get_packet_head_class(myrecv[:STUN_HEADER_LENGTH*2])
-            print "method is",hattr.method
 
             rdict = parser_stun_package(myrecv[STUN_HEADER_LENGTH*2:-8]) # 去头去尾
             if hattr.method == STUN_METHOD_DATA or hattr.method == STUN_METHOD_INFO:
                 pass
             else:
                 if not stun_is_success_response_str(hattr.method):
-                    print "rdict is",rdict
                     print "server response error",hattr.method
                     if rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
                         print errDict.get(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1][:4])
@@ -223,19 +225,16 @@ def stun_setLogin((addr),ulist,user,pwd):
                 stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                 mysock = int(stat[:8],16)
                 # 下面绑定一些UUID
-                #sock.send(binascii.unhexlify(''.join(stun_bind_uuids())))
-                #print "bind uuid"
-                #buf = stun_bind_single_uuid()
-                #buf = stun_bind_uuids()
                 if len(ulist) > 1:
                     buf = stun_bind_uuids(''.join(ulist))
                 else:
                     buf = stun_bind_single_uuid(ulist[0])
-                print buf
+                time.sleep(0.1)
                 nbyte = sock.send(binascii.unhexlify(''.join(buf)))
                 log.info(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
             elif hattr.method == STUN_METHOD_REGISTER:
                 buf = stun_login_request(user,pwd)
+                time.sleep(0.1)
                 nbyte = sock.send(binascii.unhexlify(''.join(buf)))
                 log.info(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
             elif hattr.method  == STUN_METHOD_REFRESH:
@@ -244,31 +243,42 @@ def stun_setLogin((addr),ulist,user,pwd):
                 # 绑定小机命令o
                 if rdict.has_key(STUN_ATTRIBUTE_RUUID):
                     dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
-                    buf = stun_send_data_to_devid(mysock,dstsock)
-                    #print "forward buf is",buf
-                    nbyte = sock.send(binascii.unhexlify(''.join(buf)))
-                    log.info(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
+                    if dstsock != 0xFFFFFFFF:
+                        send_forward_buf(sock,mysock,dstsock)
+                elif rdict.has_key(STUN_ATTRIBUTE_MRUUID):
+                    mlist = split_mruuid(rdict[STUN_ATTRIBUTE_MRUUID])
+                    for n in mlist:
+                        time.sleep(0.1)
+                        dstsock = int(n[-8:],16)
+                        if dstsock != 0xFFFFFFFF:
+                            send_forward_buf(sock,mysock,dstsock)
+
             elif hattr.method == STUN_METHOD_DATA:
                 #print "recv device peer data",time.time()
                 dstsock = int(hattr.srcsock,16)
-                if rdict.has_key(STUN_ATTRIBUTE_DATA):
-                    print rdict[STUN_ATTRIBUTE_DATA][-1]
                 buf = stun_send_data_to_devid(mysock,dstsock)
-                #print "forward buf is",buf
+                print "recv forward buf"
+                time.sleep(0.1)
                 nbyte = sock.send(binascii.unhexlify(''.join(buf)))
                 log.info(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
             elif hattr.method == STUN_METHOD_INFO:
                 print "recv some server info"
-                print myrecv
                 if rdict.has_key(STUN_ATTRIBUTE_RUUID):
                     dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
                     buf = stun_send_data_to_devid(mysock,dstsock)
-                    #print "forward buf is",buf
+                    time.sleep(0.1)
                     nbyte = sock.send(binascii.unhexlify(''.join(buf)))
                     log.info(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
             else:
                 print "Command error"
     sock.close()
+
+def send_forward_buf(sock,srcsock,dstsock):
+    buf = stun_send_data_to_devid(srcsock,dstsock)
+    print "send forward buf"
+    nbyte = sock.send(binascii.unhexlify(''.join(buf)))
+    log.info(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
+
 
 def make_argument_parser():
     parser = argparse.ArgumentParser(
@@ -306,7 +316,7 @@ def main():
 
 
 appname = 'app_demon'
-log = logging.getLogger(__name__)
+log = logging.getLogger(appname)
 log.setLevel(logging.INFO)
 formatter = logging.Formatter('%(name)-12s %(asctime)s %(levelname)-8s %(message)s','%a, %d %b %Y %H:%M:%S',)
 file_handler = handlers.RotatingFileHandler('%s.log' % appname,maxBytes=LOG_SIZE,backupCount=LOG_COUNT,encoding=None)
@@ -336,7 +346,7 @@ if __name__ == '__main__':
 
 
    ulist = []
-   log.info(','.join([__name__,'Start']))
+   log.info(','.join([appname,'Start']))
    while True:
        try:
            ulist.append(pickle.load(args.uuidfile))
@@ -350,10 +360,13 @@ if __name__ == '__main__':
    log.info(','.join(['UUID counts','%d' % len(ulist),'(per user)bind count %d' % bind]))
 
    tbuf = ulist
-   
+   tt = 0 
    for i in xrange(args.u_count):
+       time.sleep(0.1)
+       if tt > 15:
+           tt = 0
+           time.sleep(1)
        z = str(uuid.uuid4()).replace('-','')
-
        n = random.randint(0,15)
        zi = []
        for y in xrange(n):

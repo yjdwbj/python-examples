@@ -31,7 +31,6 @@ import select
 import logging
 from logging import handlers
 from epoll_global import *
-import traceback
 
 
 LOG_ERROR_UUID='UUID Format Error'
@@ -55,7 +54,7 @@ def delete_fileno(fileno):
     try:
         epoll.unregister(fileno)
     except IOError:
-        pass
+        log.info('Delete socket %d' % fileno)
     if gClass.clients.has_key(fileno):
         gClass.clients.get(fileno).close()
         gClass.clients.pop(fileno)
@@ -77,7 +76,7 @@ def handle_client_request(buf,fileno):
     if not gClass.timer.has_key(fileno):
         if res.method != STUN_METHOD_ALLOCATE or \
                 res.method != STUN_METHOD_BINDING:  # 非法刷新请求
-            log.info(','.join([LOG_ERROR_IILAGE_CLIENT,gClass.clients[fileno].getpeername()[0]]))
+            log.info(','.join([LOG_ERROR_IILAGE_CLIENT,'sock %d' % fileno]))
             delete_fileno(fileno)
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
             return ([],res)
@@ -97,12 +96,12 @@ def handle_client_request(buf,fileno):
             # 转发到时目地
             gClass.responses[dstsock] = buf
             epoll.modify(dstsock,select.EPOLLOUT)
-            return ([],3)
+            return ([],res)
         else: # 目标不存在
             res.eattr = STUN_ERROR_DEVOFFLINE
             gClass.responses[dstsock] = ''.join(stun_error_response(res))
             epoll.modify(srcsock,select.EPOLLOUT)
-            return ([],3)
+            return ([],res)
 
     res.host= gClass.clients.get(fileno).getpeername()
     res.fileno=fileno
@@ -138,7 +137,7 @@ def bind_each_uuid(ustr,fileno):
         notifybuf = notify_peer(''.join([b,STUN_ONLINE]))
         #print 'info',notifybuf
         gClass.responses[dstsock] = notify_peer(''.join([b,STUN_ONLINE]))
-        epoll.modify(dstsock,select.EPOLLOUT)
+        epoll.modify(dstsock,select.EPOLLOUT )
     else:
         gClass.appbinds[fileno][ustr]=0xFFFFFFFF
 
@@ -200,7 +199,7 @@ def notify_app_bind_islogin(bindinfo):
 
 def handle_app_login_request(res):
     if not res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) or  not res.attrs.has_key(STUN_ATTRIBUTE_USERNAME):
-       res.eattr = binascii.hexlify("Not Authentication")
+       res.eattr = STUN_ERROR_AUTH
        return  stun_error_response(res)# APP端必须带用认证信息才能发起连接.
 
     result = app_user_login(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],
@@ -335,7 +334,7 @@ def stun_connect_address(host,res):
 def handle_register_request(res):
     if app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],
             res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]):
-         # 用户名已经存了。
+        # 用户名已经存了。
         log.debug("User has Exist!i %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
         res.eattr = STUN_ERROR_USER_EXIST
         return stun_error_response(res)
@@ -350,9 +349,9 @@ def register_success(uname):
     return (buf)
 
 def handle_chkuser_request(res):
-    f = check_user_in_database(res[STUN_ATTRIBUTE_USERNAME][-1])
+    f = check_user_in_database(res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
     if f != 0:
-        log.debug("User Exist %s" % res[STUN_ATTRIBUTE_USERNAME][-1])
+        log.debug("User Exist %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
         res.eattr = STUN_ERROR_USER_EXIST
         return stun_error_response(res)
     else:
@@ -363,7 +362,6 @@ def check_user_sucess(res):
     stun_init_command_str(stun_make_success_response(res.method),buf,)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(res.attrs[STUN_ATTRIBUTE_USERNAME][-1]))
     stun_add_fingerprint(buf)
-    log.debug("User not register! %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
     return (buf)
 
 def get_jluuid_crc32(uhex):
@@ -424,6 +422,7 @@ def app_user_auth_success(res):
     stun_init_command_str(stun_make_success_response(res.method),buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
     stun_add_fingerprint(buf)
     return (buf)
 
@@ -489,7 +488,6 @@ def app_user_update_status(user,host):
         result = dbcon.execute(sss)
     except:
         log.error(','.join([LOG_ERROR_DB,host,str(sys._getframe().f_lineno)]))
-        pass
 
 
 def app_user_login(user,pwd):
@@ -605,6 +603,9 @@ def update_newdevice(res):
             log.error(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
 
 class CheckSesionThread(threading.Thread):
+    def __init__(self):
+        threading.Thread.__init__(self)
+
     def run(self):
         while True:
             time.sleep(1)
@@ -717,12 +718,33 @@ def remove_fileno_resources(fileno):
     [n.pop(fileno) for n in clist]
     #print "delete list is",clist,"fileno",fileno
 
+def handle_requests_buf(hbuf,fileno):
+    if check_packet_crc32(hbuf):
+        log.error(','.join([LOG_ERROR_PACKET,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
+        delete_fileno(fileno)
+        return 
+
+    rbuf = handle_client_request(hbuf,fileno)
+    res = rbuf[1]
+    if res.eattr == STUN_ERROR_UNKNOWN_PACKET:
+        log.info(','.join([LOG_ERROR_IILAGE_CLIENT,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
+        delete_fileno(fileno)
+        return 
+
+    gClass.responses[fileno] = rbuf[0]
+    epoll.modify(fileno,select.EPOLLOUT)
+    if gClass.timer.has_key(fileno):
+        gClass.timer[fileno] = time.time()+UCLIENT_SESSION_LIFETIME
+
+
+
 
 def Server(port):
     srvsocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+    srvsocket.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
     srvsocket.bind(('',port))
-    srvsocket.listen(15)
+    srvsocket.listen(50)
     srvsocket.setblocking(0)
     log.info("Start Server")
     epoll.register(srvsocket.fileno(),select.EPOLLIN)
@@ -733,70 +755,58 @@ def Server(port):
         while True:
             events = epoll.poll(1)
             for fileno,event in events:
-                if fileno == srvsocket.fileno(): #新的连接
+                if fileno == srvsocket.fileno():
+                    #新的连接
                     try:
-                        conn,addr = srvsocket.accept()
+                        nsock,addr = srvsocket.accept()
                     except:
                         log.error(','.join([LOG_ERROR_FILENO,str(sys._getframe().f_lineno)]))
                         continue
-                    log.info("new client %s:%d" % addr)
-                    conn.setblocking(0)
-                    gClass.clients[conn.fileno()] = conn
-                    gClass.responses[conn.fileno()] = []
-                    gClass.timer[conn.fileno()] = 10
-                    epoll.register(conn.fileno(),select.EPOLLIN)
+                    nf = nsock.fileno()
+                    log.info(','.join(["new client %s:%d" % addr,"new fileno %d" % nf, 'srv fileno %d'%fileno]))
+                    nsock.setblocking(0)
+                    gClass.clients[nf] = nsock
+                    gClass.responses[nf] = []
+                    gClass.timer[nf] = time.time()+10
+                    epoll.register(nf,select.EPOLLIN)
                 elif event & select.EPOLLIN: # 读取socket 的数据
                     try:
-                        #print "requests",gClass.requests,'clients',gClass.clients,'fileno',fileno
                         if not gClass.clients.has_key(fileno):
                             delete_fileno(fileno)
                             continue
-                        rbuf = gClass.clients[fileno].recv(SOCK_BUFSIZE)
-                        log.info(','.join(['sock %d' % fileno,'recv: %d',len(rbuf)]))
-                        if not rbuf:
+                        recvbuf = gClass.clients[fileno].recv(SOCK_BUFSIZE)
+                        #print 'recv ',binascii.hexlify(recvbuf)
+                        log.info(','.join(['sock %d' % fileno,'recv: %d' % len(recvbuf)]))
+                        if not recvbuf:
                             delete_fileno(fileno)
                             continue
-                        else:
-                            gClass.requests[fileno] = rbuf
 
-                        hbuf = binascii.hexlify(gClass.requests[fileno])
-                        if check_packet_vaild(hbuf):
+                        hbuf = binascii.hexlify(recvbuf)
+                        if cmp(hbuf[:4],HEAD_MAGIC): # 检查JL关键字
                             log.error(','.join([LOG_ERROR_PACKET,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
                             delete_fileno(fileno)
                             continue
-                        rbuf = handle_client_request(hbuf,fileno)
-                        if rbuf[1] < 0:  #出错与非法请求关闭就行了
-                            delete_fileno(fileno)
-                        elif rbuf[1] == 1:  # app端的连接小机请求
-                            epoll.modify(fileno,select.EPOLLWRBAND)
-                        elif rbuf[1] == 2:  # 小机端的回答，收到之后不用改状态
-                            continue
-                        elif rbuf[1] == 3:
-                            continue
-                        elif rbuf[1] is ComState and rbuf[1].eattr == STUN_ERROR_UNKNOWN_PACKET:
-                            print "delete ilegal client"
-                            if rbuf[1].eattr == STUN_ERROR_UNKNOWN_PACKET:
-                                delete_fileno(fileno)
-                                continue
+                        mplist = []
+                        if (len(hbuf)/2)  > int(hbuf[8:12],16):
+                            #print 'hbuf len',len(hbuf),'h len',int(hbuf[8:12],16)
+                            #读到两个包了
+                            mplist = [''.join([HEAD_MAGIC,n]) for n in hbuf.split(HEAD_MAGIC) if n ]
+                            #print "two packet",mplist
+                            [handle_requests_buf(n,fileno) for n in mplist]    
                         else:
-                            gClass.responses[fileno] = rbuf[0]
-                            epoll.modify(fileno,select.EPOLLOUT)
-                            if gClass.timer.has_key(fileno):
-                                gClass.timer[fileno] = time.time()+UCLIENT_SESSION_LIFETIME
-                        gClass.requests.pop(fileno)
+                            handle_requests_buf(hbuf,fileno)
                     except IOError:
                         sock_recv_fail(fileno)
                         log.debug("sock has closed %d" % fileno)
                 elif event & select.EPOLLOUT:
                     try:
                         if not gClass.responses.has_key(fileno): #连接命令的时候返回是NULL
-                            log.error(','.join([LOG_ERROR_PACKET,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
-                            epoll.modify(fileno,select.EPOLLWRBAND)
+                            log.error(','.join([LOG_ERROR_PACKET,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
+                            #epoll.modify(fileno,select.EPOLLWRBAND)
                             continue
-                        #print 'send buf',gClass.responses[fileno]
                         nbyte =  gClass.clients[fileno].send(\
                                 binascii.unhexlify(''.join(gClass.responses[fileno])))
-                        log.info(','.join(['sock %d' % fileno,'send: %d',nbyte]))
+                        log.info(','.join(['sock %d' % fileno,'send: %d'%nbyte]))
                         gClass.responses.pop(fileno)
                         if gClass.timer.has_key(fileno):
                             # 给这个联接添加生存时间
@@ -806,9 +816,7 @@ def Server(port):
                         log.debug("sock has closed %d" % fileno)
                         sock_send_fail(fileno)
                 elif event & select.EPOLLHUP:
-                    epoll.unregister(fileno)
-                    gClass.clients[fileno].close()
-                    gClass.clients.pop(fileno)
+                    delete_fileno(fileno)
     finally:
         epoll.unregister(srvsocket.fileno())
         epoll.close()
@@ -848,17 +856,13 @@ def make_argument_parser():
     return parser
 
 __version__ = '0.1.0'
-appname = 'epoll_srv'
 options = make_argument_parser().parse_args()
 if options.loglevel:
     DebugLevel = get_log_level(options.loglevel)
 else:
     DebugLevel = logging.INFO
 
-if not options.srv_port:
-    port = 3478
-else:
-    port = options.srv_port
+port = options.srv_port if options.srv_port else 3478
 
 
 dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
@@ -871,7 +875,6 @@ dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
               #STUN_METHOD_DATA:handle_device_send_data_to_app, # 小机发给APP 的命令
               STUN_METHOD_CHANNEL_BIND:handle_app_bind_device  # APP 绑定小机的命令
               }
-#store = ['timer','clients','requests','responses','uuids','actives','appbinds','appsock','devsock','devuuid']
 store = ['timer','clients','requests','responses','appbinds','appsock','devsock','devuuid']
 
 gClass = ComState()
@@ -906,17 +909,15 @@ CREATE TABLE account_status
 )
 ''')
 
-
-log = logging.getLogger()
+appname = 'JL_SRV'
+log = logging.getLogger(appname)
 log.setLevel(DebugLevel)
 formatter = logging.Formatter('%(name)-12s %(asctime)s %(levelname)-8s %(message)s','%a, %d %b %Y %H:%M:%S',)
 file_handler = handlers.RotatingFileHandler("%s.log" % appname,maxBytes=LOG_SIZE,backupCount=LOG_COUNT,encoding=None)
 
 file_handler.setFormatter(formatter)
 log.addHandler(file_handler)
-#log.addHandler(logging.StreamHandler())
-
-
+log.addHandler(logging.StreamHandler())
 
 
 if __name__ == '__main__':

@@ -1,11 +1,8 @@
 #coding=utf-8
 import binascii
 import struct
-import logging
-
-from logging import handlers
-
 import uuid
+
 STUN_METHOD_BINDING='0001'   # APP登录命令
 STUN_METHOD_ALLOCATE='0003'   #小机登录命令
 STUN_METHOD_REFRESH='0004'
@@ -317,12 +314,13 @@ def parser_stun_package(buf):
     return attrdict
 
 def split_muuid(b):
-    pos = 0
-    #b = binascii.hexlify(uuids)
     hlen = UUID_SIZE * 2
     return  [b[k:k+hlen] for k in xrange(0,len(b),hlen)]
-    #return [buf[i:j] for i,j in zip([0]+,STUN_HEAD_CUTS+[None])]
-    #return mlist
+
+def split_mruuid(b):
+    hlen = UUID_SIZE * 2+8
+    return  [b[k:k+hlen] for k in xrange(0,len(b),hlen)]
+    
 
 def gen_random_jluuid(vendor):
     n = ''.join([str(uuid.uuid4()).replace('-',''),binascii.hexlify(vendor)])

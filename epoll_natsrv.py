@@ -915,7 +915,7 @@ def Server(port):
                         continue
                     #print "new accept",conn.fileno()
                     #print "new clients",addr
-                    log.info("new clientsi %s:%d" % addr)
+                    log.info(','.join(["new clientsi %s:%d" % addr,'new sock %d' % conn.fileno()]))
                     conn.setblocking(0)
                     #mdict['clients'][conn.fileno()] = conn
                     gClass.clients[conn.fileno()] = conn
