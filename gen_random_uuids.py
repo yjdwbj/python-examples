@@ -16,6 +16,8 @@ import argparse
 import os
 
 from epoll_global import *
+reload(sys)
+sys.setdefaultencoding("utf-8")
 
 
 def make_argument_parser():
@@ -26,6 +28,7 @@ def make_argument_parser():
     #parser.add_argument('-n',action='store',dest='vendor',type=str,help=u'厂商代码，4字节，少于自动补零，多于只取前面的，例如: -n test')
     parser.add_argument('-c',action='store',dest='count',type=int,help=u'产生UUID的数量，例如： -c 100')
     parser.add_argument('-f',action='store',dest='fname',type=str,help=u'文件名，可选')
+    parser.add_argument('-r',action='store',dest='rname',type=file,help=u'读取文件UUID的数量，可选')
     parser.add_argument('--version',action='version',version=__version__)
     return parser
 
@@ -36,6 +39,20 @@ __version__ = '0.0.1'
 if __name__ == '__main__':
     args = make_argument_parser().parse_args()
     #if not args.vendor or not args.count:
+
+    if args.rname:
+        n = 0
+        while True:
+            try:
+                uid = pickle.load(args.rname)
+                n+=1
+            except EOFError:
+                break
+        print u'UUID 数量:%d' % n
+        exit(0)
+
+
+
     if not args.count:
         print make_argument_parser().parse_args(['-h'])
         exit(-1)

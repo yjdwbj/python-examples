@@ -53,8 +53,8 @@ class ComState: pass
 def delete_fileno(fileno):
     try:
         epoll.unregister(fileno)
-    except IOError:
-        log.info('Delete socket %d' % fileno)
+    except:
+        log.info('already delete socket %d' % fileno)
     if gClass.clients.has_key(fileno):
         gClass.clients.get(fileno).close()
         gClass.clients.pop(fileno)
@@ -84,7 +84,8 @@ def handle_client_request(buf,fileno):
     #判断如果是转发命令就直接转发了。
     if res.method == STUN_METHOD_SEND or res.method == STUN_METHOD_DATA:
         #print "forward packet"
-        time.sleep(1)
+        #print 'dstsock',res.dstsock
+        #print 'srcsock',res.srcsock
         dstsock = int(res.dstsock,16)
         srcsock = int(res.srcsock,16)
         #转发的信息不正确
@@ -99,9 +100,9 @@ def handle_client_request(buf,fileno):
             return ([],res)
         else: # 目标不存在
             res.eattr = STUN_ERROR_DEVOFFLINE
-            gClass.responses[dstsock] = ''.join(stun_error_response(res))
-            epoll.modify(srcsock,select.EPOLLOUT)
-            return ([],res)
+            #epoll.modify(fileno,select.EPOLLOUT)
+            #gClass.responses[fileno] = ''.join(stun_error_response(res))
+            return (stun_error_response(res),res)
 
     res.host= gClass.clients.get(fileno).getpeername()
     res.fileno=fileno
@@ -174,7 +175,7 @@ def stun_bind_devices_ok(res):
     buf = []
     stun_init_command_str(stun_make_success_response(res.method),buf)
     if res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
-        joint = [''.join([k,'%08x' % v]) for k,v in gClass.appbinds[res.fileno].iteritems()]
+        joint = [''.join([k,'%08x' % gClass.appbinds[res.fileno][k]]) for k in gClass.appbinds[res.fileno].keys()]
         stun_attr_append_str(buf,STUN_ATTRIBUTE_MRUUID,''.join(joint))
     else:
         jluid = res.attrs[STUN_ATTRIBUTE_UUID][-1]
@@ -381,8 +382,9 @@ def noify_app_uuid_just_login(sock,uuidstr,devsock):
     epoll.modify(sock,select.EPOLLOUT)
 
 def device_login_notify_app(uuidstr,devsock):
-    [noify_app_uuid_just_login(k,uuidstr,devsock) for k,v in gClass.appbinds.iteritems() if v.has_key(uuidstr)]
-
+    for fk in gClass.appbinds.keys():
+        if gClass.appbinds.get(fk,None) is dict and gClass.appbinds[fk].has_key(uuidstr):
+            noify_app_uuid_just_login(fk,uuidstr,devsock)
 
 def handle_allocate_request(res):
     """
@@ -540,7 +542,7 @@ def check_user_in_database(uname):
 def get_devices_table(tname):
     metadata = MetaData()
     mirco_devices = Table(tname,metadata,
-            Column('devid',pgsql.UUID,primary_key=True),
+            Column('devid',pgsql.UUID,primary_key=True,unique=True),
             Column('is_active',pgsql.BOOLEAN,nullable=False),
             Column('last_login_time',pgsql.TIMESTAMP,nullable=False),
             Column('is_online',pgsql.BOOLEAN,nullable=False),
@@ -654,7 +656,7 @@ def notify_app_uuid_logout(fileno):
     # 小机下线，通知APP
     devid = gClass.devsock[fileno].uuid
     #print "devid",devid,"has logout"
-    binds = [k for k,v in gClass.appbinds.iteritems() if v.has_key(devid)]
+    binds = [k for k in gClass.appbinds.keys() if gClass.appbinds.get(k).has_key(devid)]
     [notify_peer_is_logout(n,fileno) for n in binds if gClass.appsock.has_key(n)]
     alist = [n for n in binds if gClass.appsock.has_key(n)]
     for n in alist:
@@ -675,10 +677,16 @@ def dealwith_sock_close_update_db(fileno):
     if gClass.appsock.has_key(fileno): #更新相应的数据库在线状态
         #print "appsock is",gClass.appsock
         app_user_logout(gClass.appsock[fileno].name)
-        gClass.appsock.pop(fileno)
+        try:
+            gClass.appsock.pop(fileno)
+        except:
+            pass
     elif gClass.devsock.has_key(fileno):
         mirco_devices_logout(gClass.devsock[fileno].uuid)
-        gClass.devsock.pop(fileno)
+        try:
+            gClass.devsock.pop(fileno)
+        except:
+            pass
 
 def dealwith_sock_close_update_binds(fileno):
     if gClass.appsock.has_key(fileno):
@@ -720,7 +728,7 @@ def remove_fileno_resources(fileno):
 
 def handle_requests_buf(hbuf,fileno):
     if check_packet_crc32(hbuf):
-        log.error(','.join([LOG_ERROR_PACKET,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
+        log.error(','.join([LOG_ERROR_PACKET,'sock %d' %fileno,str(sys._getframe().f_lineno)]))
         delete_fileno(fileno)
         return 
 
@@ -730,6 +738,9 @@ def handle_requests_buf(hbuf,fileno):
         log.info(','.join([LOG_ERROR_IILAGE_CLIENT,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
         delete_fileno(fileno)
         return 
+
+    if not len(rbuf[0]): # 是转发包
+        return
 
     gClass.responses[fileno] = rbuf[0]
     epoll.modify(fileno,select.EPOLLOUT)
@@ -772,12 +783,14 @@ def Server(port):
                 elif event & select.EPOLLIN: # 读取socket 的数据
                     try:
                         if not gClass.clients.has_key(fileno):
+                            log.info(','.join(['sock %d' % fileno,'not in clients']))
                             delete_fileno(fileno)
                             continue
                         recvbuf = gClass.clients[fileno].recv(SOCK_BUFSIZE)
                         #print 'recv ',binascii.hexlify(recvbuf)
                         log.info(','.join(['sock %d' % fileno,'recv: %d' % len(recvbuf)]))
                         if not recvbuf:
+                            log.info(','.join(['sock %d' % fileno,'recv no buffer']))
                             delete_fileno(fileno)
                             continue
 
@@ -816,6 +829,7 @@ def Server(port):
                         log.debug("sock has closed %d" % fileno)
                         sock_send_fail(fileno)
                 elif event & select.EPOLLHUP:
+                    log.debug("sock hup %d" % fileno)
                     delete_fileno(fileno)
     finally:
         epoll.unregister(srvsocket.fileno())
@@ -881,16 +895,18 @@ gClass = ComState()
 [setattr(gClass,x,{}) for x in store]
 
 epoll = select.epoll()
-engine = create_engine('postgresql://postgres@localhost:5432/nath',pool_size=20,max_overflow=2)
+engine = create_engine('postgresql+psycopg2://postgres:postgres@localhost:5432/nath',pool_size=200,max_overflow=20)
 atable = get_account_table()
 if not atable.exists(engine):
     engine.connect().execute("""
     CREATE TABLE "account"
 (
-  uname character varying(255) NOT NULL PRIMAY_KEY,
+  uname character varying(255) NOT NULL,
   pwd BYTEA,
   is_active boolean NOT NULL DEFAULT true,
-  reg_time timestamp with time zone DEFAULT now()
+  reg_time timestamp with time zone DEFAULT now(),
+  CONSTRAINT uname_pkey PRIMARY KEY(uname),
+  CONSTRAINT uname_ukey UNIQUE(uname)
 )
 """)
 
@@ -899,7 +915,7 @@ if not stable.exists(engine):
     engine.connect().execute('''
 CREATE TABLE account_status
 (
-  uname character varying(255) NOT NULL,
+  uname character varying(255) NOT NULL ,
   is_login boolean NOT NULL DEFAULT false,
   last_login_time timestamp with time zone DEFAULT now(),
   chost bigint[] NOT NULL DEFAULT '{0,0}'::bigint[],
@@ -917,7 +933,8 @@ file_handler = handlers.RotatingFileHandler("%s.log" % appname,maxBytes=LOG_SIZE
 
 file_handler.setFormatter(formatter)
 log.addHandler(file_handler)
-log.addHandler(logging.StreamHandler())
+if log.level ==  1:
+    log.addHandler(logging.StreamHandler())
 
 
 if __name__ == '__main__':

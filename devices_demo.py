@@ -20,6 +20,9 @@ import signal
 from logging import handlers
 
 from epoll_global import *
+
+reload(sys)
+sys.setdefaultencoding("utf-8")
 def stun_struct_refresh_request():
     buf = []
     stun_init_command_str(STUN_METHOD_REFRESH,buf)
@@ -49,14 +52,6 @@ def send_initial_packet(sock,host):
     except:
         print "threading connect host"
 
-class ThreadConnectApp(threading.Thread):
-    def __init__(self):
-        global gport
-        threading.Thread.__init__(self)
-        self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-        self.sock.bind(('',gport))
-        self.sock.setblocking(0)
         self.sock.listen(1)
 
     def run(self):
@@ -151,18 +146,21 @@ class ThreadRefreshTime(threading.Thread):
         self._stopevent = threading.Event()
         self._sleepperiod = 1.0
         self.rtime = ''.join(stun_struct_refresh_request())
-        self.st = random.randint(30,55)
-        self.tt = time.time()+self.st
+        #self.st = random.randint(30,55)
+        #self.tt = time.time()+self.st
         log.info(','.join([self.name,'String','sock %d' % self.sock.fileno()]))
 
     def run(self):
+        global rtime
         while self.sock and not self._stopevent.isSet():
             self._stopevent.wait(1)
-            if time.time() > self.tt:
-                self.tt = time.time()+self.st
+            rtime +=1
+            if rtime == 50:
+                rtime =0
+            
                 try:
                     nbyte = self.sock.send(binascii.unhexlify(self.rtime))
-                    log.info(','.join(['sock','%d' %self.sock.fileno(),'send %d' % nbyte]))
+                    log.info(','.join(['sock','%d' %self.sock.fileno(),'refresh','send %d' % nbyte]))
                 except:
                     log.info(','.join([self.name,'Exiting']))
                     self._stopevent.set()
@@ -179,19 +177,22 @@ class ThreadRefreshTime(threading.Thread):
 def device_login(host,uuid):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+    sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
     try:
         sock.connect(host)
     except Exception,err:
         print 'format_exception():'
     buf = ''.join(device_struct_allocate(uuid))
-
     nbyte = sock.send(binascii.unhexlify(buf))
     log.info(','.join(['sock','%d' % sock.fileno(),'send %d'%nbyte]))
-    mysock = 0
+    mysock = 0xFFFFFFFF
     myconn = []
     while True:
-        data = sock.recv(2048)
-        time.sleep(0.1)
+        try:
+            data = sock.recv(SOCK_BUFSIZE)
+        except:
+            break
+        rtime = 0
         if not data:
             break
         else:
@@ -200,13 +201,14 @@ def device_login(host,uuid):
             hattr = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH*2])
             rdict = parser_stun_package(hbuf[STUN_HEADER_LENGTH*2:-8])
             if not rdict:
-                print "server packet is wrong"
+                log.info(','.join(['sock','%d' % sock.fileno(),'server packet is wrong,rdict is empty']))
                 break # 出错了
             if hattr.method == STUN_METHOD_SEND or hattr.method == STUN_METHOD_INFO:
                 pass
             else:
                 if not stun_is_success_response_str(hattr.method):
-                    print "error response",hattr.method
+                    log.info(','.join(['sock','%d' % sock.fileno(),'server error responses',\
+                            'method',hattr.method]))
                     continue
 
             hattr.method = stun_get_type(hattr.method)
@@ -214,7 +216,6 @@ def device_login(host,uuid):
                 t = ThreadRefreshTime(sock)
                 t.setDaemon(True)
                 t.start()
-                tlist.append(t)
                 if rdict.has_key(STUN_ATTRIBUTE_STATE):
                     stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                     mysock = int(stat[:8],16)
@@ -223,21 +224,20 @@ def device_login(host,uuid):
                     stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                     myconn = int(stat[:8],16)
             elif hattr.method == STUN_METHOD_SEND:
-                print "recv forward packet"
                 #if rdict.has_key(STUN_ATTRIBUTE_DATA):
                 #    print rdict[STUN_ATTRIBUTE_DATA][-1],time.time()
+                
+                log.info(','.join(['sock','%d' % sock.fileno(),'recv forward packet']))
                 dstsock = int(hattr.srcsock,16)
-                buf = send_data_to_app(mysock,dstsock)
-                time.sleep(0.1)
-                try:
-                    nbyte = sock.send(binascii.unhexlify(''.join(buf)))
-                except:
-                    break
-                log.info(','.join(['sock','%d' % sock.fileno(),'send %d' % nbyte]))
+                if mysock != 0xFFFFFFFF and dstsock != 0xFFFFFFFF:
+                    buf = send_data_to_app(mysock,dstsock)
+                    try:
+                        nbyte = sock.send(binascii.unhexlify(''.join(buf)))
+                    except:
+                        break
+                    log.info(','.join(['sock','%d' % sock.fileno(),'send %d' % nbyte]))
     log.info(','.join(['sock','%d' % sock.fileno(),'close']))
     sock.close()
-    print u'退出线程'
-
 
 
 def signal_handler(signal, frame):
@@ -268,21 +268,9 @@ phost = [] # 对端地址
 nclient = 1
 #uuidbin = None
 uuidbin = None
-def devid_damon():
-    #global uuidbin
-    #uuidbin = open('uuid.bin','w')
-    #device_allocate_login('120.24.235.68',3478)
-    #device_login(('192.168.8.9',3478),uuid)
-    #devices_services('120.24.235.68',3478)
-    global gport
-    #srvt = ThreadConnectNatSrv(('120.24.235.68',3478))
-    #srvt.start()
-    #appt = ThreadConnectApp()
-    #appt.start()
-    #uuidbin.close()
-       
 
 tlist = []
+rtime = 0
 log  = logging.getLogger('dev_demo')
 appname = 'devices_demo'
 log.setLevel(logging.INFO)
@@ -291,7 +279,7 @@ file_handler = handlers.RotatingFileHandler('%s.log' % appname,maxBytes=LOG_SIZE
 
 file_handler.setFormatter(formatter)
 log.addHandler(file_handler)
-log.addHandler(logging.StreamHandler())
+#log.addHandler(logging.StreamHandler())
 
 
 __version__ = '0.0.1'
@@ -325,7 +313,9 @@ if __name__ == '__main__':
             uid = pickle.load(args.uuidfile)
             log.info(','.join(['Start UUID',uid]))
             t = threading.Thread(target=device_login,args=(host,uid))
+            t.setDaemon(True)
             t.start()
+            tlist.append(t)
         except EOFError:
             break
         n +=1
