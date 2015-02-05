@@ -155,7 +155,7 @@ class ThreadRefreshTime(threading.Thread):
         while self.sock and not self._stopevent.isSet():
             self._stopevent.wait(1)
             rtime +=1
-            if rtime == 50:
+            if rtime == REFRESH_TIME:
                 rtime =0
             
                 try:
@@ -187,6 +187,7 @@ def device_login(host,uuid):
     log.info(','.join(['sock','%d' % sock.fileno(),'send %d'%nbyte]))
     mysock = 0xFFFFFFFF
     myconn = []
+    global rtime
     while True:
         try:
             data = sock.recv(SOCK_BUFSIZE)
@@ -306,9 +307,6 @@ if __name__ == '__main__':
     n =0
     while True:
         time.sleep(0.1)
-        if n == 15:
-            n = 0
-            time.sleep(1)
         try:
             uid = pickle.load(args.uuidfile)
             log.info(','.join(['Start UUID',uid]))
@@ -318,7 +316,6 @@ if __name__ == '__main__':
             tlist.append(t)
         except EOFError:
             break
-        n +=1
 
     signal.signal(signal.SIGINT, signal_handler)
     print('Press Ctrl+C')

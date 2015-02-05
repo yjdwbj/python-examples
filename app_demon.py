@@ -34,7 +34,7 @@ class ThreadRefreshTime(threading.Thread):
         while self.sock:
             time.sleep(1)
             rtime +=1
-            if rtime == 50:
+            if rtime == REFRESH_TIME:
                 rtime = 0
                 try:
                     nbyte = self.sock.send(self.rtime)
@@ -191,6 +191,7 @@ def stun_setLogin((addr),ulist,user,pwd):
     fileno = sock.fileno()
     mysock = 0
     buf = ''
+    global rtime
     while True:
         try:
             data = sock.recv(SOCK_BUFSIZE)
@@ -361,9 +362,6 @@ if __name__ == '__main__':
    tt = 0 
    for i in xrange(args.u_count):
        time.sleep(0.1)
-       if tt > 15:
-           tt = 0
-           time.sleep(1)
        z = str(uuid.uuid4()).replace('-','')
        n = random.randint(0,15)
        zi = []

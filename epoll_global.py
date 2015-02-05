@@ -76,6 +76,7 @@ STUN_MAGIC_COOKIE=0x2112A442
 SOCK_BUFSIZE=1024
 UUID_SIZE=struct.calcsize(STUN_UVC)
 TUUID_SIZE=16
+REFRESH_TIME=30
 CRCMASK=0x5354554e
 CRCPWD=0x6a686369
 HEX4B=16
@@ -323,6 +324,6 @@ def split_mruuid(b):
     
 
 def gen_random_jluuid(vendor):
-    n = ''.join([str(uuid.uuid4()).replace('-',''),binascii.hexlify(vendor)])
+    n = ''.join([str(uuid.uuid4()).replace('-',''),vendor])
     return ''.join([n,get_jluuid_crc32(n)])
 

@@ -57,7 +57,7 @@ if __name__ == '__main__':
         print make_argument_parser().parse_args(['-h'])
         exit(-1)
 
-    vendor = '0000'
+    vendor = '%08x' % 0
     fname = args.fname if args.fname else vendor
 #    if len(args.vendor) > 4:
 #        vendor = args.vendor[:4]

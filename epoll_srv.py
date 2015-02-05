@@ -60,6 +60,8 @@ def delete_fileno(fileno):
         gClass.clients.pop(fileno)
     if gClass.requests.has_key(fileno):
         gClass.requests.pop(fileno)
+    if gClass.timer.has_key(fileno):
+        gClass.timer.pop(fileno)
 
 
 def handle_client_request(buf,fileno):
@@ -79,7 +81,7 @@ def handle_client_request(buf,fileno):
             log.info(','.join([LOG_ERROR_IILAGE_CLIENT,'sock %d' % fileno]))
             delete_fileno(fileno)
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
-            return ([],res)
+            return (None,res)
 
     #判断如果是转发命令就直接转发了。
     if res.method == STUN_METHOD_SEND or res.method == STUN_METHOD_DATA:
@@ -97,7 +99,7 @@ def handle_client_request(buf,fileno):
             # 转发到时目地
             gClass.responses[dstsock] = buf
             epoll.modify(dstsock,select.EPOLLOUT)
-            return ([],res)
+            return (None,res)
         else: # 目标不存在
             res.eattr = STUN_ERROR_DEVOFFLINE
             #epoll.modify(fileno,select.EPOLLOUT)
@@ -438,7 +440,7 @@ def device_login_sucess(res): # 客服端向服务器绑定自己的IP
 
 def handle_refresh_request(res):
     update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
-    return refresh_sucess(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1])
+    #return refresh_sucess(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1])
 
 def refresh_sucess(ntime): # 刷新成功
     buf = []
@@ -739,7 +741,7 @@ def handle_requests_buf(hbuf,fileno):
         delete_fileno(fileno)
         return 
 
-    if not len(rbuf[0]): # 是转发包
+    if rbuf[0] is None: # 是转发包或者是刷新时间
         return
 
     gClass.responses[fileno] = rbuf[0]
@@ -748,12 +750,11 @@ def handle_requests_buf(hbuf,fileno):
         gClass.timer[fileno] = time.time()+UCLIENT_SESSION_LIFETIME
 
 
-
-
 def Server(port):
     srvsocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     srvsocket.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
+    #srvsocket.setsockopt(socket.IPPROTO_TCP,socket.TCP_QUICKACK,1)
     srvsocket.bind(('',port))
     srvsocket.listen(50)
     srvsocket.setblocking(0)
@@ -820,7 +821,12 @@ def Server(port):
                         nbyte =  gClass.clients[fileno].send(\
                                 binascii.unhexlify(''.join(gClass.responses[fileno])))
                         log.info(','.join(['sock %d' % fileno,'send: %d'%nbyte]))
-                        gClass.responses.pop(fileno)
+                        try:
+                            gClass.responses.pop(fileno)
+                        except:
+                            delete_fileno(fileno)
+                            continue
+
                         if gClass.timer.has_key(fileno):
                             # 给这个联接添加生存时间
                             gClass.timer[fileno] = time.time()+UCLIENT_SESSION_LIFETIME
@@ -895,7 +901,7 @@ gClass = ComState()
 [setattr(gClass,x,{}) for x in store]
 
 epoll = select.epoll()
-engine = create_engine('postgresql+psycopg2://postgres:postgres@localhost:5432/nath',pool_size=200,max_overflow=20)
+engine = create_engine('postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/nath',pool_size=500,max_overflow=20)
 atable = get_account_table()
 if not atable.exists(engine):
     engine.connect().execute("""
