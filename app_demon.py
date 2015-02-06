@@ -28,11 +28,12 @@ class ThreadRefreshTime(threading.Thread):
         self.sock = sock
         self.rtime = binascii.unhexlify(''.join(stun_struct_refresh_request()))
         log.info(','.join([self.name,'Starting refresh','sock %d' % sock.fileno()]))
+        self._stopevent =threading.Event()
 
     def run(self):
         global rtime 
         while self.sock:
-            time.sleep(1)
+            self._stopevent.wait(1)
             rtime +=1
             if rtime == REFRESH_TIME:
                 rtime = 0
@@ -185,7 +186,11 @@ def stun_setLogin((addr),ulist,user,pwd):
     buf = stun_register_request(user,pwd)
     sdata = binascii.a2b_hex(''.join(buf))
     sock.bind(('',0))
-    sock.connect(addr)
+    try:
+        sock.connect(addr)
+    except:
+        log.info(','.join(['sock %d' % sock.fileno(),'connect timeout']))
+        return
     sock.send(sdata)
     log.info(','.join(['sock','%d'%sock.fileno(),'send']))
     fileno = sock.fileno()
@@ -249,7 +254,7 @@ def stun_setLogin((addr),ulist,user,pwd):
                 elif rdict.has_key(STUN_ATTRIBUTE_MRUUID):
                     mlist = split_mruuid(rdict[STUN_ATTRIBUTE_MRUUID])
                     for n in mlist:
-                        time.sleep(0.1)
+                        time.sleep(0.2)
                         dstsock = int(n[-8:],16)
                         if dstsock != 0xFFFFFFFF:
                             send_forward_buf(sock,mysock,dstsock)
@@ -312,6 +317,7 @@ __version__ = '0.0.1'
 ehost = [] # 外部地址
 phost = [] # 对端地址
 
+global rtime
 rtime = 0
 appname = 'app_demon'
 log = logging.getLogger(appname)
@@ -361,7 +367,7 @@ if __name__ == '__main__':
    tbuf = ulist
    tt = 0 
    for i in xrange(args.u_count):
-       time.sleep(0.1)
+       time.sleep(0.3)
        z = str(uuid.uuid4()).replace('-','')
        n = random.randint(0,15)
        zi = []

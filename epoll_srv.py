@@ -60,8 +60,8 @@ def delete_fileno(fileno):
         gClass.clients.pop(fileno)
     if gClass.requests.has_key(fileno):
         gClass.requests.pop(fileno)
-    if gClass.timer.has_key(fileno):
-        gClass.timer.pop(fileno)
+    #if gClass.timer.has_key(fileno):
+    #    gClass.timer.pop(fileno)
 
 
 def handle_client_request(buf,fileno):
@@ -75,13 +75,17 @@ def handle_client_request(buf,fileno):
     """
     res = get_packet_head_class(buf[:STUN_HEADER_LENGTH*2])
     res.eattr = STUN_ERROR_NONE
-    if not gClass.timer.has_key(fileno):
-        if res.method != STUN_METHOD_ALLOCATE or \
-                res.method != STUN_METHOD_BINDING:  # 非法刷新请求
-            log.info(','.join([LOG_ERROR_IILAGE_CLIENT,'sock %d' % fileno]))
-            delete_fileno(fileno)
-            res.eattr = STUN_ERROR_UNKNOWN_PACKET
-            return (None,res)
+    if not (res.method == STUN_METHOD_ALLOCATE or\
+            res.method == STUN_METHOD_BINDING or\
+            res.method == STUN_METHOD_REGISTER or\
+            gClass.appsock.has_key(fileno) or \
+            gClass.devsock.has_key(fileno)):
+                # 非法请求
+        delete_fileno(fileno)
+        #print 'fileno',fileno
+        #print 'gClass.appsock',gClass.appsock
+        res.eattr = STUN_ERROR_UNKNOWN_PACKET
+        return (None,res)
 
     #判断如果是转发命令就直接转发了。
     if res.method == STUN_METHOD_SEND or res.method == STUN_METHOD_DATA:
@@ -214,10 +218,10 @@ def handle_app_login_request(res):
     gClass.appsock[res.fileno] = tcs = ComState()
     tcs.name = result[0][0]
     app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],res.host)
-    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
-        update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
-    else:
-        update_refresh_time(res.fileno,UCLIENT_SESSION_LIFETIME)
+#    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
+#        update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
+#    else:
+#        update_refresh_time(res.fileno,UCLIENT_SESSION_LIFETIME)
     return app_user_auth_success(res)
 
 def handle_app_send_data_to_device(res): # APP 发给小机的命令
@@ -406,10 +410,10 @@ def handle_allocate_request(res):
 
     huid = res.attrs[STUN_ATTRIBUTE_UUID][-1]
     device_login_notify_app(huid,res.fileno)
-    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
-        update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
-    else:
-        update_refresh_time(res.fileno,UCLIENT_SESSION_LIFETIME)
+#    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
+#        update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
+#    else:
+#        update_refresh_time(res.fileno,UCLIENT_SESSION_LIFETIME)
 
     res.vendor = huid[32:40]
     res.tuid = huid[:32]
@@ -439,7 +443,8 @@ def device_login_sucess(res): # 客服端向服务器绑定自己的IP
     return (buf)
 
 def handle_refresh_request(res):
-    update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
+    return
+    #update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
     #return refresh_sucess(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1])
 
 def refresh_sucess(ntime): # 刷新成功
@@ -729,6 +734,9 @@ def remove_fileno_resources(fileno):
     #print "delete list is",clist,"fileno",fileno
 
 def handle_requests_buf(hbuf,fileno):
+    if not len(hbuf):
+        return 
+
     if check_packet_crc32(hbuf):
         log.error(','.join([LOG_ERROR_PACKET,'sock %d' %fileno,str(sys._getframe().f_lineno)]))
         delete_fileno(fileno)
@@ -737,7 +745,8 @@ def handle_requests_buf(hbuf,fileno):
     rbuf = handle_client_request(hbuf,fileno)
     res = rbuf[1]
     if res.eattr == STUN_ERROR_UNKNOWN_PACKET:
-        log.info(','.join([LOG_ERROR_IILAGE_CLIENT,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
+        log.info(','.join([LOG_ERROR_IILAGE_CLIENT,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
+        print 'method', res.method
         delete_fileno(fileno)
         return 
 
@@ -746,23 +755,23 @@ def handle_requests_buf(hbuf,fileno):
 
     gClass.responses[fileno] = rbuf[0]
     epoll.modify(fileno,select.EPOLLOUT)
-    if gClass.timer.has_key(fileno):
-        gClass.timer[fileno] = time.time()+UCLIENT_SESSION_LIFETIME
+    #if gClass.timer.has_key(fileno):
+    #    gClass.timer[fileno] = time.time()+UCLIENT_SESSION_LIFETIME
 
 
 def Server(port):
     srvsocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     srvsocket.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-    #srvsocket.setsockopt(socket.IPPROTO_TCP,socket.TCP_QUICKACK,1)
+    srvsocket.setsockopt(socket.IPPROTO_TCP,socket.TCP_QUICKACK,1)
     srvsocket.bind(('',port))
     srvsocket.listen(50)
     srvsocket.setblocking(0)
     log.info("Start Server")
     epoll.register(srvsocket.fileno(),select.EPOLLIN)
-    mthread = CheckSesionThread()
-    mthread.setDaemon(True)
-    mthread.start()
+    #mthread = CheckSesionThread()
+    #mthread.setDaemon(True)
+    #mthread.start()
     try:
         while True:
             events = epoll.poll(1)
@@ -779,7 +788,7 @@ def Server(port):
                     nsock.setblocking(0)
                     gClass.clients[nf] = nsock
                     gClass.responses[nf] = []
-                    gClass.timer[nf] = time.time()+10
+                    #gClass.timer[nf] = time.time()+10
                     epoll.register(nf,select.EPOLLIN)
                 elif event & select.EPOLLIN: # 读取socket 的数据
                     try:
@@ -827,9 +836,9 @@ def Server(port):
                             delete_fileno(fileno)
                             continue
 
-                        if gClass.timer.has_key(fileno):
-                            # 给这个联接添加生存时间
-                            gClass.timer[fileno] = time.time()+UCLIENT_SESSION_LIFETIME
+#                        if gClass.timer.has_key(fileno):
+#                            # 给这个联接添加生存时间
+#                            gClass.timer[fileno] = time.time()+UCLIENT_SESSION_LIFETIME
                         epoll.modify(fileno,select.EPOLLIN)
                     except IOError:
                         log.debug("sock has closed %d" % fileno)
@@ -895,7 +904,8 @@ dictMethod = {STUN_METHOD_REFRESH:handle_refresh_request,
               #STUN_METHOD_DATA:handle_device_send_data_to_app, # 小机发给APP 的命令
               STUN_METHOD_CHANNEL_BIND:handle_app_bind_device  # APP 绑定小机的命令
               }
-store = ['timer','clients','requests','responses','appbinds','appsock','devsock','devuuid']
+#store = ['timer','clients','requests','responses','appbinds','appsock','devsock','devuuid']
+store = ['clients','requests','responses','appbinds','appsock','devsock','devuuid']
 
 gClass = ComState()
 [setattr(gClass,x,{}) for x in store]

@@ -46,90 +46,6 @@ def device_struct_allocate(uid):
     return buf
 
 
-def send_initial_packet(sock,host):
-    try:
-        sock.connect(host)
-    except:
-        print "threading connect host"
-
-        self.sock.listen(1)
-
-    def run(self):
-        sock = self.sock
-        # connect nath server
-        epoll = select.epoll()
-        epoll.register(sock.fileno(),select.EPOLLIN)
-        print "local",sock.getsockname()
-        try:
-            while True:
-                events = epoll.poll(1)
-                for fileno,event in events:
-                    if fileno == sock.fileno():
-                        try:
-                            conn,addr = sock.accept()
-                        except:
-                            continue
-                        clients[conn.fileno()] = conn
-                        epoll.register(conn.fileno(),select.EPOLLIN)
-                    elif event & select.EPOLLIN:
-                        data = clients[fileno].recv(2048)
-                        print "read",data
-                        epoll.modify(fileno,select.EPOLLOUT)
-                    elif event & select.EPOLLOUT:
-                        clients[fileno].send("tetssss")
-                        epoll.modify(fileno,select.EPOLLIN)
-                    elif event & select.EPOLLHUP:
-                        epoll.unregister(fileno)
-                        clients[fileno].close()
-                        clients.pop(fileno)
-        finally:
-            epoll.unregister(sock.fileno())
-            epoll.close()
-            sock.close()
-
-class ThreadConnectNatSrv(threading.Thread):
-    def __init__(self,addr):
-        global gport
-        threading.Thread.__init__(self)
-        self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-        self.sock.bind(('',0))
-        self.port = gport = self.sock.getsockname()[1]
-        self.sock.connect(addr)
-
-    def run(self):
-        global gport
-        sock=self.sock
-        sock.send(binascii.unhexlify(''.join(device_struct_allocate())))
-        while True:
-            data = sock.recv(2048)
-            if not data:
-                break
-            else:
-                rhex = binascii.hexlify(data)
-                res_mth = "%04x" % stun_get_method_str(int(rhex[:4],16))
-                if res_mth == STUN_METHOD_ALLOCATE:
-                    t = ThreadRefreshTime(sock)
-                    t.start()
-                elif res_mth == STUN_METHOD_CONNECT:
-                    res = stun_handle_response(rhex)
-                    if res.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
-                        print res[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1]
-                    if res.has_key(STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS):
-                        phost = res[STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS][-2:]
-                        cbuf = stun_connect_address(res) 
-                        hhh = socket.inet_ntoa(binascii.unhexlify("%x" % (phost[1] ^ STUN_MAGIC_COOKIE)))
-                        ppp = phost[0] ^  (STUN_MAGIC_COOKIE >> 16)
-                        sock.send(binascii.unhexlify(''.join(cbuf)))
-                        tsock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-                        tsock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-                        print "gport is",gport
-                        tsock.bind(('',gport))
-                        tsock.setblocking(0)
-                        tsock.connect((hhh,ppp))
-                        tsock.close()
-                        print "send server"
-
 def send_data_to_app(srcsock,dstsock):
     buf = []
     stun_init_command_str(STUN_METHOD_DATA,buf)
@@ -180,8 +96,10 @@ def device_login(host,uuid):
     sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
     try:
         sock.connect(host)
-    except Exception,err:
+    except:
         print 'format_exception():'
+        log.info(','.join(['sock %d' % sock.fileno(),'connect timeout']))
+        return 
     buf = ''.join(device_struct_allocate(uuid))
     nbyte = sock.send(binascii.unhexlify(buf))
     log.info(','.join(['sock','%d' % sock.fileno(),'send %d'%nbyte]))
@@ -271,6 +189,7 @@ nclient = 1
 uuidbin = None
 
 tlist = []
+global rtime
 rtime = 0
 log  = logging.getLogger('dev_demo')
 appname = 'devices_demo'
@@ -306,7 +225,7 @@ if __name__ == '__main__':
     uuidfile = args.uuidfile
     n =0
     while True:
-        time.sleep(0.1)
+        time.sleep(0.3)
         try:
             uid = pickle.load(args.uuidfile)
             log.info(','.join(['Start UUID',uid]))
