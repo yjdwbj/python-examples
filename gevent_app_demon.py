@@ -19,6 +19,9 @@ from logging import handlers
 import signal
 import select
 import sys
+import gevent
+from gevent import monkey;monkey.patch_all()
+from gevent import core
 reload(sys)
 sys.setdefaultencoding("utf-8")
 
@@ -34,9 +37,7 @@ class ThreadRefreshTime(threading.Thread):
         global rtime 
         while self.sock:
             time.sleep(1)
-            lock.acquire()
             rtime += 1
-            lock.release()
             if rtime == REFRESH_TIME:
                 rtime = 0
                 try:
@@ -181,13 +182,14 @@ def test_bind_ten_random_devid():
     return u
 
 
-def stun_setLogin((addr),ulist,user,pwd):
+def stun_setLogin(addr,ulist,user,pwd):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
     buf = stun_register_request(user,pwd)
     sdata = binascii.a2b_hex(''.join(buf))
-    sock.bind(('',0))
+    #sock.bind(('',0))
+    print 'host is',addr
     try:
         sock.connect(addr)
     except:
@@ -199,15 +201,12 @@ def stun_setLogin((addr),ulist,user,pwd):
     mysock = 0
     buf = ''
     global rtime
-    lock = threading.Lock()
     while True:
         try:
             data = sock.recv(SOCK_BUFSIZE)
         except:
             break
-        lock.acquire()
         rtime = 0
-        lock.release()
         if not data:
             break
         else:
@@ -384,16 +383,17 @@ if __name__ == '__main__':
 
        if len(muuid) == 2:
            # start threading
-           t = threading.Thread(target =stun_setLogin,args=(host,muuid[0],uname,uname))
-           t.setDaemon(True)
-           t.start()
-           tlist.append(t)
-           log.info(','.join(['user:%s' % uname,'pwd:%s' % uname,'Starting %s' % t.name]))
+           #t = threading.Thread(target =stun_setLogin,args=(host,muuid[0],uname,uname))
+           #t.setDaemon(True)
+           tlist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
+           #t.start()
+           #tlist.append(t)
            tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
+   gevent.joinall(tlist)
 
-   signal.signal(signal.SIGINT,signal_handler)
-   print(u'Press Ctrl+c')
-   signal.pause()
+
+   
+
 
            
            

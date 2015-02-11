@@ -16,6 +16,8 @@ import pickle
 import select
 import argparse
 import signal
+import gevent
+from gevent import monkey;monkey.patch_all()
 
 from logging import handlers
 
@@ -95,13 +97,8 @@ def device_login(host,uuid):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-    lock = threading.Lock()
-    try:
-        sock.connect(host)
-    except:
-        print 'format_exception():'
-        log.info(','.join(['sock %d' % sock.fileno(),'connect timeout']))
-        return 
+    print 'host is',host
+    sock.connect(host)
     buf = ''.join(device_struct_allocate(uuid))
     nbyte = sock.send(binascii.unhexlify(buf))
     log.info(','.join(['sock','%d' % sock.fileno(),'send %d'%nbyte]))
@@ -113,9 +110,7 @@ def device_login(host,uuid):
             data = sock.recv(SOCK_BUFSIZE)
         except:
             break
-        lock.acquire()
         rtime = 0
-        lock.release()
         if not data:
             break
         else:
@@ -228,19 +223,20 @@ if __name__ == '__main__':
 
     uuidfile = args.uuidfile
     n =0
+
+    spalist = []
     while True:
         time.sleep(0.3)
         try:
             uid = pickle.load(args.uuidfile)
             log.info(','.join(['Start UUID',uid]))
-            t = threading.Thread(target=device_login,args=(host,uid))
-            t.setDaemon(True)
-            t.start()
-            tlist.append(t)
+            #t = threading.Thread(target=device_login,args=(host,uid))
+            spalist.append(gevent.spawn(device_login,host,uid)) 
+            #t.setDaemon(True)
+            #t.start()
+            #tlist.append(t)
         except EOFError:
             break
 
-    signal.signal(signal.SIGINT, signal_handler)
-    print('Press Ctrl+C')
-    signal.pause()
+    gevent.joinall(spalist)
 
