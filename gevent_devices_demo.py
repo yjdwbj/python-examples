@@ -6,7 +6,7 @@ import logging
 import random
 import struct
 import string
-import threading
+#import threading
 import time
 import hmac
 import hashlib
@@ -18,6 +18,7 @@ import argparse
 import signal
 import gevent
 from gevent import monkey;monkey.patch_all()
+from gevent.event import AsyncResult
 
 from logging import handlers
 
@@ -25,6 +26,8 @@ from epoll_global import *
 
 reload(sys)
 sys.setdefaultencoding("utf-8")
+
+
 def stun_struct_refresh_request():
     buf = []
     stun_init_command_str(STUN_METHOD_REFRESH,buf)
@@ -57,39 +60,6 @@ def send_data_to_app(srcsock,dstsock):
     stun_add_fingerprint(buf)
     return buf
 
-class ThreadRefreshTime(threading.Thread):
-    def __init__(self,sock):
-        threading.Thread.__init__(self)
-        self.sock = sock
-        self._stopevent = threading.Event()
-        self._sleepperiod = 1.0
-        self.rtime = ''.join(stun_struct_refresh_request())
-        log.info(','.join([self.name,'String','sock %d' % self.sock.fileno()]))
-
-    def run(self):
-        global rtime
-        lock = threading.Lock()
-        while self.sock:
-            time.sleep(1)
-            lock.acquire()
-            rtime += 1
-            lock.release()
-            if rtime == REFRESH_TIME:
-                rtime =0
-            
-                try:
-                    nbyte = self.sock.send(binascii.unhexlify(self.rtime))
-                    log.info(','.join(['sock','%d' %self.sock.fileno(),'refresh','send %d' % nbyte]))
-                except:
-                    log.info(','.join([self.name,'Exiting']))
-                    self._stopevent.set()
-
-    def join(self,timeout=None):
-        log.info(','.join([self.name,'Exiting','sock %d' % self.sock.fileno()]))
-        self.sock.close()
-        self._stopevent.set()
-        threading.Thread.join(self,timeout)
-        
 
 
 
@@ -105,12 +75,13 @@ def device_login(host,uuid):
     mysock = 0xFFFFFFFF
     myconn = []
     global rtime
+    a = AsyncResult()
     while True:
         try:
             data = sock.recv(SOCK_BUFSIZE)
         except:
             break
-        rtime = 0
+        a.set(0)
         if not data:
             break
         else:
@@ -131,9 +102,8 @@ def device_login(host,uuid):
 
             hattr.method = stun_get_type(hattr.method)
             if hattr.method == STUN_METHOD_ALLOCATE:
-                t = ThreadRefreshTime(sock)
-                t.setDaemon(True)
-                t.start()
+                p = ''.join(stun_struct_refresh_request())
+                gevent.joinall([gevent.spawn(refresh_time,sock,a,binascii.unhexlify(p),log)])
                 if rdict.has_key(STUN_ATTRIBUTE_STATE):
                     stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                     mysock = int(stat[:8],16)
@@ -225,18 +195,15 @@ if __name__ == '__main__':
     n =0
 
     spalist = []
+    uulist = []
     while True:
-        time.sleep(0.3)
         try:
-            uid = pickle.load(args.uuidfile)
-            log.info(','.join(['Start UUID',uid]))
-            #t = threading.Thread(target=device_login,args=(host,uid))
-            spalist.append(gevent.spawn(device_login,host,uid)) 
-            #t.setDaemon(True)
-            #t.start()
-            #tlist.append(t)
+            uulist.append(pickle.load(args.uuidfile))
         except EOFError:
             break
 
-    gevent.joinall(spalist)
+    while True:
+        #log.info(','.join(['Start UUID',uid]))
+        spalist = [gevent.spawn(device_login,host,uid) for uid in uulist]
+        gevent.joinall(spalist)
 

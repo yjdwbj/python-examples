@@ -7,7 +7,6 @@ import random
 import struct
 import zlib
 import string
-import threading
 import time
 import hmac
 import hashlib
@@ -21,35 +20,10 @@ import select
 import sys
 import gevent
 from gevent import monkey;monkey.patch_all()
-from gevent import core
+from gevent.event import AsyncResult
+
 reload(sys)
 sys.setdefaultencoding("utf-8")
-
-class ThreadRefreshTime(threading.Thread):
-    def __init__(self,sock):
-        threading.Thread.__init__(self)
-        self.sock = sock
-        self.rtime = binascii.unhexlify(''.join(stun_struct_refresh_request()))
-        log.info(','.join([self.name,'Starting refresh','sock %d' % sock.fileno()]))
-        self._stopevent =threading.Event()
-
-    def run(self):
-        global rtime 
-        while self.sock:
-            time.sleep(1)
-            rtime += 1
-            if rtime == REFRESH_TIME:
-                rtime = 0
-                try:
-                    nbyte = self.sock.send(self.rtime)
-                    log.info(','.join(['sock','%d'%self.sock.fileno(),'refresh send: %d' % nbyte]))
-                except:
-                    log.info(','.join([self.name,'Exiting']))
-                    break
-
-    def stop(self):
-        log.info(','.join([self.name,'Exiting','sock %d' % self.sock.fileno()]))
-        self.sock.close()
 
 
 def stun_register_request(uname,pwd):
@@ -160,18 +134,6 @@ def handle_connect_devid(conn,uid,uname,pwd):
 
 
 
-
-def connect_devid_from_file(host,port):
-    ufile = open('uuid.bin','r')
-    while True:
-        try:
-            rid = pickle.load(ufile)
-            t = threading.Thread(target=handle_connect_devid,args=((host,port),binascii.hexlify(rid),'lcy','test'))
-            t.start()
-        except EOFError:
-            break
-    ufile.close()
-
 def test_bind_ten_random_devid():
     n = 10
     u = ''
@@ -201,12 +163,14 @@ def stun_setLogin(addr,ulist,user,pwd):
     mysock = 0
     buf = ''
     global rtime
+    a = AsyncResult()
     while True:
         try:
             data = sock.recv(SOCK_BUFSIZE)
         except:
             break
-        rtime = 0
+        #rtime = 0
+        a.set(0)
         if not data:
             break
         else:
@@ -231,10 +195,8 @@ def stun_setLogin(addr,ulist,user,pwd):
 
             hattr.method = stun_get_type(hattr.method)
             if hattr.method  == STUN_METHOD_BINDING:
-                refresh  = ThreadRefreshTime(sock)
-                refresh.setDaemon(True)
-                refresh.start()
-                
+                p = ''.join(stun_struct_refresh_request())
+                gevent.joinall([gevent.spawn(refresh_time,sock,a,binascii.unhexlify(p),log)])
                 stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                 mysock = int(stat[:8],16)
                 # 下面绑定一些UUID
@@ -368,28 +330,26 @@ if __name__ == '__main__':
    bind = args.b_count if args.b_count < len(ulist) else len(ulist)
    log.info(','.join(['UUID counts','%d' % len(ulist),'(per user)bind count %d' % bind]))
 
-   tbuf = ulist
-   tt = 0 
-   for i in xrange(args.u_count):
-       time.sleep(0.3)
-       z = str(uuid.uuid4()).replace('-','')
-       n = random.randint(0,15)
-       zi = []
-       for y in xrange(n):
-           zi.append(chr(random.randint(97,122)))
-       uname = ''.join([z,''.join(zi)])
-       cuts = [bind]
-       muuid = [tbuf[i:j] for i,j in zip([0]+cuts,cuts+[None])]
-
-       if len(muuid) == 2:
-           # start threading
-           #t = threading.Thread(target =stun_setLogin,args=(host,muuid[0],uname,uname))
-           #t.setDaemon(True)
-           tlist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
-           #t.start()
-           #tlist.append(t)
-           tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
-   gevent.joinall(tlist)
+   n = 0
+   while True:
+       print 'n loops',n
+       n+=1
+       tbuf = ulist
+       tt = 0 
+       for i in xrange(args.u_count):
+           time.sleep(0.3)
+           z = str(uuid.uuid4()).replace('-','')
+           n = random.randint(0,15)
+           zi = []
+           for y in xrange(n):
+               zi.append(chr(random.randint(97,122)))
+           uname = ''.join([z,''.join(zi)])
+           cuts = [bind]
+           muuid = [tbuf[i:j] for i,j in zip([0]+cuts,cuts+[None])]
+           if len(muuid) == 2:
+               tlist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
+               tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
+       gevent.joinall(tlist)
 
 
    

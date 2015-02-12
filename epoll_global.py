@@ -2,6 +2,8 @@
 import binascii
 import struct
 import uuid
+import gevent
+import time
 
 STUN_METHOD_BINDING='0001'   # APP登录命令
 STUN_METHOD_ALLOCATE='0003'   #小机登录命令
@@ -326,4 +328,18 @@ def split_mruuid(b):
 def gen_random_jluuid(vendor):
     n = ''.join([str(uuid.uuid4()).replace('-',''),vendor])
     return ''.join([n,get_jluuid_crc32(n)])
+
+
+def refresh_time(sock,a,buf,log):
+    n = time.time() + 50
+    while True:
+        if time.time() > n:
+            a.set(1)
+        gevent.sleep(1)
+        if a.get():
+            n = time.time() + 50
+            nbyte = sock.send(buf)
+            log.info(','.join(['sock %d' % sock.fileno(),'send %d' % nbyte]))
+            gevent.sleep(1)
+            a.set(0)
 
