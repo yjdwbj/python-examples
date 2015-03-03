@@ -1,4 +1,5 @@
-#coding=utf-8
+#/usr/bin/python2 
+#-*- coding: utf-8 -*-
 #####################################################################
 # lcy
 #                                                                   #
@@ -75,6 +76,7 @@ def handle_client_request(buf,fileno):
     3  转发命令
     """
     res = get_packet_head_class(buf[:STUN_HEADER_LENGTH*2])
+    res.host= gClass.clients.get(fileno).getpeername()
     res.eattr = STUN_ERROR_NONE
     if not (res.method == STUN_METHOD_ALLOCATE or\
             res.method == STUN_METHOD_BINDING or\
@@ -109,9 +111,14 @@ def handle_client_request(buf,fileno):
             res.eattr = STUN_ERROR_DEVOFFLINE
             #epoll.modify(fileno,select.EPOLLOUT)
             #gClass.responses[fileno] = ''.join(stun_error_response(res))
-            return (stun_error_response(res),res)
+            tbuf = stun_error_response(res)
+            tbuf[3]=res.srcsock
+            tbuf[4]=res.dstsock
+            tbuf.pop()
+            tbuf[2] = '%04x' % (int(tbuf[2],16)-4)
+            stun_add_fingerprint(tbuf)
+            return (tbuf,res)
 
-    res.host= gClass.clients.get(fileno).getpeername()
     res.fileno=fileno
     hexpos = STUN_HEADER_LENGTH*2
     upkg = parser_stun_package(buf[hexpos:-8])
@@ -164,12 +171,12 @@ def handle_app_bind_device(res):
         e = [ x for x in p if x]
         if len(e):
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
-            logerr_client.error(','.join([LOG_ERROR_UUID,gClass.clients[res.fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
+            log.error(','.join([LOG_ERROR_UUID,gClass.clients[res.fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
         [bind_each_uuid(n,res.fileno) for n in mlist]
     else:
         res.eattr = STUN_ERROR_UNKNOWN_PACKET
-        logerr_client.error(','.join([LOG_ERROR_UUID,gClass.clients[res.fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
+        log.error(','.join([LOG_ERROR_UUID,gClass.clients[res.fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
         return stun_error_response(res)
 
     return stun_bind_devices_ok(res)
@@ -235,7 +242,7 @@ def handle_app_send_data_to_device(res): # APP 发给小机的命令
             return stun_error_response(res)
     else:
         res.eattr = STUN_ERROR_UNKNOWN_PACKET
-        logerr_client.error(','.join([LOG_ERROR_UUID,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
+        log.error(','.join([LOG_ERROR_UUID,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
         return stun_error_response(res)
 
     row = find_device_state(res.attrs[STUN_ATTRIBUTE_UUID][-1])
@@ -406,7 +413,7 @@ def handle_allocate_request(res):
     else:
         #res.eattr= binascii.hexlify("Not Found UUID")
         res.eattr=STUN_ERROR_UNKNOWN_PACKET
-        logerr_client.error(','.join([LOG_ERROR_UUID,gClass.clients[res.fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
+        log.error(','.join([LOG_ERROR_UUID,gClass.clients[res.fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
         return stun_error_response(res)
 
     huid = res.attrs[STUN_ATTRIBUTE_UUID][-1]
@@ -710,7 +717,13 @@ def sock_send_fail(fileno):
     if phead.method == STUN_METHOD_SEND or phead.method == STUN_METHOD_DATA:
         phead.eattr = STUN_ERROR_DEVOFFLINE
         srcsock = int(phead.srcsock,16)
-        gClass.responses[srcsock] = ''.join(stun_error_response(phead))
+        tbuf = stun_error_response(phead)
+        tbuf[3]=phead.srcsock
+        tbuf[4]=phead.dstsock
+        tbuf.pop()
+        tbuf[2] = '%04x' % (int(tbuf[2],16)-4)
+        stun_add_fingerprint(tbuf)
+        gClass.responses[srcsock] = ''.join(tbuf)
         epoll.modify(srcsock,select.EPOLLOUT | select.EPOLLET)
 
     # sock 关闭时产生的异常处理
@@ -746,7 +759,7 @@ def handle_requests_buf(hbuf,fileno):
     rbuf = handle_client_request(hbuf,fileno)
     res = rbuf[1]
     if res.eattr == STUN_ERROR_UNKNOWN_PACKET:
-        logerr_client.error(','.join([LOG_ERROR_IILAGE_CLIENT,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
+        log.error(','.join([LOG_ERROR_IILAGE_CLIENT,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
         #print 'method', res.method
         delete_fileno(fileno)
         return 
@@ -769,6 +782,7 @@ def Server(port):
     srvsocket.listen(50)
     srvsocket.setblocking(0)
     log.info("Start Server")
+    print "log",log
     epoll.register(srvsocket.fileno(),select.EPOLLIN | select.EPOLLET)
     #mthread = CheckSesionThread()
     #mthread.setDaemon(True)
@@ -807,7 +821,7 @@ def Server(port):
 
                         hbuf = binascii.hexlify(recvbuf)
                         if cmp(hbuf[:4],HEAD_MAGIC): # 检查JL关键字
-                            logerr_client.error(','.join([LOG_ERROR_PACKET,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
+                            log.error(','.join([LOG_ERROR_PACKET,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
                             delete_fileno(fileno)
                             continue
                         mplist = []
@@ -844,10 +858,13 @@ def Server(port):
 #                            gClass.timer[fileno] = time.time()+UCLIENT_SESSION_LIFETIME
                         epoll.modify(fileno,select.EPOLLIN | select.EPOLLET)
                     except IOError:
-                        log.debug("sock has closed %d" % fileno)
+                        log.error("sock has closed %d" % fileno)
                         sock_send_fail(fileno)
                 elif event & select.EPOLLHUP:
                     log.debug("sock hup %d" % fileno)
+                    dealwith_sock_close_update_db(fileno)
+                    dealwith_sock_close_update_binds(fileno)
+                    remove_fileno_resources(fileno)
                     delete_fileno(fileno)
     finally:
         epoll.unregister(srvsocket.fileno())
@@ -945,7 +962,7 @@ CREATE TABLE account_status
 ''')
 
 
-dirs = ['log','err']
+dirs = ['log']
 dirclass = ComState()
 for n in dirs:
     fdir = os.path.join(os.path.curdir,n)
@@ -960,20 +977,19 @@ for n in dirs:
 
 appname = 'JL_SRV'
 log = logging.getLogger(appname)
-log.setLevel(DebugLevel)
+log.setLevel(logging.INFO)
 formatter = logging.Formatter('%(name)-12s %(asctime)s %(levelname)-8s %(message)s','%a, %d %b %Y %H:%M:%S',)
 file_handler = handlers.RotatingFileHandler(os.path.join(dirclass.log,'%s.log' % appname),maxBytes=LOG_SIZE,backupCount=LOG_COUNT,encoding=None)
-
 file_handler.setFormatter(formatter)
 log.addHandler(file_handler)
 #if log.level ==  1:
 #    log.addHandler(logging.StreamHandler())
-log.info('test')
 
-logerr_client = logging.getLogger(appname)
-log.setLevel(logging.ERROR)
-errclient_handler = handlers.RotatingFileHandler(os.path.join(dirclass.err,'err_%s.log' % appname),maxBytes=LOG_SIZE,backupCount=LOG_COUNT,encoding=None)
-logerr_client.addHandler(errclient_handler)
+#log = logging.getLogger(appname)
+#log.setLevel(logging.ERROR)
+#errclient_handler = handlers.RotatingFileHandler(os.path.join(dirclass.err,'err_%s.log' % appname),maxBytes=LOG_SIZE,backupCount=LOG_COUNT,encoding=None)
+#errclient_handler.setFormatter(formatter)
+#log.addHandler(errclient_handler)
 
 
 if __name__ == '__main__':
