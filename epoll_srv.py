@@ -640,10 +640,7 @@ def clean_timeout_sock(fileno): # 清除超时的连接
     if gClass.timer.has_key(fileno):
         if gClass.timer[fileno] < time.time():
             log.info("Client %d life time is end,close it" % fileno )
-            dealwith_sock_close_update_binds(fileno)
-            dealwith_sock_close_update_db(fileno)
-            delete_fileno(fileno)
-            remove_fileno_resources(fileno)
+            dealwith_peer_hup(fileno)
 
 def mirco_devices_logout(devid):
     vendor = devid[32:40]
@@ -686,28 +683,38 @@ def app_user_logout(uname):
     except :
         log.error(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
 
+def dealwith_peer_hup(fileno):
+    dealwith_sock_close_update_db(fileno)
+    dealwith_sock_close_update_binds(fileno)
+    remove_fileno_resources(fileno)
+    delete_fileno(fileno)
+
 
 def dealwith_sock_close_update_db(fileno):
     # socket 关闭，更新数据库
     if gClass.appsock.has_key(fileno): #更新相应的数据库在线状态
+        log.info('app sock close, %d' % fileno)
         #print "appsock is",gClass.appsock
         app_user_logout(gClass.appsock[fileno].name)
-        try:
-            gClass.appsock.pop(fileno)
-        except:
-            pass
+#        try:
+#            gClass.appsock.pop(fileno)
+#        except:
+#            pass
     elif gClass.devsock.has_key(fileno):
+        log.info('dev sock close, %d' % fileno)
         mirco_devices_logout(gClass.devsock[fileno].uuid)
-        try:
-            gClass.devsock.pop(fileno)
-        except:
-            pass
+#        try:
+#            gClass.devsock.pop(fileno)
+#        except:
+#            pass
 
 def dealwith_sock_close_update_binds(fileno):
     if gClass.appsock.has_key(fileno):
+        log.info('app logout info dev, %d' % fileno)
         notify_uuid_app_logout(fileno)
         # APP 应该下线了
     elif gClass.devsock.has_key(fileno):
+        log.info('dev logout info app, %d' % fileno)
         notify_app_uuid_logout(fileno)
         # 小机下线，通知APP
 
@@ -727,10 +734,11 @@ def sock_send_fail(fileno):
         epoll.modify(srcsock,select.EPOLLOUT | select.EPOLLET)
 
     # sock 关闭时产生的异常处理
-    epoll.unregister(fileno)
-    dealwith_sock_close_update_db(fileno)
-    dealwith_sock_close_update_binds(fileno)
-    remove_fileno_resources(fileno)
+    try:
+        epoll.unregister(fileno)
+    except:
+        pass
+    dealwith_peer_hup(fileno)
 
 def sock_recv_fail(fileno):
     # sock 关闭时产生的异常处理
@@ -738,9 +746,7 @@ def sock_recv_fail(fileno):
         epoll.unregister(fileno)
     except:
         pass
-    dealwith_sock_close_update_binds(fileno)
-    dealwith_sock_close_update_db(fileno)
-    remove_fileno_resources(fileno)
+    dealwith_peer_hup(fileno)
 
 def remove_fileno_resources(fileno):
     clist =[ n for n in [getattr(gClass,k) for k in store] if n.has_key(fileno)]
@@ -776,8 +782,12 @@ def handle_requests_buf(hbuf,fileno):
 def Server(port):
     srvsocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    srvsocket.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-    srvsocket.setsockopt(socket.IPPROTO_TCP,socket.TCP_QUICKACK,1)
+    srvsocket.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
+    srvsocket.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
+    srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
+    srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,2)
+    srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,30)
+    srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPIDLE,60)
     srvsocket.bind(('',port))
     srvsocket.listen(50)
     srvsocket.setblocking(0)
@@ -816,7 +826,7 @@ def Server(port):
                         log.info(','.join(['sock %d' % fileno,'recv: %d' % len(recvbuf)]))
                         if not recvbuf:
                             log.info(','.join(['sock %d' % fileno,'recv no buffer']))
-                            delete_fileno(fileno)
+                            dealwith_peer_hup(fileno)
                             continue
 
                         hbuf = binascii.hexlify(recvbuf)
@@ -825,7 +835,6 @@ def Server(port):
                             delete_fileno(fileno)
                             continue
                         mplist = []
-        
                         if (len(hbuf)/2)  > int(hbuf[8:12],16):
                             #print 'hbuf len',len(hbuf),'h len',int(hbuf[8:12],16)
                             #读到两个包了
@@ -861,11 +870,12 @@ def Server(port):
                         log.error("sock has closed %d" % fileno)
                         sock_send_fail(fileno)
                 elif event & select.EPOLLHUP:
-                    log.debug("sock hup %d" % fileno)
-                    dealwith_sock_close_update_db(fileno)
-                    dealwith_sock_close_update_binds(fileno)
-                    remove_fileno_resources(fileno)
-                    delete_fileno(fileno)
+                    log.info("sock hup %d" % fileno)
+                    dealwith_peer_hup(fileno)
+                elif event & select.EPOLLERR:
+                    log.info("sock error %d" % fileno)
+                    dealwith_peer_hup(fileno)
+
     finally:
         epoll.unregister(srvsocket.fileno())
         epoll.close()
