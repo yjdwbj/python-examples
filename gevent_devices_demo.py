@@ -1,4 +1,4 @@
-#!/bin/python2
+#!/opt/stackless-279/bin/python2
 #coding=utf-8
 import socket
 import binascii
@@ -17,7 +17,7 @@ import select
 import argparse
 import signal
 import gevent
-from gevent import monkey;monkey.patch_all()
+#from gevent import monkey;monkey.patch_all()
 from gevent.event import AsyncResult
 
 from logging import handlers
@@ -51,11 +51,12 @@ def device_struct_allocate(uid):
     return buf
 
 
-def send_data_to_app(srcsock,dstsock):
+def send_data_to_app(srcsock,dstsock,sequence):
     buf = []
     stun_init_command_str(STUN_METHOD_DATA,buf)
     buf[3] = '%08x' % srcsock
     buf[4] = '%08x' % dstsock
+    buf[-1] = sequence
     stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('testdatatestdata'))
     stun_add_fingerprint(buf)
     return buf
@@ -67,13 +68,13 @@ def device_login(host,uuid):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-    print 'host is',host
     sock.connect(host)
     buf = ''.join(device_struct_allocate(uuid))
     nbyte = sock.send(binascii.unhexlify(buf))
     log.info(','.join(['sock','%d' % sock.fileno(),'send %d'%nbyte]))
     mysock = 0xFFFFFFFF
     myconn = []
+    mynum = 0
     global rtime
     a = AsyncResult()
     while True:
@@ -103,7 +104,9 @@ def device_login(host,uuid):
             hattr.method = stun_get_type(hattr.method)
             if hattr.method == STUN_METHOD_ALLOCATE:
                 p = ''.join(stun_struct_refresh_request())
-                gevent.joinall([gevent.spawn(refresh_time,sock,a,binascii.unhexlify(p),log)])
+                gevent.spawn(refresh_time,sock,a,binascii.unhexlify(p),log).join()
+                stopFlag=Event()
+                t = RandomSend(sock,sock,stopFlag)
                 if rdict.has_key(STUN_ATTRIBUTE_STATE):
                     stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                     mysock = int(stat[:8],16)
@@ -115,10 +118,9 @@ def device_login(host,uuid):
                 #if rdict.has_key(STUN_ATTRIBUTE_DATA):
                 #    print rdict[STUN_ATTRIBUTE_DATA][-1],time.time()
                 
-                log.info(','.join(['sock','%d' % sock.fileno(),'recv forward packet']))
                 dstsock = int(hattr.srcsock,16)
                 if mysock != 0xFFFFFFFF and dstsock != 0xFFFFFFFF:
-                    buf = send_data_to_app(mysock,dstsock)
+                    buf = send_data_to_app(mysock,dstsock,'02%06x' % hattr.sequence[2:])
                     try:
                         nbyte = sock.send(binascii.unhexlify(''.join(buf)))
                     except:

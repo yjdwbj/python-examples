@@ -1,4 +1,4 @@
-#/usr/bin/python2 
+#!/opt/stackless-279/bin/python2 
 #-*- coding: utf-8 -*-
 #####################################################################
 # lcy
@@ -17,13 +17,15 @@ import sys
 import os
 import unittest
 import argparse
+from multiprocessing import Process,Pipe,Queue,Pool
+import multiprocessing
 
 from datetime import datetime
 from sqlalchemy import create_engine
 from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,MetaData,DateTime,Boolean,SmallInteger,VARCHAR
 from sqlalchemy import sql,and_
 from sqlalchemy.dialects import postgresql as pgsql
-sys.path.insert(0,'/usr/local/lib/python2.7/dist-packages/psycopg2')
+sys.path.insert(0,'/opt/stackless-279/lib/python2.7/site-packages/psycopg2')
 import _psycopg
 sys.modules['psycopg2._psycopg'] = _psycopg
 sys.path.pop(0)
@@ -62,11 +64,9 @@ def delete_fileno(fileno):
         gClass.clients.pop(fileno)
     if gClass.requests.has_key(fileno):
         gClass.requests.pop(fileno)
-    #if gClass.timer.has_key(fileno):
-    #    gClass.timer.pop(fileno)
 
 
-def handle_client_request(buf,fileno):
+def handle_client_request(pair): # pair[0] == hbuf, pair[1] == fileno
     """
     -1 CRC 错误的
     -2 非法刷新请求
@@ -75,6 +75,8 @@ def handle_client_request(buf,fileno):
     2  小机的回复
     3  转发命令
     """
+    buf=pair[0]
+    fileno = pair[1]
     res = get_packet_head_class(buf[:STUN_HEADER_LENGTH*2])
     res.host= gClass.clients.get(fileno).getpeername()
     res.eattr = STUN_ERROR_NONE
@@ -140,7 +142,9 @@ def handle_client_request(buf,fileno):
         log.error(','.join([LOG_ERROR_METHOD,res.method,gClass.clients[fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
         return  (stun_error_response(res),res)
 
-def bind_each_uuid(ustr,fileno):
+def bind_each_uuid(pair): # pair[0] == ustr,pair[1] == fileno
+    ustr = pair[0]
+    fileno = pair[1]
     if not gClass.appbinds.has_key(fileno):
         gClass.appbinds[fileno]={}
 
@@ -152,6 +156,7 @@ def bind_each_uuid(ustr,fileno):
         notifybuf = notify_peer(''.join([b,STUN_ONLINE]))
         #print 'info',notifybuf
         gClass.responses[dstsock] = notify_peer(''.join([b,STUN_ONLINE]))
+        #log.info('user %s bond uuid %s' % 
         epoll.modify(dstsock,select.EPOLLOUT | select.EPOLLET )
     else:
         gClass.appbinds[fileno][ustr]=0xFFFFFFFF
@@ -164,21 +169,26 @@ def handle_app_bind_device(res):
             res.eattr = chk
             log.error(','.join([LOG_ERROR_UUID,gClass.clients[res.fileno].getpeername()[0],str(str(sys._getframe().f_lineno))]))
             return stun_error_response(res)
-        bind_each_uuid(res.attrs[STUN_ATTRIBUTE_UUID][-1],res.fileno)
+        bind_each_uuid((res.attrs[STUN_ATTRIBUTE_UUID][-1],res.fileno))
     elif res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
         mlist =  split_muuid(res.attrs[STUN_ATTRIBUTE_MUUID][-1])
-        p = [check_jluuid(n) for n in mlist]
+        ps = multiprocessing.cpu_count()*2
+        pl = Pool(ps)
+        p = pl.map(check_jluuid,mlist)
+        p.close()
+        p.join()
+        #p = [check_jluuid(n) for n in mlist]
         e = [ x for x in p if x]
         if len(e):
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
             log.error(','.join([LOG_ERROR_UUID,gClass.clients[res.fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
-        [bind_each_uuid(n,res.fileno) for n in mlist]
+        multiprocessing_handle(bind_each_uuid,[(res.fileno,n) for n in mlist])
+        #[bind_each_uuid(n,res.fileno) for n in mlist]
     else:
         res.eattr = STUN_ERROR_UNKNOWN_PACKET
         log.error(','.join([LOG_ERROR_UUID,gClass.clients[res.fileno].getpeername()[0],str(sys._getframe().f_lineno)]))
         return stun_error_response(res)
-
     return stun_bind_devices_ok(res)
 
 
@@ -196,18 +206,19 @@ def stun_bind_devices_ok(res):
         stun_attr_append_str(buf,STUN_ATTRIBUTE_RUUID,\
                  ''.join([jluid,'%08x' %gClass.appbinds[res.fileno][jluid]]))
     stun_add_fingerprint(buf)
+
     return (buf)
 
 def notify_peer(state_info):
     buf = []
-    stun_init_command_str(STUN_METHOD_INFO,buf)
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_INFO),buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_STATE,state_info)
     stun_add_fingerprint(buf)
     return buf
 
 def notify_app_bind_islogin(bindinfo):
     buf = []
-    stun_init_command_str(STUN_METHOD_INFO,buf)
+    stun_init_command_str(stun_make_success_response(STUN_METHOD_INFO),buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_RUUID,bindinfo)
     stun_add_fingerprint(buf)
     return buf
@@ -230,6 +241,7 @@ def handle_app_login_request(res):
 #        update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
 #    else:
 #        update_refresh_time(res.fileno,UCLIENT_SESSION_LIFETIME)
+    log.info('user %s login,socket is %d' % (tcs.name,res.fileno))
     return app_user_auth_success(res)
 
 def handle_app_send_data_to_device(res): # APP 发给小机的命令
@@ -431,6 +443,7 @@ def handle_allocate_request(res):
     gClass.devuuid[huid] = res.fileno
     tcs.uuid = huid
     #print "login devid is",tcs.uuid
+    log.info('device login uuid is %s,socket is %d' % (huid,res.fileno))
     return device_login_sucess(res)
 
 def app_user_auth_success(res):
@@ -628,8 +641,11 @@ class CheckSesionThread(threading.Thread):
             time.sleep(1)
             [clean_timeout_sock(x)  for x in  gClass.timer.keys()]
 
-def notify_peer_is_logout(fileno,dstsock):
+def notify_peer_is_logout(pair): # pair[0] == fileno, pair[1] == dstsock
+    fileno = pair[0]
+    dstsock = pair[1]
     gClass.responses[fileno] =  notify_peer(''.join(['%08x' % dstsock,STUN_OFFLINE]))
+    log.info('socket %d logout send info to socket %d' % (dstsock,fileno))
     try:
         epoll.modify(fileno,select.EPOLLOUT | select.EPOLLET)
     except:
@@ -662,14 +678,26 @@ def notify_uuid_app_logout(fileno):
     if gClass.appbinds.has_key(fileno):
         binds = gClass.appbinds[fileno].values()
         gClass.appsock.pop(fileno) # 回收这个APP的BIND资源
-        [notify_peer_is_logout(n,fileno) for n in binds if gClass.devsock.has_key(n)]
+        #[notify_peer_is_logout(n,fileno) for n in binds if gClass.devsock.has_key(n)]
+        nl = [(n,fileno) for n in binds if gClass.devsock.has_key(n)]
+        multiprocessing_handle(notify_peer_is_logout,nl)
+
+def multiprocessing_handle(func,arglist):
+    ps = multiprocessing.cpu_count()*2
+    pl = Pool(ps)
+    pl.map(func,arglist)
+    pl.close()
+    pl.join()
+
+
 
 def notify_app_uuid_logout(fileno):
     # 小机下线，通知APP
     devid = gClass.devsock[fileno].uuid
     #print "devid",devid,"has logout"
     binds = [k for k in gClass.appbinds.keys() if gClass.appbinds.get(k).has_key(devid)]
-    [notify_peer_is_logout(n,fileno) for n in binds if gClass.appsock.has_key(n)]
+    #[notify_peer_is_logout(n,fileno) for n in binds if gClass.appsock.has_key(n)]
+    multiprocessing_handle(notify_peer_is_logout,[(n,fileno) for n in binds if gClass.appsock.has_key(n)])
     alist = [n for n in binds if gClass.appsock.has_key(n)]
     for n in alist:
         gClass.appbinds[n][devid]=0xFFFFFFFF
@@ -753,16 +781,18 @@ def remove_fileno_resources(fileno):
     [n.pop(fileno) for n in clist]
     #print "delete list is",clist,"fileno",fileno
 
-def handle_requests_buf(hbuf,fileno):
+def handle_requests_buf(pair): # pair[0] == hbuf, pair[1] == fileno
+    hbuf = pair[0]
+    fileno = pair[1]
     if not len(hbuf):
         return 
 
     if check_packet_crc32(hbuf):
-        log.error(','.join([LOG_ERROR_PACKET,'sock %d' %fileno,str(sys._getframe().f_lineno)]))
+        log.error(','.join([LOG_ERROR_PACKET,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
         delete_fileno(fileno)
         return 
 
-    rbuf = handle_client_request(hbuf,fileno)
+    rbuf = handle_client_request(pair)
     res = rbuf[1]
     if res.eattr == STUN_ERROR_UNKNOWN_PACKET:
         log.error(','.join([LOG_ERROR_IILAGE_CLIENT,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
@@ -792,11 +822,10 @@ def Server(port):
     srvsocket.listen(50)
     srvsocket.setblocking(0)
     log.info("Start Server")
-    print "log",log
     epoll.register(srvsocket.fileno(),select.EPOLLIN | select.EPOLLET)
-    #mthread = CheckSesionThread()
-    #mthread.setDaemon(True)
-    #mthread.start()
+    #queue = Queue()
+    #pool_size = multiprocessing.cpu_count() * 2
+    #gpool  = Pool(pool_size) 
     try:
         while True:
             events = epoll.poll(1)
@@ -839,11 +868,11 @@ def Server(port):
                             #print 'hbuf len',len(hbuf),'h len',int(hbuf[8:12],16)
                             #读到两个包了
                             mplist = [''.join([HEAD_MAGIC,n]) for n in hbuf.split(HEAD_MAGIC) if n ]
-                            mplist.reverse()
                             #print "two packet",mplist
-                            [handle_requests_buf(n,fileno) for n in mplist]    
+                            multiprocessing_handle(handle_requests_buf,[(n,fileno) for n in mplist])
+                            #[handle_requests_buf(n,fileno) for n in mplist]
                         else:
-                            handle_requests_buf(hbuf,fileno)
+                            handle_requests_buf((hbuf,fileno))
                     except IOError:
                         sock_recv_fail(fileno)
                         log.debug("sock has closed %d" % fileno)
@@ -941,7 +970,7 @@ gClass = ComState()
 [setattr(gClass,x,{}) for x in store]
 
 epoll = select.epoll()
-engine = create_engine('postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/nath',pool_size=500,max_overflow=20)
+engine = create_engine('postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/nath',pool_size=1024,max_overflow=20)
 atable = get_account_table()
 if not atable.exists(engine):
     engine.connect().execute("""

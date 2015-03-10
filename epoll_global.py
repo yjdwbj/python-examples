@@ -4,6 +4,7 @@ import struct
 import uuid
 import gevent
 import time
+from multiprocessing import Pool,Pipe
 
 STUN_METHOD_BINDING='0001'   # APP登录命令
 STUN_METHOD_ALLOCATE='0003'   #小机登录命令
@@ -184,6 +185,13 @@ def stun_add_fingerprint(buf):
     crcval = get_crc32(crc_str)
     crcstr = "%08x" % ((crcval  ^ CRCMASK) & 0xFFFFFFFF)
     buf[-1] = crcstr.replace('-','')
+
+def multiprocessing_handle(func,arglist):
+    ps = multiprocessing.cpu_count()*2
+    pl = Pool(ps)
+    pl.map(func,arglist)
+    pl.close()
+    pl.join()
 
 def stun_init_command_str(msg_type,buf):
     buf.append(binascii.hexlify('JL')) # 魔数字

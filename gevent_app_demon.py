@@ -1,4 +1,4 @@
-#!/bin/python2
+#!/opt/stackless-279/bin/python2
 #coding=utf-8
 import socket
 import binascii
@@ -70,12 +70,12 @@ def stun_bind_single_uuid(jluid):
     stun_add_fingerprint(buf)
     return buf
 
-def stun_send_data_to_devid(srcsock,dstsock):
+def stun_send_data_to_devid(srcsock,dstsock,sequence):
     buf = []
     stun_init_command_str(STUN_METHOD_SEND,buf)
     buf[3] = '%08x' % srcsock
     buf[4] = '%08x' % dstsock
-    buf[-1] = '03000000'
+    buf[-1] = sequence
     stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('testdatatestdata'))
     stun_add_fingerprint(buf)
     return buf
@@ -151,6 +151,7 @@ def stun_setLogin(addr,ulist,user,pwd):
     buf = stun_register_request(user,pwd)
     sdata = binascii.a2b_hex(''.join(buf))
     #sock.bind(('',0))
+    mynum = 0 # sum of send packets
     print 'host is',addr
     try:
         sock.connect(addr)
@@ -196,7 +197,7 @@ def stun_setLogin(addr,ulist,user,pwd):
             hattr.method = stun_get_type(hattr.method)
             if hattr.method  == STUN_METHOD_BINDING:
                 p = ''.join(stun_struct_refresh_request())
-                gevent.joinall([gevent.spawn(refresh_time,sock,a,binascii.unhexlify(p),log)])
+                gevent.spawn(refresh_time,sock,a,binascii.unhexlify(p),log).join()
                 stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                 mysock = int(stat[:8],16)
                 # 下面绑定一些UUID
@@ -213,7 +214,7 @@ def stun_setLogin(addr,ulist,user,pwd):
                 if rdict.has_key(STUN_ATTRIBUTE_RUUID):
                     dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
                     if dstsock != 0xFFFFFFFF:
-                        buf = stun_send_data_to_devid(mysock,dstsock)
+                        buf = stun_send_data_to_devid(mysock,dstsock,'03%06x' % mynum)
                     else:
                         continue
 
@@ -226,16 +227,23 @@ def stun_setLogin(addr,ulist,user,pwd):
                             send_forward_buf(sock,mysock,dstsock)
                     continue
 
-            elif hattr.method == STUN_METHOD_DATA:
+            elif hattr.method == STUN_METHOD_DATA: # 小机回应
                 #print "recv device peer data",time.time()
                 dstsock = int(hattr.srcsock,16)
-                buf = stun_send_data_to_devid(mysock,dstsock)
-                log.info(','.join(['sock','%d'% fileno,'recv forward buf']))
+                if hattr.sequence[:2] == '03':
+                    buf = stun_send_data_to_devid(mysock,dstsock,hattr.sequence)
+                elif hattr.sequence[:2] == '02':
+                    n = int(hattr.sequence[2:],16)
+                    if n == mynum: 
+                        mynum+=1
+                        buf = stun_send_data_to_devid(mysock,dstsock,'03%06x' % mynum)
+                    else:
+                        log.error('lost packet of %d' % mynum)
             elif hattr.method == STUN_METHOD_INFO:
                 log.info(','.join(['sock','%d'% fileno,'recv server info']))
                 if rdict.has_key(STUN_ATTRIBUTE_RUUID):
                     dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
-                    buf = stun_send_data_to_devid(mysock,dstsock)
+                    buf = stun_send_data_to_devid(mysock,dstsock,'03%06x' % mynum)
             else:
                 print "Command error"
             if buf:
