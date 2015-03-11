@@ -204,8 +204,7 @@ if __name__ == '__main__':
         except EOFError:
             break
 
-    while True:
-        #log.info(','.join(['Start UUID',uid]))
-        spalist = [gevent.spawn(device_login,host,uid) for uid in uulist]
-        gevent.joinall(spalist)
+    #log.info(','.join(['Start UUID',uid]))
+    spalist = [gevent.spawn(device_login,host,uid) for uid in uulist]
+    gevent.joinall(spalist)
 

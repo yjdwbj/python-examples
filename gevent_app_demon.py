@@ -338,26 +338,22 @@ if __name__ == '__main__':
    bind = args.b_count if args.b_count < len(ulist) else len(ulist)
    log.info(','.join(['UUID counts','%d' % len(ulist),'(per user)bind count %d' % bind]))
 
-   n = 0
-   while True:
-       print 'n loops',n
-       n+=1
-       tbuf = ulist
-       tt = 0 
-       for i in xrange(args.u_count):
-           time.sleep(0.3)
-           z = str(uuid.uuid4()).replace('-','')
-           n = random.randint(0,15)
-           zi = []
-           for y in xrange(n):
-               zi.append(chr(random.randint(97,122)))
-           uname = ''.join([z,''.join(zi)])
-           cuts = [bind]
-           muuid = [tbuf[i:j] for i,j in zip([0]+cuts,cuts+[None])]
-           if len(muuid) == 2:
-               tlist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
-               tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
-       gevent.joinall(tlist)
+   tbuf = ulist
+   tt = 0 
+   for i in xrange(args.u_count):
+       time.sleep(0.3)
+       z = str(uuid.uuid4()).replace('-','')
+       n = random.randint(0,15)
+       zi = []
+       for y in xrange(n):
+           zi.append(chr(random.randint(97,122)))
+       uname = ''.join([z,''.join(zi)])
+       cuts = [bind]
+       muuid = [tbuf[i:j] for i,j in zip([0]+cuts,cuts+[None])]
+       if len(muuid) == 2:
+           tlist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
+           tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
+   gevent.joinall(tlist)
 
 
    
