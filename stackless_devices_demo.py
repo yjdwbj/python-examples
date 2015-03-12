@@ -17,8 +17,8 @@ import select
 import argparse
 import signal
 import gevent
-import multiprocessing
 #from gevent import monkey;monkey.patch_all()
+import stackless
 from gevent.event import AsyncResult
 
 from logging import handlers
@@ -89,6 +89,7 @@ def device_login(host,uuid):
     global rtime
     a = AsyncResult()
     while True:
+        stackless.schedule()
         try:
             data = sock.recv(SOCK_BUFSIZE)
         except:
@@ -115,7 +116,8 @@ def device_login(host,uuid):
             hattr.method = stun_get_type(hattr.method)
             if hattr.method == STUN_METHOD_ALLOCATE:
                 p = ''.join(stun_struct_refresh_request())
-                gevent.spawn(refresh_time,sock,a,binascii.unhexlify(p),slog).join()
+                #gevent.spawn(refresh_time,sock,a,binascii.unhexlify(p),slog).join()
+                stackless.tasklet(refresh_time)(sock,a,binascii.unhexlify(p),slog)
                 if rdict.has_key(STUN_ATTRIBUTE_STATE):
                     stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                     mysock = int(stat[:8],16)
@@ -221,5 +223,7 @@ if __name__ == '__main__':
             break
 
     #slog.log(','.join(['Start UUID',uid]))
-    [gevent.spawn(device_login,host,uid).join() for uid in uulist]
+    #[gevent.spawn(device_login,host,uid).join() for uid in uulist]
+    [stackless.tasklet(device_login)(host,uid) for uid in uulist]
+    stackless.run()
 

@@ -4,6 +4,8 @@ import struct
 import uuid
 import gevent
 import time
+import logging
+from logging import handlers
 from multiprocessing import Pool,Pipe
 
 STUN_METHOD_BINDING='0001'   # APP登录命令
@@ -20,6 +22,9 @@ STUN_METHOD_CONNECTION_ATTEMPT='000c'
 
 STUN_METHOD_CHECK_USER='000e'
 STUN_METHOD_REGISTER='000f' # App 注册用户命令
+
+STUN_METHOD_UPLOAD='0010'
+STUN_METHOD_DOWNLOAD='0011'
 
 # RFC 6062 #
 STUN_ATTRIBUTE_MAPPED_ADDRESS='0001'
@@ -347,7 +352,33 @@ def refresh_time(sock,a,buf,log):
         if a.get():
             n = time.time() + 50
             nbyte = sock.send(buf)
-            log.info(','.join(['sock %d' % sock.fileno(),'send %d' % nbyte]))
+            #log.info(','.join(['sock %d' % sock.fileno(),'send %d' % nbyte]))
             gevent.sleep(1)
             a.set(0)
+
+
+class ErrLog(logging.Logger):
+    def __init__(self,aname):
+        logging.Logger.__init__(self,aname)
+        self.setLevel(logging.ERROR)
+        fmt = logging.Formatter('%(name)-12s %(asctime)s %(levelname)-8s %(message)s','%a, %d %b %Y %H:%M:%S',)
+        file_handler = handlers.RotatingFileHandler('err_%s_%s.log' % (aname,time.strftime('%Y%m%d%H%M%S')),maxBytes=LOG_SIZE,backupCount=LOG_COUNT)
+        file_handler.setFormatter(fmt)
+        self.addHandler(file_handler)
+
+    def log(self,msg):
+        self.error(msg)
+
+
+class StatLog(logging.Logger):
+    def __init__(self,aname):
+        logging.Logger.__init__(self,aname)
+        self.setLevel(logging.INFO)
+        fmt = logging.Formatter('%(name)-12s %(asctime)s %(levelname)-8s %(message)s','%a, %d %b %Y %H:%M:%S',)
+        file_handler = handlers.RotatingFileHandler('stat_%s_%s.log' % (aname,time.strftime('%Y%m%d%H%M%S')),maxBytes=LOG_SIZE,backupCount=LOG_COUNT)
+        file_handler.setFormatter(fmt)
+        self.addHandler(file_handler)
+    def log(self,msg):
+        self.info(msg)
+
 

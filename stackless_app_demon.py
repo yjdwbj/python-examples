@@ -15,11 +15,11 @@ import argparse
 from epoll_global import *
 import logging
 from logging import handlers
+import stackless
 import signal
 import select
 import sys
 import gevent
-from gevent import monkey;monkey.patch_all()
 from gevent.event import AsyncResult
 
 reload(sys)
@@ -169,6 +169,7 @@ def stun_setLogin(addr,ulist,user,pwd):
     global rtime
     a = AsyncResult()
     while True:
+        stackless.schedule()
         try:
             data = sock.recv(SOCK_BUFSIZE)
         except:
@@ -200,7 +201,8 @@ def stun_setLogin(addr,ulist,user,pwd):
             hattr.method = stun_get_type(hattr.method)
             if hattr.method  == STUN_METHOD_BINDING:
                 p = ''.join(stun_struct_refresh_request())
-                gevent.spawn(refresh_time,sock,a,binascii.unhexlify(p),slog).join()
+                #gevent.spawn(refresh_time,sock,a,binascii.unhexlify(p),slog).join()
+                stackless.tasklet(refresh_time)(sock,a,binascii.unhexlify(p),slog)
                 stat = rdict[STUN_ATTRIBUTE_STATE][-1]
                 mysock = int(stat[:8],16)
                 # 下面绑定一些UUID
@@ -348,9 +350,11 @@ if __name__ == '__main__':
        cuts = [bind]
        muuid = [tbuf[i:j] for i,j in zip([0]+cuts,cuts+[None])]
        if len(muuid) == 2:
-           glist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
+           #glist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
+           stackless.tasklet(stun_setLogin)(host,muuid[0],uname,uname)
            tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
-   gevent.joinall(glist,timeout=60)
+   #gevent.joinall(glist,timeout=60)
+   stackless.run()
 
 
    

@@ -17,6 +17,8 @@ import sys
 import os
 import unittest
 import argparse
+from multiprocessing import Process,Pipe,Queue,Pool
+import multiprocessing
 
 from datetime import datetime
 from sqlalchemy import create_engine
@@ -215,10 +217,10 @@ class CheckSesionThread(threading.Thread):
 
 
 
-class MTWorker(Thread.threading):
+class MPConsumer(multiprocessing.Process):
     store = ['clients','hosts','requests','responses','appbinds','appsock','devsock','devuuid']
     def __init__(self,srvsocket,epoll):
-        Thread.threading.__init__(self)
+        multiprocessing.Process.__init__(self)
         self.srvsocket = srvsocket
         self.epoll = epoll 
         [setattr(self,x,{}) for x in store]
@@ -261,7 +263,11 @@ class MTWorker(Thread.threading):
                         log.info(','.join(["new client %s:%d" % addr,"new fileno %d" % nf, 'srv fileno %d'%fileno]))
                         nsock.setblocking(0)
                         self.clients[nf] = nsock
-                        self.hosts[nf] = nsock.getpeername()
+                        try:
+                            self.hosts[nf] = nsock.getpeername()
+                        except socket.error:
+                            self.clients.pop(nf)
+                            continue
                         self.responses[nf] = []
                         #self.timer[nf] = time.time()+10
                         self.epoll.register(nf,select.EPOLLIN | select.EPOLLET)
@@ -333,7 +339,7 @@ class MTWorker(Thread.threading):
             mplist = [''.join([HEAD_MAGIC,n]) for n in hbuf.split(HEAD_MAGIC) if n ]
             #print "two packet",mplist
             #multiprocessing_handle(handle_requests_buf,[(n,fileno) for n in mplist])
-            [handle_requests_buf(n,fileno) for n in mplist]
+            [self.handle_requests_buf(n,fileno) for n in mplist]
         else:
             self.handle_requests_buf(item)
     
@@ -343,13 +349,24 @@ class MTWorker(Thread.threading):
         fileno = pair[1]
         if not len(hbuf):
             return 
+        res = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH*2])
+        res.eattr = STUN_ERROR_NONE
+        res.host= self.hosts.get(fileno)
+        res.fileno=fileno
+
+        #通过认证的socket 直接转发了
+        if self.appsock.has_key(fileno) or self.devsock.has_key(fileno):
+            if (res.method == STUN_METHOD_SEND or res.method == STUN_METHOD_DATA):
+                return self.handle_forward_packet(pair,res)
+
     
         if check_packet_crc32(hbuf):
             log.error(','.join([LOG_ERROR_PACKET,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
             self.delete_fileno(fileno)
             return 
+
     
-        rbuf = self.handle_client_request(pair)
+        rbuf = self.handle_client_request(pair,res)
         res = rbuf[1]
         if res.eattr == STUN_ERROR_UNKNOWN_PACKET:
             log.error(','.join([LOG_ERROR_IILAGE_CLIENT,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
@@ -363,7 +380,38 @@ class MTWorker(Thread.threading):
         self.responses[fileno] = rbuf[0]
         self.epoll.modify(fileno,select.EPOLLOUT | select.EPOLLET)
 
-    def handle_client_request(self,pair): # pair[0] == hbuf, pair[1] == fileno
+    def handle_forward_packet(self,pair,res):
+        buf = pair[0]
+        fileno = pair[1]
+        #判断如果是转发命令就直接转发了。
+        #print "forward packet"
+        #print 'dstsock',res.dstsock
+        #print 'srcsock',res.srcsock
+        dstsock = int(res.dstsock,16)
+        srcsock = int(res.srcsock,16)
+        #转发的信息不正确
+        if dstsock == 0xFFFFFFFF or srcsock == 0xFFFFFFFF:
+            res.eattr = STUN_ERROR_UNKNOWN_HEAD
+            return  (stun_error_response(res),res)
+    
+        if self.clients.has_key(dstsock):
+            # 转发到时目地
+            self.responses[dstsock] = buf
+            self.epoll.modify(dstsock,select.EPOLLOUT | select.EPOLLET)
+            return (None,res)
+        else: # 目标不存在
+            res.eattr = STUN_ERROR_DEVOFFLINE
+            #self.epoll.modify(fileno,select.EPOLLOUT)
+            #self.responses[fileno] = ''.join(stun_error_response(res))
+            tbuf = stun_error_response(res)
+            tbuf[3]=res.srcsock
+            tbuf[4]=res.dstsock
+            tbuf.pop()
+            tbuf[2] = '%04x' % (int(tbuf[2],16)-4)
+            stun_add_fingerprint(tbuf)
+            return (tbuf,res)
+
+    def handle_client_request(self,pair,res): # pair[0] == hbuf, pair[1] == fileno
         """
         -1 CRC 错误的
         -2 非法刷新请求
@@ -374,14 +422,11 @@ class MTWorker(Thread.threading):
         """
         buf=pair[0]
         fileno = pair[1]
-        res = get_packet_head_class(buf[:STUN_HEADER_LENGTH*2])
-        res.host= self.hosts.get(fileno)
-        res.eattr = STUN_ERROR_NONE
+
         if not (res.method == STUN_METHOD_ALLOCATE or\
                 res.method == STUN_METHOD_BINDING or\
-                res.method == STUN_METHOD_REGISTER or\
-                self.appsock.has_key(fileno) or \
-                self.devsock.has_key(fileno)):
+                res.method == STUN_METHOD_CHANNEL_BIND or\
+                res.method == STUN_METHOD_REGISTER):
                     # 非法请求
             self.delete_fileno(fileno)
             #print 'fileno',fileno
@@ -389,36 +434,7 @@ class MTWorker(Thread.threading):
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
             return (None,res)
     
-        #判断如果是转发命令就直接转发了。
-        if res.method == STUN_METHOD_SEND or res.method == STUN_METHOD_DATA:
-            #print "forward packet"
-            #print 'dstsock',res.dstsock
-            #print 'srcsock',res.srcsock
-            dstsock = int(res.dstsock,16)
-            srcsock = int(res.srcsock,16)
-            #转发的信息不正确
-            if dstsock == 0xFFFFFFFF or srcsock == 0xFFFFFFFF:
-                res.eattr = STUN_ERROR_UNKNOWN_HEAD
-                return  (stun_error_response(res),res)
     
-            if self.clients.has_key(dstsock):
-                # 转发到时目地
-                self.responses[dstsock] = buf
-                self.epoll.modify(dstsock,select.EPOLLOUT | select.EPOLLET)
-                return (None,res)
-            else: # 目标不存在
-                res.eattr = STUN_ERROR_DEVOFFLINE
-                #self.epoll.modify(fileno,select.EPOLLOUT)
-                #self.responses[fileno] = ''.join(stun_error_response(res))
-                tbuf = stun_error_response(res)
-                tbuf[3]=res.srcsock
-                tbuf[4]=res.dstsock
-                tbuf.pop()
-                tbuf[2] = '%04x' % (int(tbuf[2],16)-4)
-                stun_add_fingerprint(tbuf)
-                return (tbuf,res)
-    
-        res.fileno=fileno
         hexpos = STUN_HEADER_LENGTH*2
         upkg = parser_stun_package(buf[hexpos:-8])
         if upkg is None:
@@ -565,7 +581,7 @@ class MTWorker(Thread.threading):
                 res.eattr = chk
                 log.error(','.join([LOG_ERROR_UUID,self.hosts[res.fileno],str(str(sys._getframe().f_lineno))]))
                 return stun_error_response(res)
-            bind_each_uuid((res.attrs[STUN_ATTRIBUTE_UUID][-1],res.fileno))
+            self.bind_each_uuid((res.attrs[STUN_ATTRIBUTE_UUID][-1],res.fileno))
         elif res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
             mlist =  split_muuid(res.attrs[STUN_ATTRIBUTE_MUUID][-1])
             ps = multiprocessing.cpu_count()*2
@@ -585,7 +601,7 @@ class MTWorker(Thread.threading):
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
             log.error(','.join([LOG_ERROR_UUID,self.hosts[res.fileno],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
-        return stun_bind_devices_ok(res)
+        return self.stun_bind_devices_ok(res)
     
 
     def dealwith_sock_close_update_db(self,fileno):
@@ -743,7 +759,7 @@ class MTWorker(Thread.threading):
     
     
     
-    def stun_bind_devices_ok(res):
+    def stun_bind_devices_ok(self,res):
         """
         绑定成功，回复APP
         """
@@ -910,7 +926,7 @@ class EpollServer():
 
     def start(self):
         log.info("Start Server")
-        mtworker = MTWorker(self.srvsocket,self.epoll)
+        handle_proc = MPConsumer(self.srvsocket,self.epoll)
         handle_proc.daemon =True
         handle_proc.run()
         handle_proc.join()
