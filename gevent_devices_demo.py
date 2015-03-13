@@ -1,8 +1,11 @@
 #!/opt/stackless-279/bin/python2
 #coding=utf-8
-import socket
+from gevent import monkey;monkey.patch_all()
+from gevent import socket
+from gevent.event import AsyncResult
+import gevent
+#import socket
 import binascii
-import logging
 import random
 import struct
 import string
@@ -16,12 +19,7 @@ import pickle
 import select
 import argparse
 import signal
-import gevent
-import multiprocessing
-#from gevent import monkey;monkey.patch_all()
-from gevent.event import AsyncResult
 
-from logging import handlers
 
 from epoll_global import *
 
@@ -73,80 +71,73 @@ def device_login(host,uuid):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-    sock.settimeout(60)
     try:
         sock.connect(host)
     except socket.timeout:
         errlog.log('socket %d connect server timeout' % sock.fileno())
         return
-
     buf = ''.join(device_struct_allocate(uuid))
     nbyte = sock.send(binascii.unhexlify(buf))
-    slog.log(','.join(['sock','%d' % sock.fileno(),'send %d'%nbyte]))
     mysock = 0xFFFFFFFF
     myconn = []
     mynum = 0
     global rtime
     a = AsyncResult()
+    rtbuf = ''.join(stun_struct_refresh_request())
     while True:
-        try:
-            data = sock.recv(SOCK_BUFSIZE)
-        except:
-            break
+        data = sock.recv(SOCK_BUFSIZE)
         a.set(0)
         if not data:
             break
+        hbuf = binascii.hexlify(data)
+        slog.log(','.join(['sock','%d' % sock.fileno(),'recv %d' % (len(hbuf)/2) ]))
+        hattr = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH*2])
+        rdict = parser_stun_package(hbuf[STUN_HEADER_LENGTH*2:-8])
+        if not rdict:
+            slog.log(','.join(['sock','%d' % sock.fileno(),'server packet is wrong,rdict is empty']))
+            break # 出错了
+        if hattr.method == STUN_METHOD_SEND or hattr.method == STUN_METHOD_INFO:
+            pass
         else:
-            hbuf = binascii.hexlify(data)
-            slog.log(','.join(['sock','%d' % sock.fileno(),'recv %d' % (len(hbuf)/2) ]))
-            hattr = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH*2])
-            rdict = parser_stun_package(hbuf[STUN_HEADER_LENGTH*2:-8])
-            if not rdict:
-                slog.log(','.join(['sock','%d' % sock.fileno(),'server packet is wrong,rdict is empty']))
-                break # 出错了
-            if hattr.method == STUN_METHOD_SEND or hattr.method == STUN_METHOD_INFO:
-                pass
-            else:
-                if not stun_is_success_response_str(hattr.method):
-                    slog.log(','.join(['sock','%d' % sock.fileno(),'server error responses',\
-                            'method',hattr.method]))
-                    continue
+            if not stun_is_success_response_str(hattr.method):
+                slog.log(','.join(['sock','%d' % sock.fileno(),'server error responses',\
+                        'method',hattr.method]))
+                continue
 
-            hattr.method = stun_get_type(hattr.method)
-            if hattr.method == STUN_METHOD_ALLOCATE:
-                p = ''.join(stun_struct_refresh_request())
-                gevent.spawn(refresh_time,sock,a,binascii.unhexlify(p),slog).join()
-                if rdict.has_key(STUN_ATTRIBUTE_STATE):
-                    stat = rdict[STUN_ATTRIBUTE_STATE][-1]
-                    mysock = int(stat[:8],16)
-            elif hattr.method == STUN_METHOD_INFO:
-                if rdict.has_key(STUN_ATTRIBUTE_STATE):
-                    stat = rdict[STUN_ATTRIBUTE_STATE][-1]
-                    myconn = int(stat[:8],16)
-            elif hattr.method == STUN_METHOD_SEND:
-                #if rdict.has_key(STUN_ATTRIBUTE_DATA):
-                #    print rdict[STUN_ATTRIBUTE_DATA][-1],time.time()
-                
-                dstsock = int(hattr.srcsock,16)
-                if mysock != 0xFFFFFFFF and dstsock != 0xFFFFFFFF:
-                    if hattr.sequence[:2] == '03':
-                        buf = send_data_to_app(mysock,dstsock,'02%06x' % hattr.sequence[2:])
-                    #下面是我方主动发数据
-                    elif hattr.sequence[:2] == '02':
-                        rnum = int(hattr.sequence[2:],16)
-                        if mynum == rnum:
-                            mynum +=1
-                        else:
-                            errlog.log('losing packet number of %d',mynum)
+        hattr.method = stun_get_type(hattr.method)
+        if hattr.method == STUN_METHOD_ALLOCATE:
+            gevent.spawn(refresh_time,sock,a,binascii.unhexlify(rtbuf),slog).join(timeout=0.2)
+            #stackless.tasklet(refresh_time)(sock,a,binascii.unhexlify(p),slog)
+            if rdict.has_key(STUN_ATTRIBUTE_STATE):
+                stat = rdict[STUN_ATTRIBUTE_STATE][-1]
+                mysock = int(stat[:8],16)
+        elif hattr.method == STUN_METHOD_INFO:
+            if rdict.has_key(STUN_ATTRIBUTE_STATE):
+                stat = rdict[STUN_ATTRIBUTE_STATE][-1]
+                myconn = int(stat[:8],16)
+        elif hattr.method == STUN_METHOD_SEND:
+            #if rdict.has_key(STUN_ATTRIBUTE_DATA):
+            #    print rdict[STUN_ATTRIBUTE_DATA][-1],time.time()
+            
+            dstsock = int(hattr.srcsock,16)
+            if mysock != 0xFFFFFFFF and dstsock != 0xFFFFFFFF:
+                if hattr.sequence[:2] == '03':
+                    buf = send_data_to_app(mysock,dstsock,'02%s' % hattr.sequence[2:])
+                #下面是我方主动发数据
+                elif hattr.sequence[:2] == '02':
+                    rnum = int(hattr.sequence[2:],16)
+                    if mynum == rnum:
+                        mynum +=1
+                    else:
+                        errlog.log('losing packet number of %d',mynum)
 
-                        buf = send_data_to_app(mysock,dstsock,'03%06x' % mynum)
-                    try:
-                        nbyte = sock.send(binascii.unhexlify(''.join(buf)))
-                    except:
-                         break
+                    buf = send_data_to_app(mysock,dstsock,'03%06x' % mynum)
+                try:
+                    nbyte = sock.send(binascii.unhexlify(''.join(buf)))
+                except:
+                     break
 
-                    #slog.log(','.join(['sock','%d' % sock.fileno(),'send %d' % nbyte]))
-
+                #slog.log(','.join(['sock','%d' % sock.fileno(),'send %d' % nbyte]))
     slog.log(','.join(['sock','%d' % sock.fileno(),'close']))
     sock.close()
 
@@ -196,7 +187,6 @@ if __name__ == '__main__':
         print make_argument_parser().parse_args(['-h'])
         exit(1)
     host = ()
-    print args.uuidfile
     if ':' in args.srv_host:
         s = args.srv_host.split(':')
         try:
@@ -221,5 +211,7 @@ if __name__ == '__main__':
             break
 
     #slog.log(','.join(['Start UUID',uid]))
-    [gevent.spawn(device_login,host,uid).join() for uid in uulist]
+    gp = [gevent.spawn(device_login,host,uid) for uid in uulist]
+    gevent.joinall(gp)
+
 

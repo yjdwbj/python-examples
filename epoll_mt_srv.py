@@ -30,9 +30,8 @@ sys.path.pop(0)
 import psycopg2
 import hashlib
 import select
-import logging
-from logging import handlers
 from epoll_global import *
+from multiprocessing import Queue,Process
 
 
 LOG_ERROR_UUID='UUID Format Error'
@@ -73,7 +72,7 @@ def handle_app_connect_peer_request(res):
     chk = check_jluuid(binascii.hexlify(res.attrs[STUN_ATTRIBUTE_UUID][-1]))
     if chk:
         res.eattr = chk
-        log.error(','.join([LOG_ERROR_UUID,self.hosts[fileno][0][0],str(sys._getframe().f_lineno)]))
+        self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
         return stun_error_response(res)
 
     app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],res.host)
@@ -103,7 +102,7 @@ def handle_app_connect_peer_request(res):
                 self.responses[sock] = stun_connect_address(res.host,res)
                 self.epoll.modify(sock,select.EPOLLOUT | select.EPOLLET)
             except IOError:
-                log.error(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
+                self.errqueue.put(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
         else:
             res.eattr = STUN_ERROR_DEVOFFLINE
             return  stun_error_response(res)
@@ -131,7 +130,7 @@ def stun_ask_mirco_devices_timeout(res):
         try:
             self.epoll.modify(res.fileno,select.EPOLLOUT | select.EPOLLET)
         except:
-            log.error(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
 
 
 def stun_connect_address(host,res):
@@ -151,7 +150,6 @@ def register_success(uname):
     stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,uname)
     stun_add_fingerprint(buf)
-    log.debug("Regsiter is success %s" % uname)
     return (buf)
 
 
@@ -216,10 +214,12 @@ class CheckSesionThread(threading.Thread):
 
 
 class MTWorker(threading.Thread):
-    store = ['clients','hosts','requests','responses','appbinds','appsock','devsock','devuuid']
-    def __init__(self,srvsocket,epoll):
+#class MTWorker():
+    def __init__(self,srvsocket,epoll,errqueue,statqueue):
         threading.Thread.__init__(self)
         self.srvsocket = srvsocket
+        self.errqueue = errqueue
+        self.statqueue = statqueue
         self.epoll = epoll 
         [setattr(self,x,{}) for x in store]
 
@@ -238,7 +238,7 @@ class MTWorker(threading.Thread):
         try:
             self.epoll.unregister(fileno)
         except:
-            log.info('already delete socket %d' % fileno)
+            self.statqueue.put('already delete socket %d' % fileno)
         if self.clients.has_key(fileno):
             self.clients.get(fileno).close()
             self.clients.pop(fileno)
@@ -255,10 +255,10 @@ class MTWorker(threading.Thread):
                         try:
                             nsock,addr = self.srvsocket.accept()
                         except:
-                            log.error(','.join([LOG_ERROR_FILENO,str(sys._getframe().f_lineno)]))
+                            self.errqueue.put(','.join([LOG_ERROR_FILENO,str(sys._getframe().f_lineno)]))
                             continue
                         nf = nsock.fileno()
-                        log.info(','.join(["new client %s:%d" % addr,"new fileno %d" % nf, 'srv fileno %d'%fileno]))
+                        self.statqueue.put(','.join(["new client %s:%d" % addr,"new fileno %d" % nf, 'srv fileno %d'%fileno]))
                         nsock.setblocking(0)
                         self.clients[nf] = nsock
                         try:
@@ -272,35 +272,35 @@ class MTWorker(threading.Thread):
                     elif event & select.EPOLLIN: # 读取socket 的数据
                         try:
                             if not self.clients.has_key(fileno):
-                                log.info(','.join(['sock %d' % fileno,'not in clients']))
+                                self.statqueue.put(','.join(['sock %d' % fileno,'not in clients']))
                                 self.delete_fileno(fileno)
                                 continue
                             recvbuf = self.clients[fileno].recv(SOCK_BUFSIZE)
                             #print 'recv ',binascii.hexlify(recvbuf)
-                            log.info(','.join(['sock %d' % fileno,'recv: %d' % len(recvbuf)]))
+                            #self.statqueue.put(','.join(['sock %d' % fileno,'recv: %d' % len(recvbuf)]))
                             if not recvbuf:
-                                log.info(','.join(['sock %d' % fileno,'recv no buffer']))
+                                self.statqueue.put(','.join(['sock %d' % fileno,'recv no buffer']))
                                 self.dealwith_peer_hup(fileno)
                                 continue
     
                             hbuf = binascii.hexlify(recvbuf)
                             if cmp(hbuf[:4],HEAD_MAGIC): # 检查JL关键字
-                                log.error(','.join([LOG_ERROR_PACKET,self.hosts[fileno][0][0],str(sys._getframe().f_lineno)]))
+                                self.errqueue.put(','.join([LOG_ERROR_PACKET,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
                                 self.delete_fileno(fileno)
                                 continue
                             self.process_handle_first((hbuf,fileno))
                         except IOError:
+                            self.errqueue.put("sock has closed %d,host %s" %(fileno,self.hosts[fileno][0]))
                             self.sock_recv_fail(fileno)
-                            log.debug("sock has closed %d" % fileno)
                     elif event & select.EPOLLOUT:
                         try:
                             if not self.responses.has_key(fileno): #连接命令的时候返回是NULL
-                                log.error(','.join([LOG_ERROR_PACKET,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
+                                self.errqueue.put(','.join([LOG_ERROR_PACKET,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
                                 #self.epoll.modify(fileno,select.EPOLLWRBAND)
                                 continue
                             nbyte =  self.clients[fileno].send(\
                                     binascii.unhexlify(''.join(self.responses[fileno])))
-                            log.info(','.join(['sock %d' % fileno,'send: %d'%nbyte]))
+                            #self.statqueue.put(','.join(['sock %d' % fileno,'send: %d'%nbyte]))
                             try:
                                 self.responses.pop(fileno)
                             except:
@@ -308,13 +308,13 @@ class MTWorker(threading.Thread):
                                 continue
                             self.epoll.modify(fileno,select.EPOLLIN | select.EPOLLET)
                         except IOError:
-                            log.error("sock has closed %d" % fileno)
+                            self.errqueue.put("sock has closed %d,host %s" %(fileno,self.hosts[fileno][0]))
                             self.sock_send_fail(fileno)
                     elif event & select.EPOLLHUP:
-                        log.info("sock hup %d" % fileno)
+                        self.statqueue.put("sock hup %d" % fileno)
                         self.dealwith_peer_hup(fileno)
                     elif event & select.EPOLLERR:
-                        log.info("sock error %d" % fileno)
+                        self.statqueue.put("sock error %d" % fileno)
                         self.dealwith_peer_hup(fileno)
     
         finally:
@@ -337,7 +337,7 @@ class MTWorker(threading.Thread):
             mplist = [''.join([HEAD_MAGIC,n]) for n in hbuf.split(HEAD_MAGIC) if n ]
             #print "two packet",mplist
             #multiprocessing_handle(handle_requests_buf,[(n,fileno) for n in mplist])
-            [self.handle_requests_buf(n,fileno) for n in mplist]
+            [self.handle_requests_buf((n,fileno)) for n in mplist]
         else:
             self.handle_requests_buf(item)
     
@@ -356,10 +356,12 @@ class MTWorker(threading.Thread):
         if self.appsock.has_key(fileno) or self.devsock.has_key(fileno):
             if (res.method == STUN_METHOD_SEND or res.method == STUN_METHOD_DATA):
                 return self.handle_forward_packet(pair,res)
+            elif res.method == STUN_METHOD_REFRESH:
+                return
 
     
         if check_packet_crc32(hbuf):
-            log.error(','.join([LOG_ERROR_PACKET,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_PACKET,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
             self.delete_fileno(fileno)
             return 
 
@@ -367,7 +369,7 @@ class MTWorker(threading.Thread):
         rbuf = self.handle_client_request(pair,res)
         res = rbuf[1]
         if res.eattr == STUN_ERROR_UNKNOWN_PACKET:
-            log.error(','.join([LOG_ERROR_IILAGE_CLIENT,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_IILAGE_CLIENT,'sock %d' % fileno,'method %s' % res.method,str(sys._getframe().f_lineno)]))
             #print 'method', res.method
             self.delete_fileno(fileno)
             return 
@@ -396,6 +398,7 @@ class MTWorker(threading.Thread):
             # 转发到时目地
             self.responses[dstsock] = buf
             self.epoll.modify(dstsock,select.EPOLLOUT | select.EPOLLET)
+            self.statqueue.put('forward to %d,byte %d' %(dstsock,len(buf)/2))
             return (None,res)
         else: # 目标不存在
             res.eattr = STUN_ERROR_DEVOFFLINE
@@ -442,7 +445,7 @@ class MTWorker(threading.Thread):
     
         if res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and int(res.attrs.get(STUN_ATTRIBUTE_MESSAGE_INTEGRITY)[1],16) != 32:
             res.eattr = STUN_ERROR_AUTH
-            log.error(','.join([LOG_ERROR_AUTH,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_AUTH,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
             return  (stun_error_response(res),res)
     
         if self.func.has_key(res.method):
@@ -450,7 +453,7 @@ class MTWorker(threading.Thread):
         else:
             res.eattr = STUN_ERROR_UNKNOWN_METHOD
             print res.method
-            log.error(','.join([LOG_ERROR_METHOD,res.method,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_METHOD,res.method,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
             return  (stun_error_response(res),res)
 
     def handle_app_login_request(self,res):
@@ -471,7 +474,7 @@ class MTWorker(threading.Thread):
     #        update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
     #    else:
     #        update_refresh_time(res.fileno,UCLIENT_SESSION_LIFETIME)
-        log.info('user %s login,socket is %d' % (tcs.name,res.fileno))
+        self.statqueue.put('user %s login,socket is %d' % (tcs.name,res.fileno))
         return app_user_auth_success(res)
 
     def handle_allocate_request(self,res):
@@ -482,12 +485,12 @@ class MTWorker(threading.Thread):
             chk = check_jluuid(res.attrs[STUN_ATTRIBUTE_UUID][-1])
             if chk:
                 res.eattr = chk
-                log.error(','.join([LOG_ERROR_UUID,self.hosts[res.fileno],str(sys._getframe().f_lineno)]))
+                self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
                 return stun_error_response(res)
         else:
             #res.eattr= binascii.hexlify("Not Found UUID")
             res.eattr=STUN_ERROR_UNKNOWN_PACKET
-            log.error(','.join([LOG_ERROR_UUID,self.hosts[res.fileno],str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
     
         huid = res.attrs[STUN_ATTRIBUTE_UUID][-1]
@@ -505,13 +508,13 @@ class MTWorker(threading.Thread):
         self.devuuid[huid] = res.fileno
         tcs.uuid = huid
         #print "login devid is",tcs.uuid
-        log.info('device login uuid is %s,socket is %d' % (huid,res.fileno))
+        self.statqueue.put('device login uuid is %s,socket is %d' % (huid,res.fileno))
         return device_login_sucess(res)
 
     def handle_chkuser_request(self,res):
         f = check_user_in_database(res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
         if f != 0:
-            log.debug("User Exist %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
+            self.errqueue.put("User Exist %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
         else:
@@ -521,7 +524,7 @@ class MTWorker(threading.Thread):
         if self.app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],
                 res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]):
             # 用户名已经存了。
-            log.debug("User has Exist!i %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
+            self.errqueue.put("User has Exist!i %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
         return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
@@ -532,11 +535,11 @@ class MTWorker(threading.Thread):
             chk = check_jluuid(binascii.hexlify(res.attrs[STUN_ATTRIBUTE_UUID][-1]))
             if chk:
                 res.eattr = chk
-                log.error(','.join([LOG_ERROR_UUID,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
+                self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
                 return stun_error_response(res)
         else:
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
-            log.error(','.join([LOG_ERROR_UUID,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
     
         row = find_device_state(res.attrs[STUN_ATTRIBUTE_UUID][-1])
@@ -565,7 +568,7 @@ class MTWorker(threading.Thread):
                     self.responses[sock] = stun_connect_address(res.host,res)
                     self.epoll.modify(sock,select.EPOLLOUT | select.EPOLLET)
                 except IOError:
-                    log.error(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
+                    self.errqueue.put(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
             else:
                 res.eattr = STUN_ERROR_DEVOFFLINE
                 return  stun_error_response(res)
@@ -576,7 +579,7 @@ class MTWorker(threading.Thread):
             chk = check_jluuid(res.attrs[STUN_ATTRIBUTE_UUID][-1])
             if chk:
                 res.eattr = chk
-                log.error(','.join([LOG_ERROR_UUID,self.hosts[res.fileno],str(str(sys._getframe().f_lineno))]))
+                self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(str(sys._getframe().f_lineno))]))
                 return stun_error_response(res)
             self.bind_each_uuid((res.attrs[STUN_ATTRIBUTE_UUID][-1],res.fileno))
         elif res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
@@ -590,13 +593,13 @@ class MTWorker(threading.Thread):
             e = [ x for x in p if x]
             if len(e):
                 res.eattr = STUN_ERROR_UNKNOWN_PACKET
-                log.error(','.join([LOG_ERROR_UUID,self.hosts[res.fileno],str(sys._getframe().f_lineno)]))
+                self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
                 return stun_error_response(res)
             #multiprocessing_handle(bind_each_uuid,[(res.fileno,n) for n in mlist])
             [self.bind_each_uuid((n,res.fileno)) for n in mlist]
         else:
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
-            log.error(','.join([LOG_ERROR_UUID,self.hosts[res.fileno],str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
         return self.stun_bind_devices_ok(res)
     
@@ -604,7 +607,7 @@ class MTWorker(threading.Thread):
     def dealwith_sock_close_update_db(self,fileno):
         # socket 关闭，更新数据库
         if self.appsock.has_key(fileno): #更新相应的数据库在线状态
-            log.info('app sock close, %d' % fileno)
+            self.statqueue.put('app sock close, %d' % fileno)
             #print "appsock is",self.appsock
             self.app_user_logout(self.appsock[fileno].name)
     #        try:
@@ -612,7 +615,7 @@ class MTWorker(threading.Thread):
     #        except:
     #            pass
         elif self.devsock.has_key(fileno):
-            log.info('dev sock close, %d' % fileno)
+            self.statqueue.put('dev sock close, %d' % fileno)
             self.mirco_devices_logout(self.devsock[fileno].uuid)
     #        try:
     #            self.devsock.pop(fileno)
@@ -630,17 +633,17 @@ class MTWorker(threading.Thread):
         fileno = pair[0]
         dstsock = pair[1]
         self.responses[fileno] =  notify_peer(''.join(['%08x' % dstsock,STUN_OFFLINE]))
-        log.info('socket %d logout send info to socket %d' % (dstsock,fileno))
+        self.statqueue.put('socket %d logout send info to socket %d' % (dstsock,fileno))
         try:
             self.epoll.modify(fileno,select.EPOLLOUT | select.EPOLLET)
         except:
-            log.error(''.join([LOG_ERROR_PACKET,\
+            self.errqueue.put(''.join([LOG_ERROR_PACKET,\
                     'socket error %d' % fileno,str(sys._getframe().f_lineno)]))
     
     def clean_timeout_sock(self,fileno): # 清除超时的连接
         if self.timer.has_key(fileno):
             if self.timer[fileno] < time.time():
-                log.info("Client %d life time is end,close it" % fileno )
+                self.statqueue.put("Client %d life time is end,close it" % fileno )
                 dealwith_peer_hup(fileno)
     
     def mirco_devices_logout(self,devid):
@@ -653,7 +656,7 @@ class MTWorker(threading.Thread):
         try:
             res = conn.execute(ss)
         except IOError:
-            log.error(','.join([LOG_ERROR_DB,devid,str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_DB,devid,str(sys._getframe().f_lineno)]))
             return 0
     
     
@@ -688,16 +691,16 @@ class MTWorker(threading.Thread):
         try:
             res = conn.execute(ss)
         except :
-            log.error(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
     
     
     def dealwith_sock_close_update_binds(self,fileno):
         if self.appsock.has_key(fileno):
-            log.info('app logout info dev, %d' % fileno)
+            self.statqueue.put('app logout info dev, %d' % fileno)
             self.notify_uuid_app_logout(fileno)
             # APP 应该下线了
         elif self.devsock.has_key(fileno):
-            log.info('dev logout info app, %d' % fileno)
+            self.statqueue.put('dev logout info app, %d' % fileno)
             self.notify_app_uuid_logout(fileno)
             # 小机下线，通知APP
     
@@ -749,7 +752,7 @@ class MTWorker(threading.Thread):
             notifybuf = notify_peer(''.join([b,STUN_ONLINE]))
             #print 'info',notifybuf
             self.responses[dstsock] = notify_peer(''.join([b,STUN_ONLINE]))
-            #log.info('user %s bond uuid %s' % 
+            #self.statqueue.put('user %s bond uuid %s' % 
             self.epoll.modify(dstsock,select.EPOLLOUT | select.EPOLLET )
         else:
             self.appbinds[fileno][ustr]=0xFFFFFFFF
@@ -800,7 +803,7 @@ class MTWorker(threading.Thread):
             try:
                 dbcon.execute(ins)
             except:
-                log.error(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
+                self.errqueue.put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
                 return True
             return False
     
@@ -822,7 +825,7 @@ class MTWorker(threading.Thread):
         try:
             result = dbcon.execute(sss)
         except:
-            log.error(','.join([LOG_ERROR_DB,host,str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_DB,host,str(sys._getframe().f_lineno)]))
     
     
     def app_user_login(self,user,pwd):
@@ -837,7 +840,7 @@ class MTWorker(threading.Thread):
         try:
             result = dbcon.execute(s)
         except:
-            log.error(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
         return result.fetchall()
     
     
@@ -848,7 +851,7 @@ class MTWorker(threading.Thread):
         try:
             result = dbcon.execute(s)
         except:
-            log.error(','.join([LOG_ERROR_DB,uname,self.clients[fileno],str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_DB,uname,self.clients[fileno],str(sys._getframe().f_lineno)]))
         return result.fetchall()
     
     def find_device_state(self,uid):
@@ -863,7 +866,7 @@ class MTWorker(threading.Thread):
             result = dbcon.execute(s)
             return result.fetchall()
         except:
-            log.error(','.join([LOG_ERROR_DB,uuid,str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_DB,uuid,str(sys._getframe().f_lineno)]))
             return None
     
     
@@ -879,7 +882,7 @@ class MTWorker(threading.Thread):
             result = dbcon.execute(s)
             row = result.fetchall()
         except:
-            log.error(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
         ipadr = int(binascii.hexlify(socket.inet_aton(res.host[0])),16) & 0xFFFFFFFF
         ipprt = res.host[1] & 0xFFFF
         #print "host %d:%d" % (ipadr,ipprt)
@@ -893,7 +896,7 @@ class MTWorker(threading.Thread):
             try:
                 result = dbcon.execute(ins)
             except:
-                log.error(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
+                self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
             #print "insert new devices result fetchall"
         else:
             upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
@@ -901,7 +904,19 @@ class MTWorker(threading.Thread):
             try:
                 result = dbcon.execute(upd)
             except:
-                log.error(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
+                self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
+
+class WorkerThread(threading.Thread):
+    def __init__(self,queue,logger):
+        threading.Thread.__init__(self)
+        self.queue = queue 
+        self.log = logger
+
+    def run(self):
+        while True:
+            msg = self.queue.get()
+            self.log.log(msg)
+            time.sleep(0.01)
 
 
 class EpollServer():
@@ -922,11 +937,18 @@ class EpollServer():
         
 
     def start(self):
-        log.info("Start Server")
-        mtworker = MTWorker(self.srvsocket,self.epoll)
-        mtworker.daemon =True
-        mtworker.run()
-        mtworker.join()
+        errqueue = Queue()
+        statqueue = Queue()
+        errlog = ErrLog('epoll_mt_srv')
+        statlog = StatLog('epoll_mt_srv')
+        errworker = WorkerThread(errqueue,errlog,)
+        errworker.daemon = True
+        errworker.start()
+        statworker = WorkerThread(statqueue,statlog)
+        statworker.daemon = True
+        statworker.start()
+
+        MTWorker(self.srvsocket,self.epoll,errqueue,statqueue).run()
         #psize = multiprocessing.cpu_count()*2
         #pool = multiprocessing.Pool(psize)
         #res = pool.apply_async(MPrun,(self.srvsocket,self.epoll))
@@ -966,21 +988,6 @@ def make_argument_parser():
     parser.add_argument('-H',action='store',dest='srv_port',type=int,help='Set Services Port')
     parser.add_argument('--version',action='version',version=__version__)
     return parser
-
-__version__ = '0.1.0'
-options = make_argument_parser().parse_args()
-if options.loglevel:
-    DebugLevel = get_log_level(options.loglevel)
-else:
-    DebugLevel = logging.INFO
-
-port = options.srv_port if options.srv_port else 3478
-
-
-#store = ['timer','clients','requests','responses','appbinds','appsock','devsock','devuuid']
-store = ['clients','hosts','requests','responses','appbinds','appsock','devsock','devuuid']
-
-
 
 class QueryDB():
     def __init__(self):
@@ -1033,10 +1040,10 @@ class QueryDB():
                 Column('data',pgsql.BYTEA)
                 )
         return mirco_devices
-    
-    
-        
 
+__version__ = '0.1.0'
+options = make_argument_parser().parse_args()
+port = options.srv_port if options.srv_port else 3478
 
 dirs = ['log']
 dirclass = ComState()
@@ -1051,15 +1058,7 @@ for n in dirs:
 
 
 
-appname = 'JL_SRV'
-log = logging.getLogger(appname)
-log.setLevel(logging.INFO)
-formatter = logging.Formatter('%(name)-12s %(asctime)s %(levelname)-8s %(message)s','%a, %d %b %Y %H:%M:%S',)
-file_handler = handlers.RotatingFileHandler(os.path.join(dirclass.log,'%s.log' % appname),maxBytes=LOG_SIZE,backupCount=LOG_COUNT,encoding=None)
-file_handler.setFormatter(formatter)
-log.addHandler(file_handler)
-
-
+store = ['clients','hosts','requests','responses','appbinds','appsock','devsock','devuuid']
 if __name__ == '__main__':
     atable = QueryDB.get_account_table()
     engine = QueryDB().get_engine()

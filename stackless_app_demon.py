@@ -169,7 +169,6 @@ def stun_setLogin(addr,ulist,user,pwd):
     global rtime
     a = AsyncResult()
     while True:
-        stackless.schedule()
         try:
             data = sock.recv(SOCK_BUFSIZE)
         except:
@@ -353,7 +352,6 @@ if __name__ == '__main__':
            #glist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
            stackless.tasklet(stun_setLogin)(host,muuid[0],uname,uname)
            tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
-   #gevent.joinall(glist,timeout=60)
    stackless.run()
 
 

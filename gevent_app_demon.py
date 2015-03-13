@@ -1,6 +1,10 @@
 #!/opt/stackless-279/bin/python2
 #coding=utf-8
-import socket
+import gevent
+from gevent import monkey;monkey.patch_all()
+from gevent import socket
+from gevent.event import AsyncResult
+#import socket
 import binascii
 import logging
 import random
@@ -16,11 +20,7 @@ from epoll_global import *
 import logging
 from logging import handlers
 import signal
-import select
 import sys
-import gevent
-from gevent import monkey;monkey.patch_all()
-from gevent.event import AsyncResult
 
 reload(sys)
 sys.setdefaultencoding("utf-8")
@@ -148,10 +148,8 @@ def stun_setLogin(addr,ulist,user,pwd):
     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-    buf = stun_register_request(user,pwd)
-    sdata = binascii.a2b_hex(''.join(buf))
-    #sock.bind(('',0))
     mynum = 0 # sum of send packets
+    print 'app sock',sock.fileno()
     sock.settimeout(60)
     try:
         sock.connect(addr)
@@ -161,107 +159,110 @@ def stun_setLogin(addr,ulist,user,pwd):
     except socket.error:
         errlog.log(','.join(['sock %d' % sock.fileno(),'error']))
         return
+
+    buf = stun_register_request(user,pwd)
+    sdata = binascii.a2b_hex(''.join(buf))
     sock.send(sdata)
-    slog.log(','.join(['sock','%d'%sock.fileno(),'send']))
     fileno = sock.fileno()
-    mysock = 0
+    mysock = 0xFFFFFFFF
+    mynum = 0
     buf = ''
     global rtime
     a = AsyncResult()
+    refresh_buf = ''.join(stun_struct_refresh_request())
     while True:
-        try:
-            data = sock.recv(SOCK_BUFSIZE)
-        except:
-            break
+        data = sock.recv(SOCK_BUFSIZE)
         #rtime = 0
         a.set(0)
         if not data:
             break
+        myrecv = binascii.b2a_hex(data)
+        slog.log(','.join(['sock','%d'%sock.fileno(),'recv: %d' % (len(myrecv)/2)]))
+        if check_packet_vaild(myrecv): # 校验包头
+            errlog.log(','.join(['sock','%d'% fileno,'recv unkown packet']))
+            break
+ 
+        hattr = get_packet_head_class(myrecv[:STUN_HEADER_LENGTH*2])
+ 
+        rdict = parser_stun_package(myrecv[STUN_HEADER_LENGTH*2:-8]) # 去头去尾
+        if hattr.method == STUN_METHOD_DATA or hattr.method == STUN_METHOD_INFO:
+            pass
         else:
-            myrecv = binascii.b2a_hex(data)
-            slog.log(','.join(['sock','%d'%sock.fileno(),'recv: %d' % (len(myrecv)/2)]))
-            if check_packet_vaild(myrecv): # 校验包头
-                errlog.log(','.join(['sock','%d'% fileno,'recv unkown packet']))
+            if not stun_is_success_response_str(hattr.method):
+                print "error"
+                errlog.log(','.join(['sock','%d'% fileno,'recv server error',\
+                        'method',hattr.method]))
+                if rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
+                    print errDict.get(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1][:4])
                 break
-
-            hattr = get_packet_head_class(myrecv[:STUN_HEADER_LENGTH*2])
-
-            rdict = parser_stun_package(myrecv[STUN_HEADER_LENGTH*2:-8]) # 去头去尾
-            if hattr.method == STUN_METHOD_DATA or hattr.method == STUN_METHOD_INFO:
-                pass
+ 
+        hattr.method = stun_get_type(hattr.method)
+        if not cmp(hattr.method,STUN_METHOD_BINDING):
+            gevent.spawn(refresh_time,sock,a,binascii.unhexlify(refresh_buf),slog).join(timeout=0.2)
+            #stackless.tasklet(refresh_time)(sock,a,binascii.unhexlify(p),slog)
+            stat = rdict[STUN_ATTRIBUTE_STATE][-1]
+            mysock = int(stat[:8],16)
+            # 下面绑定一些UUID
+            if len(ulist) > 1:
+                buf = stun_bind_uuids(''.join(ulist))
             else:
-                if not stun_is_success_response_str(hattr.method):
-                    errlog.log(','.join(['sock','%d'% fileno,'recv server error',\
-                            'method',hattr.method]))
-                    if rdict.has_key(STUN_ATTRIBUTE_MESSAGE_ERROR_CODE):
-                        print errDict.get(rdict[STUN_ATTRIBUTE_MESSAGE_ERROR_CODE][-1][:4])
-                    break
-
-            hattr.method = stun_get_type(hattr.method)
-            if hattr.method  == STUN_METHOD_BINDING:
-                p = ''.join(stun_struct_refresh_request())
-                gevent.spawn(refresh_time,sock,a,binascii.unhexlify(p),slog).join()
-                stat = rdict[STUN_ATTRIBUTE_STATE][-1]
-                mysock = int(stat[:8],16)
-                # 下面绑定一些UUID
-                if len(ulist) > 1:
-                    buf = stun_bind_uuids(''.join(ulist))
-                else:
-                    buf = stun_bind_single_uuid(ulist[0])
-            elif hattr.method == STUN_METHOD_REGISTER:
-                buf = stun_login_request(user,pwd)
-            elif hattr.method  == STUN_METHOD_REFRESH:
-                continue
-            elif hattr.method == STUN_METHOD_CHANNEL_BIND:
-                # 绑定小机命令o
-                if rdict.has_key(STUN_ATTRIBUTE_RUUID):
-                    dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
-                    if dstsock != 0xFFFFFFFF:
-                        buf = stun_send_data_to_devid(mysock,dstsock,'03%06x' % mynum)
-                    else:
-                        continue
-
-                elif rdict.has_key(STUN_ATTRIBUTE_MRUUID):
-                    mlist = split_mruuid(rdict[STUN_ATTRIBUTE_MRUUID])
-                    for n in mlist:
-                        time.sleep(0.2)
-                        dstsock = int(n[-8:],16)
-                        if dstsock != 0xFFFFFFFF:
-                            send_forward_buf(sock,mysock,dstsock)
-                    continue
-
-            elif hattr.method == STUN_METHOD_DATA: # 小机回应
-                #print "recv device peer data",time.time()
-                dstsock = int(hattr.srcsock,16)
-                if hattr.sequence[:2] == '03':
-                    buf = stun_send_data_to_devid(mysock,dstsock,hattr.sequence)
-                elif hattr.sequence[:2] == '02':
-                    n = int(hattr.sequence[2:],16)
-                    if n == mynum: 
-                        mynum+=1
-                        buf = stun_send_data_to_devid(mysock,dstsock,'03%06x' % mynum)
-                    else:
-                        errlog.log('lost packet of %d' % mynum)
-            elif hattr.method == STUN_METHOD_INFO:
-                slog.log(','.join(['sock','%d'% fileno,'recv server info']))
-                if rdict.has_key(STUN_ATTRIBUTE_RUUID):
-                    dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
+                buf = stun_bind_single_uuid(ulist[0])
+        elif hattr.method == STUN_METHOD_REGISTER:
+            buf = stun_login_request(user,pwd)
+        elif hattr.method  == STUN_METHOD_REFRESH:
+            continue
+        elif hattr.method == STUN_METHOD_CHANNEL_BIND:
+            # 绑定小机命令o
+            if rdict.has_key(STUN_ATTRIBUTE_RUUID):
+                dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
+                if dstsock != 0xFFFFFFFF:
                     buf = stun_send_data_to_devid(mysock,dstsock,'03%06x' % mynum)
-            else:
-                print "Command error"
-            if buf:
-                try:
-                    nbyte = sock.send(binascii.unhexlify(''.join(buf)))
-                    buf = []
-                    slog.log(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
-                except:
-                    break
+                else:
+                    continue
+ 
+            elif rdict.has_key(STUN_ATTRIBUTE_MRUUID):
+                mlist = split_mruuid(rdict[STUN_ATTRIBUTE_MRUUID])
+                for n in mlist:
+                    time.sleep(0.2)
+                    dstsock = int(n[-8:],16)
+                    if dstsock != 0xFFFFFFFF:
+                        send_forward_buf(sock,mysock,dstsock)
+                continue
+ 
+        elif hattr.method == STUN_METHOD_DATA: # 小机回应
+            dstsock = int(hattr.srcsock,16)
+            if hattr.sequence[:2] == '03':
+                buf = stun_send_data_to_devid(mysock,dstsock,'02%s' % hattr.sequence[2:])
+            elif hattr.sequence[:2] == '02':
+                n = int(hattr.sequence[2:],16)
+                if n == mynum: 
+                    mynum+=1
+                    buf = stun_send_data_to_devid(mysock,dstsock,'03%06x' % mynum)
+                else:
+                    errlog.log('lost packet of %d' % mynum)
+        elif hattr.method == STUN_METHOD_INFO:
+            slog.log(','.join(['sock','%d'% fileno,'recv server info']))
+            if rdict.has_key(STUN_ATTRIBUTE_RUUID):
+                dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
+                buf = stun_send_data_to_devid(mysock,dstsock,'03%06x' % mynum)
+        else:
+            print "Command error"
+        if not buf:
+            buf = refresh_buf
+        try:
+            print 'send buf',buf
+            nbyte = sock.send(binascii.unhexlify(''.join(buf)))
+            buf = []
+            slog.log(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
+        except:
+            break
+
+
     slog.log(','.join(['sock','%d'% fileno,'already closed']))
     sock.close()
 
 def send_forward_buf(sock,srcsock,dstsock):
     buf = stun_send_data_to_devid(srcsock,dstsock)
-    print "send forward buf"
     nbyte = sock.send(binascii.unhexlify(''.join(buf)))
     slog.log(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
 
@@ -301,6 +302,8 @@ slog = StatLog(appname)
 errlog = ErrLog(appname)
 tlist = []
 
+class nsp():
+    pass
 
 if __name__ == '__main__':
    args = make_argument_parser().parse_args()
@@ -348,9 +351,12 @@ if __name__ == '__main__':
        cuts = [bind]
        muuid = [tbuf[i:j] for i,j in zip([0]+cuts,cuts+[None])]
        if len(muuid) == 2:
+           #stackless.tasklet(stun_setLogin)(host,muuid[0],uname,uname)
+           #mulpool.apply_async(stun_setLogin,args=(host,muuid[0],uname,uname))
            glist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
            tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
-   gevent.joinall(glist,timeout=60)
+   gevent.joinall(glist)
+   #stackless.run()
 
 
    

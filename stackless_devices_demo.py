@@ -89,7 +89,6 @@ def device_login(host,uuid):
     global rtime
     a = AsyncResult()
     while True:
-        stackless.schedule()
         try:
             data = sock.recv(SOCK_BUFSIZE)
         except:
@@ -132,7 +131,7 @@ def device_login(host,uuid):
                 dstsock = int(hattr.srcsock,16)
                 if mysock != 0xFFFFFFFF and dstsock != 0xFFFFFFFF:
                     if hattr.sequence[:2] == '03':
-                        buf = send_data_to_app(mysock,dstsock,'02%06x' % hattr.sequence[2:])
+                        buf = send_data_to_app(mysock,dstsock,'02%s' % hattr.sequence[2:])
                     #下面是我方主动发数据
                     elif hattr.sequence[:2] == '02':
                         rnum = int(hattr.sequence[2:],16)

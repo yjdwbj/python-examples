@@ -2,7 +2,6 @@
 import binascii
 import struct
 import uuid
-import gevent
 import time
 import logging
 from logging import handlers
@@ -348,12 +347,12 @@ def refresh_time(sock,a,buf,log):
     while True:
         if time.time() > n:
             a.set(1)
-        gevent.sleep(1)
+        time.sleep(1)
         if a.get():
             n = time.time() + 50
             nbyte = sock.send(buf)
             #log.info(','.join(['sock %d' % sock.fileno(),'send %d' % nbyte]))
-            gevent.sleep(1)
+            time.sleep(1)
             a.set(0)
 
 
