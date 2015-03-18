@@ -21,6 +21,7 @@ import logging
 from logging import handlers
 import signal
 import sys
+import threading
 
 reload(sys)
 sys.setdefaultencoding("utf-8")
@@ -149,7 +150,6 @@ def stun_setLogin(addr,ulist,user,pwd):
     sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
     mynum = 0 # sum of send packets
-    print 'app sock',sock.fileno()
     sock.settimeout(60)
     try:
         sock.connect(addr)
@@ -247,15 +247,14 @@ def stun_setLogin(addr,ulist,user,pwd):
                 buf = stun_send_data_to_devid(mysock,dstsock,'03%06x' % mynum)
         else:
             print "Command error"
-        if not buf:
-            buf = refresh_buf
-        try:
-            print 'send buf',buf
-            nbyte = sock.send(binascii.unhexlify(''.join(buf)))
-            buf = []
-            slog.log(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
-        except:
-            break
+        if buf:
+            try:
+                nbyte = sock.send(binascii.unhexlify(''.join(buf)))
+                buf = []
+                slog.log(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
+            except:
+                break
+        gevent.sleep(0.02)
 
 
     slog.log(','.join(['sock','%d'% fileno,'already closed']))
@@ -342,6 +341,7 @@ if __name__ == '__main__':
    tt = 0 
    glist = []
    for i in xrange(args.u_count):
+       gevent.sleep(0.2)
        z = str(uuid.uuid4()).replace('-','')
        n = random.randint(0,15)
        zi = []
@@ -353,9 +353,9 @@ if __name__ == '__main__':
        if len(muuid) == 2:
            #stackless.tasklet(stun_setLogin)(host,muuid[0],uname,uname)
            #mulpool.apply_async(stun_setLogin,args=(host,muuid[0],uname,uname))
-           glist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
+           gevent.spawn(stun_setLogin,host,muuid[0],uname,uname).join()
            tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
-   gevent.joinall(glist)
+   #gevent.joinall(glist)
    #stackless.run()
 
 

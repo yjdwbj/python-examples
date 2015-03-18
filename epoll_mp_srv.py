@@ -7,6 +7,7 @@
 #
 #
 ####################################################################
+import stackless
 import socket
 import time
 import struct
@@ -32,10 +33,7 @@ sys.path.pop(0)
 import psycopg2
 import hashlib
 import select
-import logging
-from logging import handlers
 from epoll_global import *
-from multiprocessing import Queue,Process
 
 
 LOG_ERROR_UUID='UUID Format Error'
@@ -76,7 +74,7 @@ def handle_app_connect_peer_request(res):
     chk = check_jluuid(binascii.hexlify(res.attrs[STUN_ATTRIBUTE_UUID][-1]))
     if chk:
         res.eattr = chk
-        self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
+        self.errqueue.send(','.join([LOG_ERROR_UUID,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
         return stun_error_response(res)
 
     app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],res.host)
@@ -106,7 +104,7 @@ def handle_app_connect_peer_request(res):
                 self.responses[sock] = stun_connect_address(res.host,res)
                 self.epoll.modify(sock,select.EPOLLOUT | select.EPOLLET)
             except IOError:
-                self.errqueue.put(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
+                self.errqueue.send(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
         else:
             res.eattr = STUN_ERROR_DEVOFFLINE
             return  stun_error_response(res)
@@ -134,7 +132,7 @@ def stun_ask_mirco_devices_timeout(res):
         try:
             self.epoll.modify(res.fileno,select.EPOLLOUT | select.EPOLLET)
         except:
-            self.errqueue.put(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
 
 
 def stun_connect_address(host,res):
@@ -242,7 +240,7 @@ class MPConsumer(multiprocessing.Process):
         try:
             self.epoll.unregister(fileno)
         except:
-            self.statqueue.put('already delete socket %d' % fileno)
+            self.statqueue.send('already delete socket %d' % fileno)
         if self.clients.has_key(fileno):
             self.clients.get(fileno).close()
             self.clients.pop(fileno)
@@ -259,10 +257,10 @@ class MPConsumer(multiprocessing.Process):
                         try:
                             nsock,addr = self.srvsocket.accept()
                         except:
-                            self.errqueue.put(','.join([LOG_ERROR_FILENO,str(sys._getframe().f_lineno)]))
+                            self.errqueue.send(','.join([LOG_ERROR_FILENO,str(sys._getframe().f_lineno)]))
                             continue
                         nf = nsock.fileno()
-                        self.statqueue.put(','.join(["new client %s:%d" % addr,"new fileno %d" % nf, 'srv fileno %d'%fileno]))
+                        self.statqueue.send(','.join(["new client %s:%d" % addr,"new fileno %d" % nf, 'srv fileno %d'%fileno]))
                         nsock.setblocking(0)
                         self.clients[nf] = nsock
                         try:
@@ -276,36 +274,36 @@ class MPConsumer(multiprocessing.Process):
                     elif event & select.EPOLLIN: # 读取socket 的数据
                         try:
                             if not self.clients.has_key(fileno):
-                                self.statqueue.put(','.join(['sock %d' % fileno,'not in clients']))
+                                self.statqueue.send(','.join(['sock %d' % fileno,'not in clients']))
                                 self.delete_fileno(fileno)
                                 continue
                             recvbuf = self.clients[fileno].recv(SOCK_BUFSIZE)
                             #print 'recv ',binascii.hexlify(recvbuf)
-                            #self.statqueue.put(','.join(['sock %d' % fileno,'recv: %d' % len(recvbuf)]))
+                            #self.statqueue.send(','.join(['sock %d' % fileno,'recv: %d' % len(recvbuf)]))
                             if not recvbuf:
-                                self.statqueue.put(','.join(['sock %d' % fileno,'recv no buffer']))
+                                self.statqueue.send(','.join(['sock %d' % fileno,'recv no buffer']))
                                 self.dealwith_peer_hup(fileno)
                                 continue
     
                             hbuf = binascii.hexlify(recvbuf)
                             if cmp(hbuf[:4],HEAD_MAGIC): # 检查JL关键字
-                                self.errqueue.put(','.join([LOG_ERROR_PACKET,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
+                                self.errqueue.send(','.join([LOG_ERROR_PACKET,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
                                 self.delete_fileno(fileno)
                                 continue
                             self.process_handle_first((hbuf,fileno))
                         except IOError:
-                            self.errqueue.put("sock has closed %d,host %s" %(fileno,self.hosts[fileno][0]))
+                            self.errqueue.send("sock has closed %d,host %s" %(fileno,self.hosts[fileno][0]))
                             self.sock_recv_fail(fileno)
-                            self.errqueue.put("sock has closed %d" % fileno)
+                            self.errqueue.send("sock has closed %d" % fileno)
                     elif event & select.EPOLLOUT:
                         try:
                             if not self.responses.has_key(fileno): #连接命令的时候返回是NULL
-                                self.errqueue.put(','.join([LOG_ERROR_PACKET,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
+                                self.errqueue.send(','.join([LOG_ERROR_PACKET,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
                                 #self.epoll.modify(fileno,select.EPOLLWRBAND)
                                 continue
                             nbyte =  self.clients[fileno].send(\
                                     binascii.unhexlify(''.join(self.responses[fileno])))
-                            #self.statqueue.put(','.join(['sock %d' % fileno,'send: %d'%nbyte]))
+                            #self.statqueue.send(','.join(['sock %d' % fileno,'send: %d'%nbyte]))
                             try:
                                 self.responses.pop(fileno)
                             except:
@@ -313,13 +311,13 @@ class MPConsumer(multiprocessing.Process):
                                 continue
                             self.epoll.modify(fileno,select.EPOLLIN | select.EPOLLET)
                         except IOError:
-                            self.errqueue.put("sock has closed %d,host %s" %(fileno,self.hosts[fileno][0]))
+                            self.errqueue.send("sock has closed %d,host %s" %(fileno,self.hosts[fileno][0]))
                             self.sock_send_fail(fileno)
                     elif event & select.EPOLLHUP:
-                        self.statqueue.put("sock hup %d" % fileno)
+                        self.statqueue.send("sock hup %d" % fileno)
                         self.dealwith_peer_hup(fileno)
                     elif event & select.EPOLLERR:
-                        self.statqueue.put("sock error %d" % fileno)
+                        self.statqueue.send("sock error %d" % fileno)
                         self.dealwith_peer_hup(fileno)
     
         finally:
@@ -328,9 +326,9 @@ class MPConsumer(multiprocessing.Process):
             self.srvsocket.close()
 
     def handle_refresh_request(self,res):
-        return
+        print "recv refresh time"
     #update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
-    #return refresh_sucess(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1])
+        return refresh_sucess(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1])
 
     def process_handle_first(self,item):
         hbuf = item[0]
@@ -366,7 +364,7 @@ class MPConsumer(multiprocessing.Process):
 
     
         if check_packet_crc32(hbuf):
-            self.errqueue.put(','.join([LOG_ERROR_PACKET,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_PACKET,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
             self.delete_fileno(fileno)
             return 
 
@@ -374,7 +372,7 @@ class MPConsumer(multiprocessing.Process):
         rbuf = self.handle_client_request(pair,res)
         res = rbuf[1]
         if res.eattr == STUN_ERROR_UNKNOWN_PACKET:
-            self.errqueue.put(','.join([LOG_ERROR_IILAGE_CLIENT,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_IILAGE_CLIENT,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
             #print 'method', res.method
             self.delete_fileno(fileno)
             return 
@@ -431,6 +429,7 @@ class MPConsumer(multiprocessing.Process):
         if not (res.method == STUN_METHOD_ALLOCATE or\
                 res.method == STUN_METHOD_BINDING or\
                 res.method == STUN_METHOD_CHANNEL_BIND or\
+                res.method == STUN_METHOD_REFRESH or\
                 res.method == STUN_METHOD_REGISTER):
                     # 非法请求
             self.delete_fileno(fileno)
@@ -450,7 +449,7 @@ class MPConsumer(multiprocessing.Process):
     
         if res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and int(res.attrs.get(STUN_ATTRIBUTE_MESSAGE_INTEGRITY)[1],16) != 32:
             res.eattr = STUN_ERROR_AUTH
-            self.errqueue.put(','.join([LOG_ERROR_AUTH,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_AUTH,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
             return  (stun_error_response(res),res)
     
         if self.func.has_key(res.method):
@@ -458,7 +457,7 @@ class MPConsumer(multiprocessing.Process):
         else:
             res.eattr = STUN_ERROR_UNKNOWN_METHOD
             print res.method
-            self.errqueue.put(','.join([LOG_ERROR_METHOD,res.method,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_METHOD,res.method,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
             return  (stun_error_response(res),res)
 
     def handle_app_login_request(self,res):
@@ -479,7 +478,7 @@ class MPConsumer(multiprocessing.Process):
     #        update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
     #    else:
     #        update_refresh_time(res.fileno,UCLIENT_SESSION_LIFETIME)
-        self.statqueue.put('user %s login,socket is %d' % (tcs.name,res.fileno))
+        self.statqueue.send('user %s login,socket is %d' % (tcs.name,res.fileno))
         return app_user_auth_success(res)
 
     def handle_allocate_request(self,res):
@@ -490,12 +489,12 @@ class MPConsumer(multiprocessing.Process):
             chk = check_jluuid(res.attrs[STUN_ATTRIBUTE_UUID][-1])
             if chk:
                 res.eattr = chk
-                self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno],str(sys._getframe().f_lineno)]))
+                self.errqueue.send(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
                 return stun_error_response(res)
         else:
             #res.eattr= binascii.hexlify("Not Found UUID")
             res.eattr=STUN_ERROR_UNKNOWN_PACKET
-            self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno],str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
     
         huid = res.attrs[STUN_ATTRIBUTE_UUID][-1]
@@ -513,13 +512,13 @@ class MPConsumer(multiprocessing.Process):
         self.devuuid[huid] = res.fileno
         tcs.uuid = huid
         #print "login devid is",tcs.uuid
-        self.statqueue.put('device login uuid is %s,socket is %d' % (huid,res.fileno))
+        self.statqueue.send('device login uuid is %s,socket is %d' % (huid,res.fileno))
         return device_login_sucess(res)
 
     def handle_chkuser_request(self,res):
         f = check_user_in_database(res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
         if f != 0:
-            self.errqueue.put("User Exist %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
+            self.errqueue.send("User Exist %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
         else:
@@ -529,7 +528,7 @@ class MPConsumer(multiprocessing.Process):
         if self.app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],
                 res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]):
             # 用户名已经存了。
-            self.errqueue.put("User has Exist!i %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
+            self.errqueue.send("User has Exist!i %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
         return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
@@ -540,11 +539,11 @@ class MPConsumer(multiprocessing.Process):
             chk = check_jluuid(binascii.hexlify(res.attrs[STUN_ATTRIBUTE_UUID][-1]))
             if chk:
                 res.eattr = chk
-                self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
+                self.errqueue.send(','.join([LOG_ERROR_UUID,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
                 return stun_error_response(res)
         else:
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
-            self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_UUID,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
     
         row = find_device_state(res.attrs[STUN_ATTRIBUTE_UUID][-1])
@@ -573,7 +572,7 @@ class MPConsumer(multiprocessing.Process):
                     self.responses[sock] = stun_connect_address(res.host,res)
                     self.epoll.modify(sock,select.EPOLLOUT | select.EPOLLET)
                 except IOError:
-                    self.errqueue.put(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
+                    self.errqueue.send(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
             else:
                 res.eattr = STUN_ERROR_DEVOFFLINE
                 return  stun_error_response(res)
@@ -584,7 +583,7 @@ class MPConsumer(multiprocessing.Process):
             chk = check_jluuid(res.attrs[STUN_ATTRIBUTE_UUID][-1])
             if chk:
                 res.eattr = chk
-                self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(str(sys._getframe().f_lineno))]))
+                self.errqueue.send(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(str(sys._getframe().f_lineno))]))
                 return stun_error_response(res)
             self.bind_each_uuid((res.attrs[STUN_ATTRIBUTE_UUID][-1],res.fileno))
         elif res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
@@ -598,13 +597,13 @@ class MPConsumer(multiprocessing.Process):
             e = [ x for x in p if x]
             if len(e):
                 res.eattr = STUN_ERROR_UNKNOWN_PACKET
-                self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
+                self.errqueue.send(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
                 return stun_error_response(res)
             #multiprocessing_handle(bind_each_uuid,[(res.fileno,n) for n in mlist])
             [self.bind_each_uuid((n,res.fileno)) for n in mlist]
         else:
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
-            self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
         return self.stun_bind_devices_ok(res)
     
@@ -612,7 +611,7 @@ class MPConsumer(multiprocessing.Process):
     def dealwith_sock_close_update_db(self,fileno):
         # socket 关闭，更新数据库
         if self.appsock.has_key(fileno): #更新相应的数据库在线状态
-            self.statqueue.put('app sock close, %d' % fileno)
+            self.statqueue.send('app sock close, %d' % fileno)
             #print "appsock is",self.appsock
             self.app_user_logout(self.appsock[fileno].name)
     #        try:
@@ -620,7 +619,7 @@ class MPConsumer(multiprocessing.Process):
     #        except:
     #            pass
         elif self.devsock.has_key(fileno):
-            self.statqueue.put('dev sock close, %d' % fileno)
+            self.statqueue.send('dev sock close, %d' % fileno)
             self.mirco_devices_logout(self.devsock[fileno].uuid)
     #        try:
     #            self.devsock.pop(fileno)
@@ -638,17 +637,17 @@ class MPConsumer(multiprocessing.Process):
         fileno = pair[0]
         dstsock = pair[1]
         self.responses[fileno] =  notify_peer(''.join(['%08x' % dstsock,STUN_OFFLINE]))
-        self.statqueue.put('socket %d logout send info to socket %d' % (dstsock,fileno))
+        self.statqueue.send('socket %d logout send info to socket %d' % (dstsock,fileno))
         try:
             self.epoll.modify(fileno,select.EPOLLOUT | select.EPOLLET)
         except:
-            self.errqueue.put(''.join([LOG_ERROR_PACKET,\
+            self.errqueue.send(''.join([LOG_ERROR_PACKET,\
                     'socket error %d' % fileno,str(sys._getframe().f_lineno)]))
     
     def clean_timeout_sock(self,fileno): # 清除超时的连接
         if self.timer.has_key(fileno):
             if self.timer[fileno] < time.time():
-                self.statqueue.put("Client %d life time is end,close it" % fileno )
+                self.statqueue.send("Client %d life time is end,close it" % fileno )
                 dealwith_peer_hup(fileno)
     
     def mirco_devices_logout(self,devid):
@@ -661,7 +660,7 @@ class MPConsumer(multiprocessing.Process):
         try:
             res = conn.execute(ss)
         except IOError:
-            self.errqueue.put(','.join([LOG_ERROR_DB,devid,str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_DB,devid,str(sys._getframe().f_lineno)]))
             return 0
     
     
@@ -696,16 +695,16 @@ class MPConsumer(multiprocessing.Process):
         try:
             res = conn.execute(ss)
         except :
-            self.errqueue.put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
     
     
     def dealwith_sock_close_update_binds(self,fileno):
         if self.appsock.has_key(fileno):
-            self.statqueue.put('app logout info dev, %d' % fileno)
+            self.statqueue.send('app logout info dev, %d' % fileno)
             self.notify_uuid_app_logout(fileno)
             # APP 应该下线了
         elif self.devsock.has_key(fileno):
-            self.statqueue.put('dev logout info app, %d' % fileno)
+            self.statqueue.send('dev logout info app, %d' % fileno)
             self.notify_app_uuid_logout(fileno)
             # 小机下线，通知APP
     
@@ -757,7 +756,7 @@ class MPConsumer(multiprocessing.Process):
             notifybuf = notify_peer(''.join([b,STUN_ONLINE]))
             #print 'info',notifybuf
             self.responses[dstsock] = notify_peer(''.join([b,STUN_ONLINE]))
-            #self.statqueue.put('user %s bond uuid %s' % 
+            #self.statqueue.send('user %s bond uuid %s' % 
             self.epoll.modify(dstsock,select.EPOLLOUT | select.EPOLLET )
         else:
             self.appbinds[fileno][ustr]=0xFFFFFFFF
@@ -808,7 +807,7 @@ class MPConsumer(multiprocessing.Process):
             try:
                 dbcon.execute(ins)
             except:
-                self.errqueue.put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
+                self.errqueue.send(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
                 return True
             return False
     
@@ -830,7 +829,7 @@ class MPConsumer(multiprocessing.Process):
         try:
             result = dbcon.execute(sss)
         except:
-            self.errqueue.put(','.join([LOG_ERROR_DB,host,str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_DB,host,str(sys._getframe().f_lineno)]))
     
     
     def app_user_login(self,user,pwd):
@@ -845,7 +844,7 @@ class MPConsumer(multiprocessing.Process):
         try:
             result = dbcon.execute(s)
         except:
-            self.errqueue.put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
         return result.fetchall()
     
     
@@ -856,7 +855,7 @@ class MPConsumer(multiprocessing.Process):
         try:
             result = dbcon.execute(s)
         except:
-            self.errqueue.put(','.join([LOG_ERROR_DB,uname,self.clients[fileno],str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_DB,uname,self.clients[fileno],str(sys._getframe().f_lineno)]))
         return result.fetchall()
     
     def find_device_state(self,uid):
@@ -871,7 +870,7 @@ class MPConsumer(multiprocessing.Process):
             result = dbcon.execute(s)
             return result.fetchall()
         except:
-            self.errqueue.put(','.join([LOG_ERROR_DB,uuid,str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_DB,uuid,str(sys._getframe().f_lineno)]))
             return None
     
     
@@ -887,7 +886,7 @@ class MPConsumer(multiprocessing.Process):
             result = dbcon.execute(s)
             row = result.fetchall()
         except:
-            self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
+            self.errqueue.send(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
         ipadr = int(binascii.hexlify(socket.inet_aton(res.host[0])),16) & 0xFFFFFFFF
         ipprt = res.host[1] & 0xFFFF
         #print "host %d:%d" % (ipadr,ipprt)
@@ -901,7 +900,7 @@ class MPConsumer(multiprocessing.Process):
             try:
                 result = dbcon.execute(ins)
             except:
-                self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
+                self.errqueue.send(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
             #print "insert new devices result fetchall"
         else:
             upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
@@ -909,7 +908,7 @@ class MPConsumer(multiprocessing.Process):
             try:
                 result = dbcon.execute(upd)
             except:
-                self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
+                self.errqueue.send(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
 
 class WorkerProcess(Process):
     def __init__(self,queue,logger):
@@ -921,6 +920,12 @@ class WorkerProcess(Process):
         while True:
             msg = self.queue.get()
             self.log.log(msg)
+            time.sleep(0.01)
+
+def StackLessLog(channel,log):
+    while True:
+        msg = channel.receive()
+        log.log(msg)
 
 
 class EpollServer():
@@ -938,21 +943,27 @@ class EpollServer():
         self.srvsocket.setblocking(0)
         self.epoll = select.epoll()
         self.epoll.register(self.srvsocket.fileno(),select.EPOLLIN | select.EPOLLET)
+
+
         
 
     def start(self):
-        errqueue = Queue()
-        statqueue = Queue()
-        errworker = WorkerProcess(errqueue,ErrLog('epoll_mp_srv'))
-        errworker.run()
-        statworker = WorkerProcess(statqueue,StatLog('epoll_mp_srv'))
-        statworker.run()
-
-        log.info("Start Server")
+        #errqueue = Queue()
+        #statqueue = Queue()
+        errlog = ErrLog('epoll_mp_srv')
+        statlog = StatLog('epoll_mp_srv')
+        errqueue = stackless.channel()
+        statqueue = stackless.channel()
+        stackless.tasklet(StackLessLog)(errqueue,errlog)
+        stackless.tasklet(StackLessLog)(statqueue,statlog)
+        stackless.run()
         handle_proc = MPConsumer(self.srvsocket,self.epoll,errqueue,statqueue)
-        handle_proc.daemon =True
+        handle_proc.setDaemon(True)
         handle_proc.run()
-        handle_proc.join()
+        #errworker = WorkerProcess(errqueue,errlog)
+        #errworker.run()
+        #statworker = WorkerProcess(statqueue,statlog)
+        #statworker.run()
         #psize = multiprocessing.cpu_count()*2
         #pool = multiprocessing.Pool(psize)
         #res = pool.apply_async(MPrun,(self.srvsocket,self.epoll))

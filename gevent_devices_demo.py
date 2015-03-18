@@ -9,7 +9,7 @@ import binascii
 import random
 import struct
 import string
-#import threading
+import threading
 import time
 import hmac
 import hashlib
@@ -211,7 +211,10 @@ if __name__ == '__main__':
             break
 
     #slog.log(','.join(['Start UUID',uid]))
-    gp = [gevent.spawn(device_login,host,uid) for uid in uulist]
-    gevent.joinall(gp)
+    #gp = [gevent.spawn(device_login,host,uid) for uid in uulist]
+    gp = [threading.Thread(target=device_login,args=(host,uid)) for uid in uulist]
+    for item in gp:
+        item.run()
+        item.join()
 
 

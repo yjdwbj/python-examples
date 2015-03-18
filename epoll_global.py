@@ -117,7 +117,7 @@ STUN_ONLINE='00000001'
 STUN_OFFLINE='00000000'
 
 LOG_SIZE=67108864
-LOG_COUNT=60
+LOG_COUNT=128
 
 STUN_HEAD_CUTS=[4,8,12,20,28,32,40] # 固定长度的包头
 STUN_HEAD_KEY=['magic','version','length','srcsock','dstsock','method','sequence'] # 包头的格式的名称
@@ -343,17 +343,15 @@ def gen_random_jluuid(vendor):
 
 
 def refresh_time(sock,a,buf,log):
-    n = time.time() + 50
+    n = time.time() + 30
     while True:
-        if time.time() > n:
-            a.set(1)
-        time.sleep(1)
-        if a.get():
-            n = time.time() + 50
-            nbyte = sock.send(buf)
-            #log.info(','.join(['sock %d' % sock.fileno(),'send %d' % nbyte]))
+        try:
+            num = a.get_nowait()
+            n = time.time()+30
+        except:
             time.sleep(1)
-            a.set(0)
+            if time.time() > n:
+                sock.send(buf)
 
 
 class ErrLog(logging.Logger):

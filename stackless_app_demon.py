@@ -153,6 +153,7 @@ def stun_setLogin(addr,ulist,user,pwd):
     #sock.bind(('',0))
     mynum = 0 # sum of send packets
     sock.settimeout(60)
+    print "sock",sock
     try:
         sock.connect(addr)
     except socket.timeout:
@@ -339,6 +340,7 @@ if __name__ == '__main__':
    tbuf = ulist
    tt = 0 
    glist = []
+   stackless.run()
    for i in xrange(args.u_count):
        z = str(uuid.uuid4()).replace('-','')
        n = random.randint(0,15)
@@ -349,10 +351,10 @@ if __name__ == '__main__':
        cuts = [bind]
        muuid = [tbuf[i:j] for i,j in zip([0]+cuts,cuts+[None])]
        if len(muuid) == 2:
+           print muuid[0]
            #glist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
            stackless.tasklet(stun_setLogin)(host,muuid[0],uname,uname)
            tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
-   stackless.run()
 
 
    

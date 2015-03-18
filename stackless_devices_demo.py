@@ -213,6 +213,7 @@ if __name__ == '__main__':
     uuidfile = args.uuidfile
     n =0
 
+    stackless.run()
     spalist = []
     uulist = []
     while True:
@@ -224,5 +225,4 @@ if __name__ == '__main__':
     #slog.log(','.join(['Start UUID',uid]))
     #[gevent.spawn(device_login,host,uid).join() for uid in uulist]
     [stackless.tasklet(device_login)(host,uid) for uid in uulist]
-    stackless.run()
 
