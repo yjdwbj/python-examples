@@ -1,5 +1,6 @@
-#!/opt/stackless-279/bin/python2 
+#!/opt/pypy-2.5.0-src/pypy-c
 #-*- coding: utf-8 -*-
+#!/opt/stackless-279/bin/python2 
 #####################################################################
 # lcy
 #                                                                   #
@@ -24,11 +25,6 @@ from sqlalchemy.exc import *
 from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,MetaData,DateTime,Boolean,SmallInteger,VARCHAR
 from sqlalchemy import sql,and_
 from sqlalchemy.dialects import postgresql as pgsql
-sys.path.insert(0,'/opt/stackless-279/lib/python2.7/site-packages/psycopg2')
-import _psycopg
-sys.modules['psycopg2._psycopg'] = _psycopg
-sys.path.pop(0)
-import psycopg2
 import hashlib
 import select
 from epoll_global import *
@@ -80,7 +76,7 @@ def stun_ask_mirco_devices_timeout(res):
         self.responses[res.fileno] = stun_error_response(res)
         try:
             self.epoll.modify(res.fileno,select.EPOLLOUT | select.EPOLLET)
-        except:
+        except TypeError:
             self.errqueue.put(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
 
 
@@ -162,7 +158,13 @@ class CheckSesionThread(threading.Thread):
             time.sleep(1)
             [clean_timeout_sock(x)  for x in  self.timer.keys()]
 
+class LDError(Exception): # Lcy Define Error
 
+    def __init__(self,value):
+        self.msg = value
+
+    def __str__(self):
+        print self.msg
 
 class MTWorker(threading.Thread):
 #class MTWorker():
@@ -188,20 +190,39 @@ class MTWorker(threading.Thread):
         #认证后的处理
         self.postfunc={STUN_METHOD_CHANNEL_BIND:self.handle_app_bind_device,
                 STUN_METHOD_REFRESH:self.handle_refresh_request,
-                STUN_METHOD_MODIFY:self.handle_modify_bind_item,
-                STUN_METHOD_DELETE:self.handle_delete_bind_item,
+                STUN_METHOD_MODIFY:self.handle_modify_bind_item, #修改绑定的信息
+                STUN_METHOD_DELETE:self.handle_delete_bind_item, #删除现有的绑定
                 STUN_METHOD_PULL:self.handle_app_pull
                 }
 
     def handle_modify_bind_item(self,res):
-        pass
-
+        try:
+            btable = QueryDB.get_account_bind_table(res.attrs[STUN_ATTRIBUTE_USERNAME][-1])[0]
+            stmt = btable.update().values(uuid=res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]).\
+                    where(btable.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID][-1])
+            self.dbcon.execute(stmt)
+            return False
+        except KeyError:
+            return True
 
     def handle_delete_bind_item(self,res):
-        pass
+        try:
+            btable = QueryDB.get_account_bind_table(res.attrs[STUN_ATTRIBUTE_USERNAME][-1])[0]
+            self.dbcon.execute(btable.delete().where(btable.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID][-1]))
+            return False
+        except KeyError:
+            return True
 
     def handle_app_pull(self,res):
-        pass
+        try:
+            btable = QueryDB.get_account_bind_table(res.attrs[STUN_ATTRIBUTE_USERNAME][-1])[0]
+            fall = self.dbcon.execute(sql.select[btable]).fetchall()
+            flist = [''.join(list(n)[:-1]) for n in fall]
+            res.plist = flist
+            print flist
+            return False
+        except KeyError:
+            return True
 
     def delete_fileno(self,fileno):
         try:
@@ -263,27 +284,31 @@ class MTWorker(threading.Thread):
                                 self.errqueue.put(','.join([LOG_ERROR_PACKET,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
                                 self.delete_fileno(fileno)
                                 continue
-                            self.process_handle_first((hbuf,fileno))
+                            try:
+                                self.process_handle_first((hbuf,fileno))
+                            except LDError as e:
+                                self.errqueue.put(','.join(["sock %d %s,host %s,buf %s" %(fileno,e.msg,self.hosts[fileno][0],hbuf),\
+                                        str(sys._getframe().f_lineno)]))
+                                
                         except IOError:
                             self.errqueue.put(','.join(["sock has closed %d,host %s" %(fileno,self.hosts[fileno][0]),\
                                     str(sys._getframe().f_lineno)]))
                             self.sock_recv_fail(fileno)
                     elif event & select.EPOLLOUT:
+                        sendbuf = self.responses[fileno] #连接命令的时候返回是NULL
+                        self.responses.pop(fileno)
                         try:
-                            sendbuf = self.responses[fileno] #连接命令的时候返回是NULL
-                            self.responses.pop(fileno)
-                            try:
-                                nbyte =  self.clients[fileno].send(\
-                                        binascii.unhexlify(''.join(sendbuf)))
-                                self.epoll.modify(fileno,select.EPOLLIN | select.EPOLLET)
-                            except TypeError:
-                                print sendbuf," len ",len(sendbuf)
-                            except IOError:
-                                self.errqueue.put(','.join(["sock has closed %d,host %s" %(fileno,self.hosts[fileno][0]),\
-                                        str(sys._getframe().f_lineno)]))
-                                self.sock_send_fail(fileno)
-                        except KeyError:
-                                self.errqueue.put(','.join([LOG_ERROR_PACKET,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
+                            nbyte =  self.clients[fileno].send(\
+                                    binascii.unhexlify(''.join(sendbuf)))
+                            self.epoll.modify(fileno,select.EPOLLIN | select.EPOLLET)
+                        except TypeError:
+                            print sendbuf," len ",len(sendbuf)
+                        except IOError:
+                            self.errqueue.put(','.join(["sock has closed %d,host %s" %(fileno,self.hosts[fileno][0]),\
+                                    str(sys._getframe().f_lineno)]))
+                            self.sock_send_fail(fileno,sendbuf)
+                        #except KeyError:
+                        #        self.errqueue.put(','.join(['responses not value of key','sock %d' % fileno,str(sys._getframe().f_lineno)]))
                                 #self.epoll.modify(fileno,select.EPOLLWRBAND)
                     elif event & select.EPOLLHUP:
                         self.errqueue.put("sock hup %d" % fileno)
@@ -302,6 +327,11 @@ class MTWorker(threading.Thread):
 
     def process_handle_first(self,item):
         hbuf = item[0]
+        if len(hbuf) % 2:
+            raise LDError("buf len is odd")
+            return 
+    
+            
         fileno = item[1]
         mlist = []
         if (len(hbuf)/2)  > int(hbuf[8:12],16):
@@ -314,8 +344,6 @@ class MTWorker(threading.Thread):
         else:
             self.handle_requests_buf(item)
 
-    def handle_upload_file(self,res):
-        pass
 
     
                     
@@ -336,7 +364,7 @@ class MTWorker(threading.Thread):
 
     
         if check_packet_crc32(hbuf):
-            self.errqueue.put(','.join([LOG_ERROR_PACKET,'sock %d' % fileno,str(sys._getframe().f_lineno)]))
+            self.errqueue.put(','.join([LOG_ERROR_PACKET,'sock %d,buf %s' % (fileno,hbuf),str(sys._getframe().f_lineno)]))
             self.delete_fileno(fileno)
             return 
 
@@ -520,9 +548,9 @@ class MTWorker(threading.Thread):
 
         try:
             self.dbcon.execute(ins)
-        except SQLError:
+        except exc.SQLError:
             self.errqueue.put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
-
+    
 
 
     def handle_app_bind_device(self,res):
@@ -655,21 +683,21 @@ class MTWorker(threading.Thread):
             self.notify_app_uuid_logout(fileno)
             # 小机下线，通知APP
     
-    def sock_send_fail(self,fileno):
+    def sock_send_fail(self,fileno,hbuf):
         # 要检查一下是不是转发失败了，要通知发送方
-        phead = get_packet_head_class(self.responses[fileno])
-        if phead.method == STUN_METHOD_SEND or phead.method == STUN_METHOD_DATA:
-            phead.eattr = STUN_ERROR_DEVOFFLINE
-            srcsock = int(phead.srcsock,16)
-            tbuf = stun_error_response(phead)
-            tbuf[3]=phead.srcsock
-            tbuf[4]=phead.dstsock
-            tbuf.pop()
-            tbuf[2] = '%04x' % (int(tbuf[2],16)-4)
-            stun_add_fingerprint(tbuf)
-            self.responses[srcsock] = ''.join(tbuf)
-            self.epoll.modify(srcsock,select.EPOLLOUT | select.EPOLLET)
-    
+#        phead = get_packet_head_class(hbuf)
+#        if phead.method == STUN_METHOD_SEND or phead.method == STUN_METHOD_DATA:
+#            phead.eattr = STUN_ERROR_DEVOFFLINE
+#            srcsock = int(phead.srcsock,16)
+#            tbuf = stun_error_response(phead)
+#            tbuf[3]=phead.srcsock
+#            tbuf[4]=phead.dstsock
+#            tbuf.pop()
+#            tbuf[2] = '%04x' % (int(tbuf[2],16)-4)
+#            stun_add_fingerprint(tbuf)
+#            self.responses[srcsock] = ''.join(tbuf)
+#            self.epoll.modify(srcsock,select.EPOLLOUT | select.EPOLLET)
+#    
         # sock 关闭时产生的异常处理
         self.dealwith_peer_hup(fileno)
     
@@ -762,15 +790,12 @@ class MTWorker(threading.Thread):
         status_tables = QueryDB.get_account_status_table()
         ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
         ipprt = host[1] & 0xFFFF
-        s = sql.select([status_tables]).where(status_tables.c.uname == uname)
-        result = self.dbcon.execute(s)
-        row = result.fetchall()
-        #print "row is",row
-        sss = 0
-        if row:
+        sss = ''
+        try:
             sss = status_tables.update().values(last_login_time = datetime.now(),chost=[ipadr,ipprt]).where(status_tables.c.uname == user)
-        else:
+        except exc.DataError:
             sss = status_tables.insert().values(uname=uname,is_login=True,chost=[ipadr,ipprt])
+
         try:
             result = self.dbcon.execute(sss)
         except:
@@ -819,13 +844,6 @@ class MTWorker(threading.Thread):
         mirco_devices = QueryDB.get_devices_table(res.vendor)
         if not mirco_devices.exists(engine):
             mirco_devices.create(engine)
-        s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == res.tuid)
-        row = ''
-        try:
-            result = self.dbcon.execute(s)
-            row = result.fetchall()
-        except:
-            self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
         ipadr = int(binascii.hexlify(socket.inet_aton(res.host[0])),16) & 0xFFFFFFFF
         ipprt = res.host[1] & 0xFFFF
         #print "host %d:%d" % (ipadr,ipprt)
@@ -834,8 +852,15 @@ class MTWorker(threading.Thread):
             data = res.attrs[STUN_ATTRIBUTE_DATA][-1]
         except:
             pass
-    
-        if not row: # 找不到这个UUID 就插入新的
+
+        try: 
+            upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
+                    last_login_time=datetime.now()).where(mirco_devices.c.devid == res.tuid)
+            try:
+                result = self.dbcon.execute(upd)
+            except:
+                self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
+        except exc.DataError: 
             ins = mirco_devices.insert().values(devid=res.tuid,is_active=True,
                     is_online=True,chost=[ipadr,ipprt],data=data,last_login_time=datetime.now())
             try:
@@ -843,13 +868,6 @@ class MTWorker(threading.Thread):
             except:
                 self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
             #print "insert new devices result fetchall"
-        else:
-            upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
-                    last_login_time=datetime.now()).where(mirco_devices.c.devid == res.tuid)
-            try:
-                result = self.dbcon.execute(upd)
-            except:
-                self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
 
 class WorkerThread(threading.Thread):
     def __init__(self,queue,logger):
@@ -938,7 +956,7 @@ def make_argument_parser():
 
 class QueryDB():
     def __init__(self):
-        self.engine = create_engine('postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/nath',pool_size=1024,max_overflow=20)
+        self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=1024,max_overflow=20)
 
     def check_table(self,table):
         return table.exists(self.engine)

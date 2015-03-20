@@ -118,7 +118,7 @@ errDict={STUN_ERROR_UNKNOWN_ATTR:'Unkown attribute',
 STUN_ONLINE='00000001'
 STUN_OFFLINE='00000000'
 
-LOG_SIZE=67108864
+LOG_SIZE=536870912
 LOG_COUNT=128
 
 STUN_HEAD_CUTS=[4,8,12,20,28,32,40] # 固定长度的包头
@@ -351,18 +351,6 @@ def stun_struct_refresh_request():
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     stun_add_fingerprint(buf)
     return buf
-
-
-def refresh_time(sock,a,buf,log):
-    n = time.time() + 30
-    while True:
-        try:
-            num = a.get_nowait()
-            n = time.time()+30
-        except:
-            time.sleep(1)
-            if time.time() > n:
-                sock.send(buf)
 
 
 class ErrLog(logging.Logger):

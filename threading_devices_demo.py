@@ -1,5 +1,6 @@
-#!/opt/stackless-279/bin/python
+#!/opt/pypy-2.5.0-src/pypy-c
 #coding=utf-8
+#!/opt/stackless-279/bin/python
 import socket
 import binascii
 import random
@@ -53,7 +54,7 @@ def send_data_to_app(srcsock,dstsock,sequence):
     buf[3] = '%08x' % srcsock
     buf[4] = '%08x' % dstsock
     buf[-1] = sequence
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('testdatatestdata'))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('mnbvcxzz'))
     stun_add_fingerprint(buf)
     return buf
 
@@ -72,7 +73,7 @@ def refresh_time(sock,timer_queue,errlog,refresh_buf):
                    try:
                        sock.send(refresh_buf)
                    except IOError:
-                      errlog.log(','.join(['sock','%d'% fileno,' closed,occur error,send packets %d ' % mynum]))
+                      errlog.log(','.join(['sock','%d'% sock.fileno(),' closed,occur error,send packets %d ' % mynum]))
 
 def DevicesFunc(host,uuid):
     devclass = Devices()
@@ -125,12 +126,12 @@ def DevicesFunc(host,uuid):
                 #下面是我方主动发数据
                 elif hattr.sequence[:2] == '02':
                     rnum = int(hattr.sequence[2:],16)
-                    slog.log("sock %d,recv my confirm num %d" % (fileno,rnum))
                     if mynum > 0xFFFFFF:
                         mynum = 0
                         errlog.log('socket %d,packet counter is over 0xFFFFFF once' % fileno)
                     elif mynum == rnum:
                         mynum +=1
+                        slog.log("sock %d,recv my confirm num %d is ok,data %s" % (fileno,rnum,hbuf))
                     else:
                         errlog.log('sock %d,losing packet,recv  number  %d, my counter %d' % (fileno,rnum,mynum))
                     buf = send_data_to_app(mysock,dstsock,'03%06x' % mynum)

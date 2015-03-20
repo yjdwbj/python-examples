@@ -1,5 +1,6 @@
-#!/opt/stackless-279/bin/python
+#!/opt/pypy-2.5.0-src/pypy-c
 #coding=utf-8
+#!/opt/stackless-279/bin/python
 import socket
 import binascii
 import logging
@@ -72,7 +73,7 @@ def stun_send_data_to_devid(srcsock,dstsock,sequence):
     buf[3] = '%08x' % srcsock
     buf[4] = '%08x' % dstsock
     buf[-1] = sequence
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('testdatatestdata'))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('abcdefgh'))
     stun_add_fingerprint(buf)
     return buf
 
@@ -131,7 +132,7 @@ def refresh_time(sock,timer_queue,errlog,refresh_buf):
                 try:
                     sock.send(refresh_buf)
                 except IOError:
-                    errlog.log(','.join(['sock','%d'% fileno,' closed,occur error,send packets %d ' % mynum]))
+                    errlog.log(','.join(['sock','%d'% sock.fileno(),' closed,occur error,send packets %d ' % mynum]))
 
 def APPfunc(addr,ulist,user,pwd):
 #        threading.Thread.__init__(appclass)
@@ -186,13 +187,12 @@ def APPfunc(addr,ulist,user,pwd):
                 buf = stun_send_data_to_devid(mysock,dstsock,'02%s' % hattr.sequence[2:])
             elif hattr.sequence[:2] == '02':
                 n = int(hattr.sequence[2:],16)
-                slog.log("sock %d,recv confirm num %d ok" % (fileno,n))
                 if n > 0xFFFFFF:
                     mynum = 0
                     errlog.log('packet counter over 0xFFFFFF once')
                 elif n == mynum: 
                     mynum+=1
-                    #errlog.log("packet number is %d" % mynum)
+                    slog.log("sock %d,recv confirm num %d ok,data %s" % (fileno,n,myrecv))
                 else:
                     errlog.log('sock %d,lost packet,recv num %d,my counter %d' %(fileno,n,mynum))
                 buf = stun_send_data_to_devid(mysock,dstsock,'03%06x' % mynum)
