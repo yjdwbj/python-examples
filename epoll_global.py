@@ -14,6 +14,9 @@ STUN_METHOD_SEND='0006'  # APP 给小机发数据
 STUN_METHOD_DATA='0007'  # 小机给APP发数据
 STUN_METHOD_INFO='0008'  # 服务器发出的通知命令
 STUN_METHOD_CHANNEL_BIND='0009' # APP 绑定小机的命令
+STUN_METHOD_MODIFY='0010' #修改绑定信息
+STUN_METHOD_DELETE='0011' #删除绑定项
+STUN_METHOD_PULL='0012'  # 从服务器上拉去数据
 
 STUN_METHOD_CONNECT='000a'
 STUN_METHOD_CONNECTION_BIND='000b'
@@ -22,8 +25,6 @@ STUN_METHOD_CONNECTION_ATTEMPT='000c'
 STUN_METHOD_CHECK_USER='000e'
 STUN_METHOD_REGISTER='000f' # App 注册用户命令
 
-STUN_METHOD_UPLOAD='0010'
-STUN_METHOD_DOWNLOAD='0011'
 
 # RFC 6062 #
 STUN_ATTRIBUTE_MAPPED_ADDRESS='0001'
@@ -81,6 +82,7 @@ STUN_UUID_VENDOR='20sI'
 STUN_UVC='16s4sI' # uuireturn check_packet_crc32(buf)
 STUN_MAGIC_COOKIE=0x2112A442
 SOCK_BUFSIZE=1024
+SOCK_TIMEOUT=7200
 UUID_SIZE=struct.calcsize(STUN_UVC)
 TUUID_SIZE=16
 REFRESH_TIME=50
@@ -340,6 +342,15 @@ def split_mruuid(b):
 def gen_random_jluuid(vendor):
     n = ''.join([str(uuid.uuid4()).replace('-',''),vendor])
     return ''.join([n,get_jluuid_crc32(n)])
+
+
+def stun_struct_refresh_request():
+    buf = []
+    stun_init_command_str(STUN_METHOD_REFRESH,buf)
+    filed = "%08x" % UCLIENT_SESSION_LIFETIME
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
+    stun_add_fingerprint(buf)
+    return buf
 
 
 def refresh_time(sock,a,buf,log):

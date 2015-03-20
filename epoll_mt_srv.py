@@ -170,16 +170,37 @@ class MTWorker(threading.Thread):
         self.srvsocket = srvsocket
         self.errqueue = errqueue
         self.statqueue = statqueue
+        self.db_engine = QueryDB().get_engine()
+        self.dbcon = self.db_engine.connect()
         self.epoll = epoll 
         [setattr(self,x,{}) for x in store]
 
-        self.func= {STUN_METHOD_REFRESH:self.handle_refresh_request,
+        self.func= {
               STUN_METHOD_ALLOCATE:self.handle_allocate_request, # 小机登录方法
+              STUN_METHOD_REFRESH:self.handle_refresh_request, # 小机登录方法
               STUN_METHOD_CHECK_USER:self.handle_chkuser_request,
               STUN_METHOD_REGISTER:self.handle_register_request,
               STUN_METHOD_BINDING:self.handle_app_login_request,  # app端登录方法
               STUN_METHOD_CHANNEL_BIND:self.handle_app_bind_device  # APP 绑定小机的命令
               }
+
+        #认证后的处理
+        self.postfunc={STUN_METHOD_CHANNEL_BIND:self.handle_app_bind_device,
+                STUN_METHOD_REFRESH:self.handle_refresh_request,
+                STUN_METHOD_MODIFY:self.handle_modify_bind_item,
+                STUN_METHOD_DELETE:self.handle_delete_bind_item,
+                STUN_METHOD_PULL:self.handle_app_pull
+                }
+
+    def handle_modify_bind_item(self,res):
+        pass
+
+
+    def handle_delete_bind_item(self,res):
+        pass
+
+    def handle_app_pull(self,res):
+        pass
 
     def delete_fileno(self,fileno):
         try:
@@ -291,6 +312,10 @@ class MTWorker(threading.Thread):
             [self.handle_requests_buf((n,fileno)) for n in mplist]
         else:
             self.handle_requests_buf(item)
+
+    def handle_upload_file(self,res):
+        pass
+
     
                     
     def handle_requests_buf(self,pair): # pair[0] == hbuf, pair[1] == fileno
@@ -477,7 +502,10 @@ class MTWorker(threading.Thread):
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
         return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
-
+    def handle_add_bind_to_user(self,res):
+        atable = QueryDB.get_account_bind_table(res.attrs[USERNAME])
+        if not atable.exists(self.engine):
+            self.dbcon.execute(atable)
 
     def handle_app_bind_device(self,res):
         #绑定小机的命的命令包
@@ -487,6 +515,7 @@ class MTWorker(threading.Thread):
                 res.eattr = chk
                 self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(str(sys._getframe().f_lineno))]))
                 return stun_error_response(res)
+
             self.bind_each_uuid((res.attrs[STUN_ATTRIBUTE_UUID][-1],res.fileno))
         elif res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
             mlist =  split_muuid(res.attrs[STUN_ATTRIBUTE_MUUID][-1])
@@ -556,11 +585,10 @@ class MTWorker(threading.Thread):
         vendor = devid[32:40]
         #print "update status for tuid",binascii.hexlify(suid[0])
         mtable = QueryDB.get_devices_table(vendor)
-        conn = QueryDB().get_dbconn()
         #ss = mtable.update().values(is_online=False).where(mtable.c.devid == binascii.hexlify(suid[0]))
         ss = mtable.update().values(is_online=False).where(mtable.c.devid == devid[:32])
         try:
-            res = conn.execute(ss)
+            res = self.dbcon.execute(ss)
         except IOError:
             self.errqueue.put(','.join([LOG_ERROR_DB,devid,str(sys._getframe().f_lineno)]))
             return 0
@@ -592,10 +620,9 @@ class MTWorker(threading.Thread):
     
     def app_user_logout(self,uname):
         atable = QueryDB.get_account_status_table()
-        conn = QueryDB().get_dbconn()
         ss = atable.update().values(is_login=False).where(atable.c.uname == uname)
         try:
-            res = conn.execute(ss)
+            res = self.dbcon.execute(ss)
         except :
             self.errqueue.put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
     
@@ -694,11 +721,10 @@ class MTWorker(threading.Thread):
 
     def app_user_register(self,user,pwd):
         account = QueryDB.get_account_table()
-        dbcon = QueryDB().get_dbconn()
         #print "register new account %s,%s" % (user,pwd)
         uname = binascii.unhexlify(user)
         sss = sql.select([account]).where(account.c.uname == uname)
-        res = dbcon.execute(sss)
+        res = self.dbcon.execute(sss)
         if len(res.fetchall()):
             return True
         else:
@@ -707,7 +733,7 @@ class MTWorker(threading.Thread):
             obj.update(pwd)
             ins = account.insert().values(uname=uname,pwd=obj.digest(),is_active=True,reg_time=datetime.now())
             try:
-                dbcon.execute(ins)
+                self.dbcon.execute(ins)
             except:
                 self.errqueue.put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
                 return True
@@ -719,8 +745,7 @@ class MTWorker(threading.Thread):
         ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
         ipprt = host[1] & 0xFFFF
         s = sql.select([status_tables]).where(status_tables.c.uname == uname)
-        dbcon = QueryDB().get_dbconn()
-        result = dbcon.execute(s)
+        result = self.dbcon.execute(s)
         row = result.fetchall()
         #print "row is",row
         sss = 0
@@ -729,7 +754,7 @@ class MTWorker(threading.Thread):
         else:
             sss = status_tables.insert().values(uname=uname,is_login=True,chost=[ipadr,ipprt])
         try:
-            result = dbcon.execute(sss)
+            result = self.dbcon.execute(sss)
         except:
             self.errqueue.put(','.join([LOG_ERROR_DB,host,str(sys._getframe().f_lineno)]))
     
@@ -737,14 +762,13 @@ class MTWorker(threading.Thread):
     def app_user_login(self,user,pwd):
         uname = binascii.unhexlify(user)
         account = QueryDB.get_account_table()
-        dbcon = QueryDB().get_dbconn()
         obj = hashlib.sha256()
         obj.update(uname)
         obj.update(pwd)
         s = sql.select([account]).where(and_(account.c.uname == uname,account.c.pwd == obj.digest(),
             account.c.is_active == True))
         try:
-            result = dbcon.execute(s)
+            result = self.dbcon.execute(s)
         except:
             self.errqueue.put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
         return result.fetchall()
@@ -752,10 +776,9 @@ class MTWorker(threading.Thread):
     
     def check_user_in_database(self,uname):
         account = QueryDB.get_account_table()
-        dbcon = QueryDB().get_dbconn()
         s = sql.select([account.c.uname]).where(account.c.uname == uname)
         try:
-            result = dbcon.execute(s)
+            result = self.dbcon.execute(s)
         except:
             self.errqueue.put(','.join([LOG_ERROR_DB,uname,self.clients[fileno],str(sys._getframe().f_lineno)]))
         return result.fetchall()
@@ -763,13 +786,10 @@ class MTWorker(threading.Thread):
     def find_device_state(self,uid):
         vendor = uid[32:40]
         #print "find uuid is",uid,"vendor is",vendor
-        dbcon = QueryDB().get_dbconn()
         mirco_devices = QueryDB.get_devices_table(vendor)
-        if not mirco_devices.exists(engine):
-            return None
-            s = sql.select([mirco_devices]).where(mirco_devices.c.devid == uid[:32] )
+        s = sql.select([mirco_devices]).where(mirco_devices.c.devid == uid[:32] )
         try:
-            result = dbcon.execute(s)
+            result = self.dbcon.execute(s)
             return result.fetchall()
         except:
             self.errqueue.put(','.join([LOG_ERROR_DB,uuid,str(sys._getframe().f_lineno)]))
@@ -778,14 +798,13 @@ class MTWorker(threading.Thread):
     
     def update_newdevice(self,res):
         '''添加新的小机到数据库'''
-        dbcon = QueryDB().get_dbconn()
         mirco_devices = QueryDB.get_devices_table(res.vendor)
         if not mirco_devices.exists(engine):
             mirco_devices.create(engine)
         s = sql.select([mirco_devices.c.devid]).where(mirco_devices.c.devid == res.tuid)
         row = ''
         try:
-            result = dbcon.execute(s)
+            result = self.dbcon.execute(s)
             row = result.fetchall()
         except:
             self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
@@ -802,7 +821,7 @@ class MTWorker(threading.Thread):
             ins = mirco_devices.insert().values(devid=res.tuid,is_active=True,
                     is_online=True,chost=[ipadr,ipprt],data=data,last_login_time=datetime.now())
             try:
-                result = dbcon.execute(ins)
+                result = self.dbcon.execute(ins)
             except:
                 self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
             #print "insert new devices result fetchall"
@@ -810,7 +829,7 @@ class MTWorker(threading.Thread):
             upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
                     last_login_time=datetime.now()).where(mirco_devices.c.devid == res.tuid)
             try:
-                result = dbcon.execute(upd)
+                result = self.dbcon.execute(upd)
             except:
                 self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
 
@@ -824,7 +843,7 @@ class WorkerThread(threading.Thread):
         while True:
             msg = self.queue.get()
             self.log.log(msg)
-            time.sleep(0.01)
+            time.sleep(0.1)
 
 
 class EpollServer():
@@ -833,11 +852,12 @@ class EpollServer():
         self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
         self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
-        self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
+        #self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
         self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_DEBUG,0)
-        self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,2)
-        self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,30)
-        self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPIDLE,60)
+        #self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,2)
+        #self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,30)
+        #self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPIDLE,60)
+        self.srvsocket.settimeout(SOCK_TIMEOUT)
         self.srvsocket.bind(('',port))
         self.srvsocket.listen(1024)
         self.srvsocket.setblocking(0)
@@ -913,6 +933,16 @@ class QueryDB():
 
     def create_table(self,sql_txt):
         self.engine.connect().execute(sql_txt)
+
+    @staticmethod
+    def get_account_bind_table(name):
+        metadata = MetaData()
+        table = Table(name,metadata,
+                Column('uuid',pgsql.VARCHAR(24),nullable=False,primary_key=True),
+                Column('pwd',pgsql.BYTEA),
+                Column('reg_time',pgsql.TIME,nullable=False)
+                )
+        return table
 
     @staticmethod
     def get_account_status_table():
