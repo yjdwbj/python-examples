@@ -64,6 +64,7 @@ def stun_bind_single_uuid(jluid):
     #jluid = '19357888AA07418584391D0ADB61E7902653716613920FBF'
     #jluid = 'e68cd4167aea4f85a7242031252be15874657374a860a02f'
     stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,jluid.lower())
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,jluid.lower())
     stun_add_fingerprint(buf)
     return buf
 
@@ -89,13 +90,6 @@ def stun_connect_peer_with_uuid(uuid,uname,pwd):
     stun_add_fingerprint(buf)
     return buf
 
-def stun_contract_allocate_request(buf):
-    stun_init_command_str(STUN_METHOD_BINDING,buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify("lcy"))
-    filed = "%08x" % UCLIENT_SESSION_LIFETIME
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
-    stun_add_fingerprint(buf)
-
 
 def stun_struct_refresh_request():
     buf = []
@@ -104,6 +98,14 @@ def stun_struct_refresh_request():
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
     stun_add_fingerprint(buf)
     return buf
+
+def stun_pull_user_binds(uname):
+    buf = []
+    stun_init_command_str(STUN_METHOD_PULL,buf)
+    #stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(uname))
+    stun_add_fingerprint(buf)
+    return buf
+    
 
 
 
@@ -177,7 +179,7 @@ def APPfunc(addr,ulist,user,pwd):
             errlog.log(myrecv)
             continue
 
-        hattr = get_packet_head_class(myrecv[:STUN_HEADER_LENGTH*2])
+        hattr = get_packet_head_class(myrecv[:STUN_HEADER_LENGTH])
  
         if stun_get_type(hattr.method) == STUN_METHOD_DATA: # 小机回应
             dstsock = int(hattr.srcsock,16)
@@ -202,21 +204,24 @@ def APPfunc(addr,ulist,user,pwd):
 
 
         if not stun_is_success_response_str(hattr.method):
-            errlog.log(','.join(['sock','%d'% fileno,'recv server error',\
-                    'method',hattr.method]))
-            continue
+            if cmp(hattr.method[-2:],STUN_METHOD_REGISTER[-2:]):
+                errlog.log(','.join(['sock','%d'% fileno,'recv server error',\
+                        'method',hattr.method]))
+                continue
         hattr.method = stun_get_type(hattr.method)
-        rdict = parser_stun_package(myrecv[STUN_HEADER_LENGTH*2:-8]) # 去头去尾
+        rdict = parser_stun_package(myrecv[STUN_HEADER_LENGTH:-8]) # 去头去尾
+        print "hattr",hattr.__dict__,"rdict",rdict
         if not cmp(hattr.method,STUN_METHOD_BINDING):
             p = threading.Thread(target=refresh_time,args=(sock,timer_queue,errlog,refresh_buf))
             p.start()
             stat = rdict[STUN_ATTRIBUTE_STATE][-1]
             mysock = int(stat[:8],16)
+            buf = stun_pull_user_binds(user)
             # 下面绑定一些UUID
-            if len(ulist) > 1:
-                buf = stun_bind_uuids(''.join(ulist))
-            else:
-                buf = stun_bind_single_uuid(ulist[0])
+#            if len(ulist) > 1:
+#                buf = stun_bind_uuids(''.join(ulist))
+#            else:
+#                buf = stun_bind_single_uuid(ulist[0])
         elif hattr.method == STUN_METHOD_REGISTER:
             buf = stun_login_request(user,pwd)
         elif hattr.method  == STUN_METHOD_REFRESH:
@@ -261,6 +266,7 @@ def socket_write(sock,buf,errlog):
         try:
             nbyte = sock.send(binascii.unhexlify(''.join(buf)))
             #slog.log(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
+            print "sock %d,send buf %s" % (sock.fileno(),buf)
         except IOError:
             errlog.log(','.join(['sock','%d'% sock.fileno(),'closed']))
             return True
@@ -349,18 +355,20 @@ if __name__ == '__main__':
    tt = 0 
    glist = []
    for i in xrange(args.u_count):
-       z = str(uuid.uuid4()).replace('-','')
-       n = random.randint(0,15)
+       #uname  = str(uuid.uuid4()).replace('-','')
+       #n = random.randint(0,15)
        zi = []
-       for y in xrange(n):
-           zi.append(chr(random.randint(97,122)))
-       uname = ''.join([z,''.join(zi)])
+       #for y in xrange(n):
+       #    zi.append(chr(random.randint(97,122)))
+       #uname = ''.join([z,''.join(zi)])
        cuts = [bind]
        muuid = [tbuf[i:j] for i,j in zip([0]+cuts,cuts+[None])]
        if len(muuid) == 2:
            #stackless.tasklet(stun_setLogin)(host,muuid[0],uname,uname)
            #mulpool.apply_async(stun_setLogin,args=(host,muuid[0],uname,uname))
            #glist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
+           uname = muuid[0][0]
+           print uname
            pt = threading.Thread(target=APPfunc,args=(host,muuid[0],uname,uname))
            glist.append(pt)
            pt.start()

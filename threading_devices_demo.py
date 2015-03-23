@@ -113,7 +113,7 @@ def DevicesFunc(host,uuid):
         if not data:
             continue
         hbuf = binascii.hexlify(data)
-        hattr = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH*2])
+        hattr = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH])
         if  stun_get_type(hattr.method) == STUN_METHOD_SEND:
             time.sleep(1)
             dstsock = int(hattr.srcsock,16)
@@ -149,10 +149,13 @@ def DevicesFunc(host,uuid):
             continue
 
 
-        rdict = parser_stun_package(hbuf[STUN_HEADER_LENGTH*2:-8])
+        rdict = parser_stun_package(hbuf[STUN_HEADER_LENGTH:-8])
         if not rdict:
             slog.log(','.join(['sock','%d' % fileno,'server packet is wrong,rdict is empty']))
             break # 出错了
+
+        print hattr.__dict__
+        print rdict
 
         if not stun_is_success_response_str(hattr.method):
                 slog.log(','.join(['sock','%d' % fileno,'server error responses',\
@@ -186,6 +189,7 @@ def write_sock(sock,buf,errlog):
     if buf:
         try:
             nbyte = sock.send(binascii.unhexlify(''.join(buf)))
+            print "sock %d,buf %s" % (sock.fileno(),buf)
             return False
         except IOError:
             errlog.log('socket %d close,' % sock.fileno())

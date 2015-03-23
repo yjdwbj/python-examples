@@ -6,6 +6,8 @@ import time
 import logging
 from logging import handlers
 from multiprocessing import Pool,Pipe
+import multiprocessing as mp
+from select import epoll,EPOLLET,EPOLLIN,EPOLLOUT,EPOLLHUP,EPOLLERR
 
 STUN_METHOD_BINDING='0001'   # APP登录命令
 STUN_METHOD_ALLOCATE='0003'   #小机登录命令
@@ -93,7 +95,7 @@ HEX2B=8
 FINDDEV_TIMEOUT=10
 HEAD_MAGIC=binascii.hexlify('JL')
 STUN_HEADER_FMT='!2sHHIIHI'
-STUN_HEADER_LENGTH=struct.calcsize(STUN_HEADER_FMT)
+STUN_HEADER_LENGTH=struct.calcsize(STUN_HEADER_FMT)*2
 
 STUN_ERROR_UNKNOWN_ATTR='%08x' % 0x401
 STUN_ERROR_UNKNOWN_HEAD='%08x' % 0x402
@@ -135,7 +137,7 @@ def get_crc32(s):
 
 def stun_is_success_response_str(mth):
     n = int(mth,16) & 0xFFFF
-    return ((n & 0x0110) == 0x0100)
+    return ((n & 0x1100) == 0x1000)
 
 def get_packet_head_list(buf):
     return [buf[i:j] for i,j in zip([0]+STUN_HEAD_CUTS ,STUN_HEAD_CUTS+[None])]
@@ -152,19 +154,21 @@ def get_packet_head_class(buf): # 把包头解析成可以识的类属性
 
 def stun_make_success_response(method):
     #print "success response %04x" % ((stun_make_type(method) & 0xFEEF) | 0x0100)
-    return '%04x' % ((stun_make_type(method) & 0xFEEF) | 0x0100)
+    return '%04x' % ((stun_make_type(method) & 0xFEFF) | 0x1000)
 
 def stun_make_error_response(method):
-    return '%04x' % ((stun_make_type(method) & 0xFEEF) | 0x0110)
+    return '%04x' % ((stun_make_type(method) & 0xFEFF) | 0x1100)
 
 def stun_make_type(method):
-    t  = int(method,16) & 0x0FFF
-    t = (( t & 0x000F) | ((t  & 0x0070) << 1) | ((t & 0x0380) << 2) | ((t & 0x0C00) << 2))
+    t  = int(method,16) & 0xFFFF
+    #t = (( t & 0x000F) | ((t  & 0x0070) << 1) | ((t & 0x0380) << 2) | ((t & 0x0C00) << 2))
+    t = ( t & 0x00FF) | ((t  & 0x0070) << 1) | ((t & 0x0380) << 2)
     return t
 
 def stun_get_type(method):
-    tt = int(method,16) & 0x0FFF
-    t = (tt & 0x000F)| ((tt & 0x00E0) >> 1)|((tt & 0x0E00)>>2)|((tt & 0x3000)>>2)
+    tt = int(method,16) & 0xFFFF
+    #t = (tt & 0x000F)| ((tt & 0x00E0) >> 1)|((tt & 0x0E00)>>2)|((tt & 0x3000)>>2)
+    t = (tt & 0x00FF)| ((tt & 0x00E0) >> 1)|((tt & 0x0E00)>>2)
     return '%04x' % t
 
 def stun_attr_append_str(buf,attr,add_value):
@@ -193,7 +197,7 @@ def stun_add_fingerprint(buf):
     buf[-1] = crcstr.replace('-','')
 
 def multiprocessing_handle(func,arglist):
-    ps = multiprocessing.cpu_count()*2
+    ps = mp.cpu_count()*2
     pl = Pool(ps)
     pl.map(func,arglist)
     pl.close()
@@ -202,7 +206,7 @@ def multiprocessing_handle(func,arglist):
 def stun_init_command_str(msg_type,buf):
     buf.append(binascii.hexlify('JL')) # 魔数字
     buf.append("%04x" % 1) # 版本号
-    buf.append("%04x" % 0) # 长度
+    buf.append("%04x" % 20) # 长度
     buf.append("%08x" % 0) # SRC
     buf.append("%08x" % 0) # DST
     buf.append(msg_type) # CMD
@@ -225,7 +229,7 @@ def stun_error_response(res):
     stun_init_command_str(stun_make_error_response(res.method),buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,res.eattr)
     stun_add_fingerprint(buf)
-    return (buf)
+    return buf
 
 def get_jluuid_crc32(uhex):
     ucrc = get_crc32(uhex)
@@ -324,9 +328,9 @@ def parser_stun_package(buf):
         else:
             tbuf =[]
 
-        if attrdict.has_key(STUN_ATTRIBUTE_LIFETIME): # 请求的时间大于服务器的定义的，使用服务端的定义 # 请求的时间大于服务器的定义的，使用服务端的定义
-            if int(attrdict[STUN_ATTRIBUTE_LIFETIME][-1],16) > UCLIENT_SESSION_LIFETIME:
-                attrdict[STUN_ATTRIBUTE_LIFETIME] = (STUN_ATTRIBUTE_LIFETIME,'0004',STR_UCLIENT_SESSION_LIFETIME)
+        #if attrdict.has_key(STUN_ATTRIBUTE_LIFETIME): # 请求的时间大于服务器的定义的，使用服务端的定义 # 请求的时间大于服务器的定义的，使用服务端的定义
+        #    if int(attrdict[STUN_ATTRIBUTE_LIFETIME][-1],16) > UCLIENT_SESSION_LIFETIME:
+        #        attrdict[STUN_ATTRIBUTE_LIFETIME] = (STUN_ATTRIBUTE_LIFETIME,'0004',STR_UCLIENT_SESSION_LIFETIME)
 
     return attrdict
 
@@ -377,4 +381,21 @@ class StatLog(logging.Logger):
     def log(self,msg):
         self.info(msg)
 
+class EpollReactor(object):
+    EV_IN = EPOLLIN | EPOLLET
+    EV_OUT = EPOLLOUT  | EPOLLET
+    EV_DISCONNECTED =(EPOLLHUP | EPOLLERR)
+    def __init__(self):
+        self._poller = epoll()
 
+    def poll(self,timeout):
+        return self._poller.poll(timeout)
+
+    def register(self,fd,mode):
+        return self._poller.register(fd,mode)
+
+    def unregister(self,fd):
+        return self._poller.unregister(fd)
+
+    def modify(self,fd,mode):
+        self._poller.modify(fd,mode)

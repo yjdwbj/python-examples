@@ -11,14 +11,15 @@
 import socket
 import time
 import struct
-import binascii
 import threading
 import uuid
 import sys
 import os
 import unittest
 import argparse
+import errno
 
+from binascii import unhexlify,hexlify
 from datetime import datetime
 from sqlalchemy import *
 from sqlalchemy.exc import *
@@ -26,7 +27,7 @@ from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,Me
 from sqlalchemy import sql,and_
 from sqlalchemy.dialects import postgresql as pgsql
 import hashlib
-import select
+from select import epoll,EPOLLHUP,EPOLLOUT,EPOLLET,EPOLLIN,EPOLLERR
 from epoll_global import *
 from multiprocessing import Queue,Process
 
@@ -38,8 +39,9 @@ LOG_ERROR_SOCK='Socket pipe was broke'
 LOG_ERROR_REGISTER='Register user occur error'
 LOG_ERROR_DB='Operator db occur error'
 LOG_ERROR_PACKET='Unkown packet format'
+LOG_ERROR_ATTR='Unkown packet Attribute'
 LOG_ERROR_FILENO='Too many fileno opened'
-LOG_ERROR_IILAGE_CLIENT='Iilegal Client request'
+LOG_ERROR_IILAGE_CLIENT='Iilega Client request'
 
 class GetPkgObj:
     def __init__(self,**kwargs):
@@ -51,7 +53,7 @@ class ComState: pass
 def clean_dict(d,k):
     try:
         d.pop(k)
-    except:
+    except KeyError:
         pass
 
 
@@ -70,24 +72,15 @@ def notify_app_bind_islogin(bindinfo):
     return buf
 
 
-def stun_ask_mirco_devices_timeout(res):
-    #超过一定时间，小机没有回复服务器，就假定小机不可以连接，回复APP端一个错误
-    if self.devuuid.has_key(res.fileno):
-        self.responses[res.fileno] = stun_error_response(res)
-        try:
-            self.epoll.modify(res.fileno,select.EPOLLOUT | select.EPOLLET)
-        except TypeError:
-            self.errqueue.put(','.join([LOG_ERROR_SOCK,str(sys._getframe().f_lineno)]))
-
 
 def stun_connect_address(host,res):
     buf = []
     stun_init_command_str(stun_make_success_response(STUN_METHOD_CONNECT),buf,)
     mip = "0001%04x%08x" % (host[1]^ (STUN_MAGIC_COOKIE >> 16),
-            STUN_MAGIC_COOKIE ^ (int(binascii.hexlify(socket.inet_aton(host[0])),16)))
+            STUN_MAGIC_COOKIE ^ (int(hexlify(socket.inet_aton(host[0])),16)))
     stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS,mip)
     if res.attrs.has_key(STUN_ATTRIBUTE_DATA): #转发小机的基本信息
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify(res.attrs[STUN_ATTRIBUTE_DATA][-1]))
+        stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify(res.attrs[STUN_ATTRIBUTE_DATA][-1]))
     stun_add_fingerprint(buf)
     return (buf)
 
@@ -97,13 +90,13 @@ def register_success(uname):
     stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,uname)
     stun_add_fingerprint(buf)
-    return (buf)
+    return buf
 
 
 def check_user_sucess(res):
     buf = []
     stun_init_command_str(stun_make_success_response(res.method),buf,)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,binascii.hexlify(res.attrs[STUN_ATTRIBUTE_USERNAME][-1]))
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,hexlify(res.attrs[STUN_ATTRIBUTE_USERNAME][-1]))
     stun_add_fingerprint(buf)
     return (buf)
 
@@ -112,7 +105,7 @@ def get_jluuid_crc32(uhex):
     return "%08x" % ((ucrc ^ CRCPWD) & 0xFFFFFFFF)
 
 def check_uuid_format(uid):
-    n = [ x for x in binascii.hexlify(uid[-1]) if x > 'f' or x < '0']
+    n = [ x for x in hexlify(uid[-1]) if x > 'f' or x < '0']
     return  len(n) > 0 or uid[1] < 24
 
 def check_uuid_valid(uhex):
@@ -158,47 +151,64 @@ class CheckSesionThread(threading.Thread):
             time.sleep(1)
             [clean_timeout_sock(x)  for x in  self.timer.keys()]
 
-class LDError(Exception): # Lcy Define Error
+class EpollServer(EpollReactor):
+    def __init__(self,port,errqueue,statqueue):
+        super(EpollServer,self).__init__()
+        self.srvsocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+        self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        #self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
+        #self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
+        self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_DEBUG,0)
+        self.srvsocket.settimeout(SOCK_TIMEOUT)
+        self.srvsocket.bind(('',port))
+        self.srvsocket.listen(1024)
+        self.srvsocket.setblocking(0)
+        self.register(self.srvsocket.fileno(),self.EV_IN)
+        
 
-    def __init__(self,value):
-        self.msg = value
+    #def start(self):
 
-    def __str__(self):
-        print self.msg
-
-class MTWorker(threading.Thread):
+        #mt = MTWorker(errqueue,statqueue)
+        #mt.setDaemon(True)
+     #   mt = threading.Thread(target=MTWorker,args=(errqueue,statqueue))
+     #   mt.run()
+        #psize = multiprocessing.cpu_count()*2
+        #pool = multiprocessing.Pool(psize)
+        #res = pool.apply_async(MPrun,(self.srvsocket,self.epoll))
+        #handle_proc.apply_async()
+        #pool_size = multiprocessing.cpu_count() * 2
+        #gpool  = Pool(pool_size) 
+#class MTWorker(threading.Thread):
 #class MTWorker():
-    def __init__(self,srvsocket,epoll,errqueue,statqueue):
-        threading.Thread.__init__(self)
-        self.srvsocket = srvsocket
+#    def __init__(self,obj,errqueue,statqueue):
+#        threading.Thread.__init__(self)
         self.errqueue = errqueue
         self.statqueue = statqueue
         self.db_engine = QueryDB().get_engine()
         self.dbcon = self.db_engine.connect()
-        self.epoll = epoll 
         [setattr(self,x,{}) for x in store]
 
-        self.func= {
+        self.prefunc= {
               STUN_METHOD_ALLOCATE:self.handle_allocate_request, # 小机登录方法
-              STUN_METHOD_REFRESH:self.handle_refresh_request, # 小机登录方法
               STUN_METHOD_CHECK_USER:self.handle_chkuser_request,
               STUN_METHOD_REGISTER:self.handle_register_request,
-              STUN_METHOD_BINDING:self.handle_app_login_request,  # app端登录方法
-              STUN_METHOD_CHANNEL_BIND:self.handle_app_bind_device  # APP 绑定小机的命令
+              STUN_METHOD_BINDING:self.handle_app_login_request  # app端登录方法
               }
 
         #认证后的处理
-        self.postfunc={STUN_METHOD_CHANNEL_BIND:self.handle_app_bind_device,
+        self.postfunc={
+                STUN_METHOD_CHANNEL_BIND:self.handle_app_bind_device,  # APP 绑定小机的命令
                 STUN_METHOD_REFRESH:self.handle_refresh_request,
                 STUN_METHOD_MODIFY:self.handle_modify_bind_item, #修改绑定的信息
                 STUN_METHOD_DELETE:self.handle_delete_bind_item, #删除现有的绑定
-                STUN_METHOD_PULL:self.handle_app_pull
+                STUN_METHOD_PULL:self.handle_app_pull,
+                STUN_METHOD_REFRESH:self.handle_refresh_request # 小机登录方法
                 }
 
     def handle_modify_bind_item(self,res):
         try:
             btable = QueryDB.get_account_bind_table(res.attrs[STUN_ATTRIBUTE_USERNAME][-1])[0]
-            stmt = btable.update().values(uuid=res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]).\
+            stmt = btable.update().values(pwd=res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]).\
                     where(btable.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID][-1])
             self.dbcon.execute(stmt)
             return False
@@ -213,59 +223,72 @@ class MTWorker(threading.Thread):
         except KeyError:
             return True
 
+    def bondle_uuids(lst):
+        a = []
+        a.append(lst[0])
+        a.append(hexlify(lst[1]))
+        return ''.join(a)
+
+
     def handle_app_pull(self,res):
+        uname = self.users[res.fileno]
         try:
-            btable = QueryDB.get_account_bind_table(res.attrs[STUN_ATTRIBUTE_USERNAME][-1])[0]
-            fall = self.dbcon.execute(sql.select[btable]).fetchall()
-            flist = [''.join(list(n)[:-1]) for n in fall]
+            print "username",uname
+            btable = QueryDB.get_account_bind_table(uname)[0]
+            s = sql.select([btable])
+            fall = self.dbcon.execute(s).fetchall()
+            print "fall",fall
+            flist = ''.join(multiprocessing_handle(self.bondle_uuids,fall))
+            print "flist is",flist
             res.plist = flist
-            print flist
             return False
+        except ProgrammingError:
+            print "table not exits"
+            return True
         except KeyError:
             return True
 
     def delete_fileno(self,fileno):
         try:
-            self.epoll.unregister(fileno)
-        except:
+            self.unregister(fileno)
+        except IOError:
             self.statqueue.put('already delete socket %d' % fileno)
 
         try:
-            self.clients.get(fileno).close()
+            self.clients[fileno].close()
             self.clients.pop(fileno)
-        except:
+        except KeyError:
             pass
 
-        try:
-            self.requests.pop(fileno)
-        except:
-            pass
 
     def run(self):
         try:
             while True:
-                events = self.epoll.poll(1)
+                events = self.poll(1)
+                servfd = self.srvsocket.fileno()
                 for fileno,event in events:
-                    if fileno == self.srvsocket.fileno():
+                    if fileno == servfd: 
                         #新的连接
                         try:
-                            nsock,addr = self.srvsocket.accept()
-                        except:
-                            self.errqueue.put(','.join([LOG_ERROR_FILENO,str(sys._getframe().f_lineno)]))
-                            continue
-                        nf = nsock.fileno()
-                        self.statqueue.put(','.join(["new client %s:%d" % addr,"new fileno %d" % nf, 'srv fileno %d'%fileno]))
-                        nsock.setblocking(0)
-                        self.clients[nf] = nsock
-                        try:
-                            self.hosts[nf] = nsock.getpeername()
-                        except socket.error:
-                            self.clients.pop(nf)
-                            continue
-                        self.responses[nf] = []
-                        #self.timer[nf] = time.time()+10
-                        self.epoll.register(nf,select.EPOLLIN | select.EPOLLET)
-                    elif event & select.EPOLLIN: # 读取socket 的数据
+                            while True:
+                                nsock,addr = self.srvsocket.accept()
+                                nf = nsock.fileno()
+                                #self.statqueue.put(','.join(["new client %s:%d" % addr,"new fileno %d" % nf, 'srv fileno %d'%fileno]))
+                                nsock.setblocking(0)
+                                self.register(nsock,self.EV_IN)
+                                self.clients[nf] = nsock
+                                self.hosts[nf] = nsock.getpeername()
+                        except socket.error as e:
+                            if e.errno == errno.EAGAIN:
+                                self.modify(servfd,self.EV_IN)
+                            else:
+                                self.errqueue.put(','.join([LOG_ERROR_FILENO,str(sys._getframe().f_lineno)]))
+                        
+                    #self.timer[nf] = time.time()+10
+                    elif event & self.EV_DISCONNECTED:
+                        self.delete_fileno(fileno)
+                    elif event & self.EV_IN:
+                    #elif event & select.EPOLLIN: # 读取socket 的数据
                         try:
                             csock = self.clients[fileno]
                         except KeyError:
@@ -279,80 +302,67 @@ class MTWorker(threading.Thread):
                                 self.statqueue.put(','.join(['sock %d' % fileno,'recv no buffer']))
                                 self.dealwith_peer_hup(fileno)
                                 continue
-                            hbuf = binascii.hexlify(recvbuf)
-                            if cmp(hbuf[:4],HEAD_MAGIC): # 检查JL关键字
+                            hbuf = hexlify(recvbuf)
+                            hlen = len(hbuf)
+                            if cmp(hbuf[:4],HEAD_MAGIC) or hlen == 0 or hlen % 2: # 检查JL关键字
                                 self.errqueue.put(','.join([LOG_ERROR_PACKET,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
                                 self.delete_fileno(fileno)
                                 continue
-                            try:
-                                self.process_handle_first((hbuf,fileno))
-                            except LDError as e:
-                                self.errqueue.put(','.join(["sock %d %s,host %s,buf %s" %(fileno,e.msg,self.hosts[fileno][0],hbuf),\
-                                        str(sys._getframe().f_lineno)]))
-                                
+                            self.process_handle_first(hbuf,fileno)
                         except IOError:
                             self.errqueue.put(','.join(["sock has closed %d,host %s" %(fileno,self.hosts[fileno][0]),\
                                     str(sys._getframe().f_lineno)]))
                             self.sock_recv_fail(fileno)
-                    elif event & select.EPOLLOUT:
-                        sendbuf = self.responses[fileno] #连接命令的时候返回是NULL
-                        self.responses.pop(fileno)
+                    #elif event & select.EPOLLOUT:
+                    elif event & self.EV_OUT:
                         try:
                             nbyte =  self.clients[fileno].send(\
-                                    binascii.unhexlify(''.join(sendbuf)))
-                            self.epoll.modify(fileno,select.EPOLLIN | select.EPOLLET)
+                                    unhexlify(''.join(self.responses[fileno])))
+                            self.modify(fileno,self.EV_IN)
+                        except KeyError:
+                            continue
                         except TypeError:
                             print sendbuf," len ",len(sendbuf)
                         except IOError:
                             self.errqueue.put(','.join(["sock has closed %d,host %s" %(fileno,self.hosts[fileno][0]),\
                                     str(sys._getframe().f_lineno)]))
                             self.sock_send_fail(fileno,sendbuf)
+                        else:
+                            self.responses.pop(fileno)
                         #except KeyError:
                         #        self.errqueue.put(','.join(['responses not value of key','sock %d' % fileno,str(sys._getframe().f_lineno)]))
                                 #self.epoll.modify(fileno,select.EPOLLWRBAND)
-                    elif event & select.EPOLLHUP:
-                        self.errqueue.put("sock hup %d" % fileno)
-                        self.dealwith_peer_hup(fileno)
-                    elif event & select.EPOLLERR:
-                        self.errqueue.put("sock error %d" % fileno)
-                        self.dealwith_peer_hup(fileno)
+                    #elif event & select.EPOLLHUP:
+                    #    self.errqueue.put("sock hup %d" % fileno)
+                    #    self.dealwith_peer_hup(fileno)
+                    #elif event & select.EPOLLERR:
+                    #    self.errqueue.put("sock error %d" % fileno)
+                    #    self.dealwith_peer_hup(fileno)
     
         finally:
-            self.epoll.unregister(self.srvsocket.fileno())
-            self.epoll.close()
+            self.unregister(self.srvsocket.fileno())
             self.srvsocket.close()
 
     def handle_refresh_request(self,res):
         return refresh_sucess(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1])
 
-    def process_handle_first(self,item):
-        hbuf = item[0]
-        if len(hbuf) % 2:
-            raise LDError("buf len is odd")
-            return 
-    
-            
-        fileno = item[1]
+    def process_handle_first(self,hbuf,fileno):
         mlist = []
         if (len(hbuf)/2)  > int(hbuf[8:12],16):
-            #print 'hbuf len',len(hbuf),'h len',int(hbuf[8:12],16)
+            print 'hbuf len',len(hbuf),'h len',int(hbuf[8:12],16),hbuf
             #读到两个包了
             mplist = [''.join([HEAD_MAGIC,n]) for n in hbuf.split(HEAD_MAGIC) if n ]
             #print "two packet",mplist
             #multiprocessing_handle(handle_requests_buf,[(n,fileno) for n in mplist])
             [self.handle_requests_buf((n,fileno)) for n in mplist]
         else:
-            self.handle_requests_buf(item)
+            self.handle_requests_buf(hbuf,fileno)
 
 
     
                     
-    def handle_requests_buf(self,pair): # pair[0] == hbuf, pair[1] == fileno
-        hbuf = pair[0]
-        fileno = pair[1]
-        if not len(hbuf):
-            return 
-        res = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH*2])
+    def handle_requests_buf(self,hbuf,fileno): # pair[0] == hbuf, pair[1] == fileno
+        res = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH])
         res.eattr = STUN_ERROR_NONE
         res.host= self.hosts.get(fileno)
         res.fileno=fileno
@@ -360,32 +370,36 @@ class MTWorker(threading.Thread):
         #通过认证的socket 直接转发了
         if self.appsock.has_key(fileno) or self.devsock.has_key(fileno):
             if (res.method == STUN_METHOD_SEND or res.method == STUN_METHOD_DATA):
-                return self.handle_forward_packet(pair,res)
+                self.responses[fileno] =  self.handle_forward_packet(hbuf,res)
+                if res.eattr != STUN_ERROR_NONE:
+                    self.modify(fileno,self.EV_OUT)
+            else:
+                """
+                执行认证后的函数
+                """
+                hexpos = STUN_HEADER_LENGTH
+                upkg = parser_stun_package(hbuf[hexpos:-8])
+                if upkg is None:
+                    res.eattr = STUN_ERROR_UNKNOWN_ATTR
+                    self.errqueue.put(','.join([LOG_ERROR_ATTR,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
+                    self.responses[res.fileno] = stun_error_response(res)
+                    self.modify(fileno,self.EV_OUT)
+                else:
+                    res.attrs = upkg
+                    self.postfunc[res.method](res)
+        else:
+           """
+           处理要认证的客务端
+           """
+           self.handle_client_request_preauth(res,hbuf)
+           if res.eattr != STUN_ERROR_NONE:
+                self.responses[res.fileno] = stun_error_response(res)
+                self.modify(fileno,self.EV_OUT)
 
-    
-        if check_packet_crc32(hbuf):
-            self.errqueue.put(','.join([LOG_ERROR_PACKET,'sock %d,buf %s' % (fileno,hbuf),str(sys._getframe().f_lineno)]))
-            self.delete_fileno(fileno)
-            return 
-
-    
-        rbuf = self.handle_client_request(pair,res)
-        res = rbuf[1]
-        if res.eattr == STUN_ERROR_UNKNOWN_PACKET:
-            self.errqueue.put(','.join([LOG_ERROR_IILAGE_CLIENT,'sock %d' % fileno,'method %s' % res.method,str(sys._getframe().f_lineno)]))
-            #print 'method', res.method
-            self.delete_fileno(fileno)
-            return 
-    
-        if rbuf[0] is None: # 是转发包或者是刷新时间
-            return
-    
-        self.responses[fileno] = rbuf[0]
-        self.epoll.modify(fileno,select.EPOLLOUT | select.EPOLLET)
-
-    def handle_forward_packet(self,pair,res):
-        buf = pair[0]
-        fileno = pair[1]
+        
+                
+    def handle_forward_packet(self,hbuf,res):
+        fileno = res.fileno
         #判断如果是转发命令就直接转发了。
         #print "forward packet"
         #print 'dstsock',res.dstsock
@@ -395,14 +409,13 @@ class MTWorker(threading.Thread):
         #转发的信息不正确
         if dstsock == 0xFFFFFFFF or srcsock == 0xFFFFFFFF:
             res.eattr = STUN_ERROR_UNKNOWN_HEAD
-            return  (stun_error_response(res),res)
+            return stun_error_response(res)
     
         if self.clients.has_key(dstsock):
             # 转发到时目地
-            self.responses[dstsock] = buf
-            self.epoll.modify(dstsock,select.EPOLLOUT | select.EPOLLET)
-            self.statqueue.put('forward to %d,byte %d' %(dstsock,len(buf)/2))
-            return (None,res)
+            self.responses[dstsock] = hbuf
+            self.modify(dstsock,self.EV_OUT)
+            #self.statqueue.put('forward to %d,byte %d' %(dstsock,len(hbuf)/2))
         else: # 目标不存在
             res.eattr = STUN_ERROR_DEVOFFLINE
             #self.epoll.modify(fileno,select.EPOLLOUT)
@@ -413,71 +426,67 @@ class MTWorker(threading.Thread):
             tbuf.pop()
             tbuf[2] = '%04x' % (int(tbuf[2],16)-4)
             stun_add_fingerprint(tbuf)
-            return (tbuf,res)
+            return tbuf
 
-    def handle_client_request(self,pair,res): # pair[0] == hbuf, pair[1] == fileno
-        """
-        -1 CRC 错误的
-        -2 非法刷新请求
-        0  正常值
-        1  APP的连接请求
-        2  小机的回复
-        3  转发命令
-        """
-        buf=pair[0]
-        fileno = pair[1]
+    def handle_client_request_preauth(self,res,hbuf): # pair[0] == hbuf, pair[1] == fileno
+
+        if check_packet_crc32(hbuf):
+            self.errqueue.put(','.join([LOG_ERROR_PACKET,'sock %d,buf %s' % (fileno,hbuf),str(sys._getframe().f_lineno)]))
+            self.delete_fileno(fileno)
+            return 
 
         if not (res.method == STUN_METHOD_ALLOCATE or\
                 res.method == STUN_METHOD_BINDING or\
-                res.method == STUN_METHOD_CHANNEL_BIND or\
-                res.method == STUN_METHOD_REFRESH or\
+                res.method == STUN_METHOD_CHECK_USER or\
                 res.method == STUN_METHOD_REGISTER):
                     # 非法请求
             self.delete_fileno(fileno)
             #print 'fileno',fileno
             #print 'self.appsock',self.appsock
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
-            return (None,res)
+            self.errqueue.put(','.join([LOG_ERROR_IILAGE_CLIENT,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
+            delete_fileno(res.fileno)
+            return
     
-        hexpos = STUN_HEADER_LENGTH*2
-        upkg = parser_stun_package(buf[hexpos:-8])
+        hexpos = STUN_HEADER_LENGTH
+        upkg = parser_stun_package(hbuf[hexpos:-8])
         if upkg is None:
             res.eattr = STUN_ERROR_UNKNOWN_ATTR
-            return  (stun_error_response(res),res)
+            self.errqueue.put(','.join([LOG_ERROR_ATTR,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
+            return
     
         res.attrs = upkg
-    
         if res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and int(res.attrs.get(STUN_ATTRIBUTE_MESSAGE_INTEGRITY)[1],16) != 32:
             res.eattr = STUN_ERROR_AUTH
             self.errqueue.put(','.join([LOG_ERROR_AUTH,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
-            return  (stun_error_response(res),res)
-    
-        if self.func.has_key(res.method):
-            return  (self.func[res.method](res),res)
-        else:
+            return
+        try:
+            self.responses[res.fileno] = self.prefunc[res.method](res)
+        except KeyError:
             res.eattr = STUN_ERROR_UNKNOWN_METHOD
             self.errqueue.put(','.join([LOG_ERROR_METHOD,res.method,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
-            return  (stun_error_response(res),res)
+        else:
+            self.modify(res.fileno,self.EV_OUT)
 
     def handle_app_login_request(self,res):
-        if not res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) or  not res.attrs.has_key(STUN_ATTRIBUTE_USERNAME):
+        user = b''
+        pwd = b''
+        try:
+            pwd = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]
+            user = unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
+            result = self.app_user_login(user,pwd)
+            if not result:
+                res.eattr = STUN_ERROR_AUTH
+                return  stun_error_response(res)
+        except KeyError:
            res.eattr = STUN_ERROR_AUTH
            return  stun_error_response(res)# APP端必须带用认证信息才能发起连接.
-    
-        result = self.app_user_login(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],
-                res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
-        if not result:
-            res.eattr = STUN_ERROR_AUTH
-            return  stun_error_response(res)
     
         self.appsock[res.fileno] = tcs = ComState()
         tcs.name = result[0][0]
         self.app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],res.host)
-    #    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
-    #        update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
-    #    else:
-    #        update_refresh_time(res.fileno,UCLIENT_SESSION_LIFETIME)
         self.statqueue.put('user %s login,socket is %d' % (tcs.name,res.fileno))
+        self.users[res.fileno] = user
         return app_user_auth_success(res)
 
     def handle_allocate_request(self,res):
@@ -491,7 +500,7 @@ class MTWorker(threading.Thread):
                 self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
                 return stun_error_response(res)
         except KeyError:
-            #res.eattr= binascii.hexlify("Not Found UUID")
+            #res.eattr= hexlify("Not Found UUID")
             res.eattr=STUN_ERROR_UNKNOWN_PACKET
             self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
@@ -527,29 +536,39 @@ class MTWorker(threading.Thread):
         if self.app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME][-1],
                 res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]):
             # 用户名已经存了。
-            self.errqueue.put("User has Exist!i %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
+            self.errqueue.put("User has Exist! %s" % res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
         return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME][-1])
 
     def handle_add_bind_to_user(self,res):
-        bpairs  = QueryDB.get_account_bind_table(res.attrs[USERNAME])
-        try:
-            bpairs[1].create_all(self.engine)
-        except:
-            pass
+        """
+        绑定小机到用户表里
+        """
+        
+        (table,metadata)  = QueryDB.get_account_bind_table(self.users[res.fileno])
+        print "create username table",self.users[res.fileno]
+        metadata.create_all(self.db_engine)
         #添加新绑定的小机用户表下面
         try:
-            ins = bpairs[0].insert().values(uuid=res.attrs[STUN_ATTRIBUTE_UUID][-1],\
-                    pwd=res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1],reg_time=datetime.now())
+            ins = table.insert().values(uuid=res.attrs[STUN_ATTRIBUTE_UUID][-1],\
+                    pwd=unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]),reg_time=datetime.now())
         except KeyError:
             self.errqueue.put(','.join(['sock %d' % res.fileno,'no uuid attr to bind']))
+            res.eattr = STUN_ERROR_UNKNOWN_PACKET
             return 
 
         try:
             self.dbcon.execute(ins)
-        except exc.SQLError:
-            self.errqueue.put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
+        except DataError:
+            print "uuid len",len(res.attrs[STUN_ATTRIBUTE_UUID][-1])
+            print "pwd len",len(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1])
+            stmt = table.update().values(pwd=unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY][-1]),reg_time = datetime.now()).\
+                    where(table.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID][-1])
+            self.dbcon.execute(stmt)
+            
+            #self.errqueue.put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
+            #res.eattr = STUN_ERROR_USER_EXIST
     
 
 
@@ -582,6 +601,9 @@ class MTWorker(threading.Thread):
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
             self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
+        self.handle_add_bind_to_user(res)
+        if res.eattr != STUN_ERROR_NONE:
+            return stun_error_response(res)
         return self.stun_bind_devices_ok(res)
     
 
@@ -591,20 +613,13 @@ class MTWorker(threading.Thread):
             self.statqueue.put('app sock close, %d' % fileno)
             #print "appsock is",self.appsock
             self.app_user_logout(self.appsock[fileno].name)
-    #        try:
-    #            self.appsock.pop(fileno)
-    #        except:
-    #            pass
         elif self.devsock.has_key(fileno):
             self.statqueue.put('dev sock close, %d' % fileno)
             self.mirco_devices_logout(self.devsock[fileno].uuid)
-    #        try:
-    #            self.devsock.pop(fileno)
-    #        except:
-    #            pass
 
 
     def dealwith_peer_hup(self,fileno):
+        print "clean fileno %d" % fileno
         self.dealwith_sock_close_update_db(fileno)
         self.dealwith_sock_close_update_binds(fileno)
         self.remove_fileno_resources(fileno)
@@ -616,9 +631,9 @@ class MTWorker(threading.Thread):
         self.responses[fileno] =  notify_peer(''.join(['%08x' % dstsock,STUN_OFFLINE]))
         self.statqueue.put('socket %d logout send info to socket %d' % (dstsock,fileno))
         try:
-            self.epoll.modify(fileno,select.EPOLLOUT | select.EPOLLET)
-        except TypeError:
-            self.errqueue.put(''.join([LOG_ERROR_PACKET,\
+            self.modify(fileno,self.EV_OUT)
+        except IOError:
+            self.errqueue.put(''.join([LOG_ERROR_SOCK,\
                     'socket error %d' % fileno,str(sys._getframe().f_lineno)]))
     
     def clean_timeout_sock(self,fileno): # 清除超时的连接
@@ -629,9 +644,9 @@ class MTWorker(threading.Thread):
     
     def mirco_devices_logout(self,devid):
         vendor = devid[32:40]
-        #print "update status for tuid",binascii.hexlify(suid[0])
+        #print "update status for tuid",hexlify(suid[0])
         mtable = QueryDB.get_devices_table(vendor)
-        #ss = mtable.update().values(is_online=False).where(mtable.c.devid == binascii.hexlify(suid[0]))
+        #ss = mtable.update().values(is_online=False).where(mtable.c.devid == hexlify(suid[0]))
         ss = mtable.update().values(is_online=False).where(mtable.c.devid == devid[:32])
         try:
             res = self.dbcon.execute(ss)
@@ -641,8 +656,6 @@ class MTWorker(threading.Thread):
     
     
     def notify_uuid_app_logout(self,fileno):
-        # app 下线，通知小机
-        #binds = [v for k,v in self.appbinds[fileno].iteritems()]
         try:
             binds = self.appbinds[fileno].values()
             self.appsock.pop(fileno) # 回收这个APP的BIND资源
@@ -725,7 +738,7 @@ class MTWorker(threading.Thread):
             notifybuf = notify_peer(''.join([b,STUN_ONLINE]))
             self.responses[dstsock] = notify_peer(''.join([b,STUN_ONLINE]))
             try:
-                self.epoll.modify(dstsock,select.EPOLLOUT | select.EPOLLET )
+                self.modify(dstsock,self.EV_OUT)
             except IOError:
                 self.errqueue.put(','.join(['dstsock %d has closed' % dstsock,'host is',self.hosts[dstsock][0]]))  
                 dealwith_peer_hup(dstsock)
@@ -753,7 +766,7 @@ class MTWorker(threading.Thread):
 
     def noify_app_uuid_just_login(self,sock,uuidstr,devsock):
         self.responses[sock] = notify_app_bind_islogin(''.join([uuidstr,'%08x' % devsock]))
-        self.epoll.modify(sock,select.EPOLLOUT | select.EPOLLET)
+        self.modify(sock,self.EV_OUT)
     
     def device_login_notify_app(self,uuidstr,devsock):
         for fk in self.appbinds.keys():
@@ -766,29 +779,29 @@ class MTWorker(threading.Thread):
     
 
     def app_user_register(self,user,pwd):
+        print "user %s,pwd %s" % (user, pwd)
         account = QueryDB.get_account_table()
-        #print "register new account %s,%s" % (user,pwd)
-        uname = binascii.unhexlify(user)
-        sss = sql.select([account]).where(account.c.uname == uname)
-        res = self.dbcon.execute(sss)
-        if len(res.fetchall()):
-            return True
-        else:
+        uname = unhexlify(user)
+        try:
             obj = hashlib.sha256()
             obj.update(uname)
             obj.update(pwd)
             ins = account.insert().values(uname=uname,pwd=obj.digest(),is_active=True,reg_time=datetime.now())
-            try:
-                self.dbcon.execute(ins)
-            except:
-                self.errqueue.put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
-                return True
+            self.dbcon.execute(ins)
             return False
+        except IntegrityError:
+            self.errqueue.put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
+            return True
+        except DataError:
+            print "db error"
+            self.errqueue.put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
+            return True
+
     
     def app_user_update_status(self,user,host):
-        uname = binascii.unhexlify(user)
+        uname = unhexlify(user)
         status_tables = QueryDB.get_account_status_table()
-        ipadr = int(binascii.hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
+        ipadr = int(hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
         ipprt = host[1] & 0xFFFF
         sss = ''
         try:
@@ -802,8 +815,7 @@ class MTWorker(threading.Thread):
             self.errqueue.put(','.join([LOG_ERROR_DB,host,str(sys._getframe().f_lineno)]))
     
     
-    def app_user_login(self,user,pwd):
-        uname = binascii.unhexlify(user)
+    def app_user_login(self,uname,pwd):
         account = QueryDB.get_account_table()
         obj = hashlib.sha256()
         obj.update(uname)
@@ -844,7 +856,7 @@ class MTWorker(threading.Thread):
         mirco_devices = QueryDB.get_devices_table(res.vendor)
         if not mirco_devices.exists(engine):
             mirco_devices.create(engine)
-        ipadr = int(binascii.hexlify(socket.inet_aton(res.host[0])),16) & 0xFFFFFFFF
+        ipadr = int(hexlify(socket.inet_aton(res.host[0])),16) & 0xFFFFFFFF
         ipprt = res.host[1] & 0xFFFF
         #print "host %d:%d" % (ipadr,ipprt)
         data = ''
@@ -882,44 +894,6 @@ class WorkerThread(threading.Thread):
             time.sleep(0.1)
 
 
-class EpollServer():
-    def __init__(self,port):
-        self.srvsocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-        self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-        self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
-        self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
-        #self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
-        self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_DEBUG,0)
-        #self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,2)
-        #self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,30)
-        #self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPIDLE,60)
-        self.srvsocket.settimeout(SOCK_TIMEOUT)
-        self.srvsocket.bind(('',port))
-        self.srvsocket.listen(1024)
-        self.srvsocket.setblocking(0)
-        self.epoll = select.epoll()
-        self.epoll.register(self.srvsocket.fileno(),select.EPOLLIN | select.EPOLLET)
-        
-
-    def start(self):
-        errqueue = Queue()
-        statqueue = Queue()
-        errlog = ErrLog('epoll_mt_srv')
-        statlog = StatLog('epoll_mt_srv')
-        errworker = WorkerThread(errqueue,errlog,)
-        errworker.start()
-        statworker = WorkerThread(statqueue,statlog)
-        statworker.start()
-
-        mt = MTWorker(self.srvsocket,self.epoll,errqueue,statqueue)
-        mt.setDaemon(True)
-        mt.run()
-        #psize = multiprocessing.cpu_count()*2
-        #pool = multiprocessing.Pool(psize)
-        #res = pool.apply_async(MPrun,(self.srvsocket,self.epoll))
-        #handle_proc.apply_async()
-        #pool_size = multiprocessing.cpu_count() * 2
-        #gpool  = Pool(pool_size) 
     
 def get_log_level(id):
     r = None
@@ -974,7 +948,7 @@ class QueryDB():
     def get_account_bind_table(name):
         metadata = MetaData()
         table = Table(name,metadata,
-                Column('uuid',pgsql.VARCHAR(24),nullable=False,primary_key=True),
+                Column('uuid',pgsql.VARCHAR(48),nullable=False,primary_key=True),
                 Column('pwd',pgsql.BYTEA),
                 Column('reg_time',pgsql.TIME,nullable=False)
                 )
@@ -1033,7 +1007,7 @@ for n in dirs:
 
 
 
-store = ['clients','hosts','requests','responses','appbinds','appsock','devsock','devuuid']
+store = ['clients','hosts','responses','appbinds','appsock','devsock','devuuid','users']
 if __name__ == '__main__':
     atable = QueryDB.get_account_table()
     engine = QueryDB().get_engine()
@@ -1065,6 +1039,14 @@ if __name__ == '__main__':
     )
     ''')
 
-    EpollServer(port).start()
+    errqueue = Queue()
+    statqueue = Queue()
+    errlog = ErrLog('epoll_mt_srv')
+    statlog = StatLog('epoll_mt_srv')
+    errworker = WorkerThread(errqueue,errlog,)
+    errworker.start()
+    statworker = WorkerThread(statqueue,statlog)
+    statworker.start()
+    EpollServer(port,errqueue,statqueue).run()
 
 
