@@ -13,11 +13,11 @@ import hmac
 import hashlib
 import uuid,pickle
 import argparse
-from epoll_global import *
 import signal
-import sys
+import sys,os
 from multiprocessing import Queue
 import threading
+from sockbasic import *
 
 reload(sys)
 sys.setdefaultencoding("utf-8")
@@ -61,6 +61,26 @@ def stun_bind_uuids(jluids):
 def stun_bind_single_uuid(jluid):
     buf = []
     stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
+    #jluid = '19357888AA07418584391D0ADB61E7902653716613920FBF'
+    #jluid = 'e68cd4167aea4f85a7242031252be15874657374a860a02f'
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,jluid.lower())
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,jluid.lower())
+    stun_add_fingerprint(buf)
+    return buf
+
+def stun_modify_bind(jluid):
+    buf = []
+    stun_init_command_str(STUN_METHOD_MODIFY,buf)
+    #jluid = '19357888AA07418584391D0ADB61E7902653716613920FBF'
+    #jluid = 'e68cd4167aea4f85a7242031252be15874657374a860a02f'
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,jluid.lower())
+    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,jluid.lower())
+    stun_add_fingerprint(buf)
+    return buf
+
+def stun_remove_bind(jluid):
+    buf = []
+    stun_init_command_str(STUN_METHOD_DELETE,buf)
     #jluid = '19357888AA07418584391D0ADB61E7902653716613920FBF'
     #jluid = 'e68cd4167aea4f85a7242031252be15874657374a860a02f'
     stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,jluid.lower())
@@ -136,143 +156,188 @@ def refresh_time(sock,timer_queue,errlog,refresh_buf):
                 except IOError:
                     errlog.log(','.join(['sock','%d'% sock.fileno(),' closed,occur error,send packets %d ' % mynum]))
 
-def APPfunc(addr,ulist,user,pwd):
-#        threading.Thread.__init__(appclass)
-    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
-    sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-    sock.settimeout(SOCK_TIMEOUT)
-    addr = addr
-    ulist = ulist
-    user = user
-    pwd = pwd
-    appname = 'app_demon'
-    slog = StatLog(appname)
-    errlog = ErrLog(appname)
-    mynum = 0
-    timer_queue = Queue()
-    refresh_buf = binascii.unhexlify(''.join(stun_struct_refresh_request()))
-    fileno = sock.fileno()
-    mysock = 0xFFFFFFFF
-    dstsock = 0xFFFFFFFF
-    buf = []
-    try:
-        sock.connect(addr)
-    except socket.timeout:
-        errlog.log('sock i %d timeout' % fileno)
-        return
-    buf = stun_register_request(user,pwd)
-    if socket_write(sock,buf,errlog):
-        return
-    while True:
-        try:
-            data = sock.recv(SOCK_BUFSIZE)
-        except IOError:
-            break
-        timer_queue.put(0) 
-        if not data:
-            continue
-        myrecv = binascii.b2a_hex(data)
-        if check_packet_vaild(myrecv): # 校验包头
-            errlog.log(','.join(['sock','%d'% fileno,'recv unkown packet']))
-            errlog.log(myrecv)
-            continue
+#def APPfunc(addr,ulist,user,pwd):
+class APPfunc():
+    def __init__(self,addr,sublst,user,pwd):
+        self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
+        self.sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
+        self.sock.settimeout(SOCK_TIMEOUT)
+        self.mynum = 0
+        self.timer_queue = Queue()
+        self.refresh_buf = binascii.unhexlify(''.join(stun_struct_refresh_request()))
+        self.fileno = self.sock.fileno()
+        self.mysock = 0xFFFFFFFF
+        self.dstsock = 0xFFFFFFFF
+        self.responses = []
+        self.recv = ''
+        self.errlog = errlog
+        self.statlog = slog
+        self.user = user
+        self.pwd = pwd
+        self.ulist = sublst
+        self.addr = addr
+        self.start()
 
-        hattr = get_packet_head_class(myrecv[:STUN_HEADER_LENGTH])
- 
+    def start(self):
+        try:
+            self.sock.connect(self.addr)
+        except socket.timeout:
+            self.errlog.log('sock i %d timeout' % self.fileno)
+            return
+        self.responses = stun_register_request(self.user,self.pwd)
+        if self.socket_write():
+            return
+        while True:
+            try:
+                data = self.sock.recv(SOCK_BUFSIZE)
+            except IOError:
+                break
+            self.timer_queue.put(0) 
+            if not data:
+                self.errlog.log('sock %d, recv not data' % self.fileno)
+                break
+            self.recv += binascii.b2a_hex(data)
+            l = self.recv.count(HEAD_MAGIC)
+            
+            if l == 0:
+                self.errlog.log(','.join(['sock','%d'% self.fileno,'recv unkown packet',self.recv]))
+            elif l == 1:
+                n = int(self.recv[8:12],16) *2
+                if len(self.recv) < n:
+                    self.errlog.log('sock %d, recv packet not complete' % self.fileno)
+                    continue
+                onepacket = self.recv[:n]
+                self.recv = self.recv[n:]
+                if self.process_loop(onepacket): break
+            else:
+                mlist = split_requests_buf(self.recv)
+                pos = sum([len(v) for v in mlist])
+                self.recv= self.recv[pos:]
+                s = 0
+                for n in mlist:
+                    if self.process_loop(n):
+                        s = 1
+                        break
+                if s: break
+                        
+        self.errlog.log(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
+        self.sock.close()
+
+    def process_loop(self,rbuf):
+        if check_packet_vaild(rbuf): # 校验包头
+            self.errlog.log(','.join(['sock','%d'% self.fileno,'check_packet_vaild',self.recv]))
+            self.errlog.log(rbuf)
+            return False
+    
+        hattr = get_packet_head_class(rbuf[:STUN_HEADER_LENGTH])
+        if not hattr:
+            self.errlog.log('sock %d,recv wrong head' % self.fileno)
+            return False
+     
         if stun_get_type(hattr.method) == STUN_METHOD_DATA: # 小机回应
-            dstsock = int(hattr.srcsock,16)
+            if hattr.srcsock == 0xFFFFFFFF:
+                self.errlog.log('sock %d, recv forward packet not srcsock' %self.fileno)
+                return False
+            dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
-                slog.log("recv dev send,sock %d, num hex(%s)" % (fileno,hattr.sequence[2:]))
+                self.slog.log("recv dev send,sock %d, num hex(%s)" % (self.fileno,hattr.sequence[2:]))
                 time.sleep(1)
-                buf = stun_send_data_to_devid(mysock,dstsock,'02%s' % hattr.sequence[2:])
+                self.responses = stun_send_data_to_devid(mysock,dstsock,'02%s' % hattr.sequence[2:])
             elif hattr.sequence[:2] == '02':
                 n = int(hattr.sequence[2:],16)
                 if n > 0xFFFFFF:
-                    mynum = 0
-                    errlog.log('packet counter over 0xFFFFFF once')
-                elif n == mynum: 
-                    mynum+=1
-                    slog.log("sock %d,recv confirm num %d ok,data %s" % (fileno,n,myrecv))
+                    self.mynum = 0
+                    self.errlog.log('packet counter over 0xFFFFFF once')
+                elif n == self.mynum: 
+                    self.mynum+=1
+                    self.slog.log("sock %d,recv confirm num %d ok,data %s" % (self.fileno,n,rbuf))
                 else:
-                    errlog.log('sock %d,lost packet,recv num %d,my counter %d' %(fileno,n,mynum))
-                buf = stun_send_data_to_devid(mysock,dstsock,'03%06x' % mynum)
-            if socket_write(sock,buf,errlog):
-                break
-            continue
-
-
+                    self.errlog.log('sock %d,lost packet,recv num %d,my counter %d' %(self.fileno,n,self.mynum))
+                self.responses = stun_send_data_to_devid(mysock,dstsock,'03%06x' % self.mynum)
+            return self.socket_write()
+    
         if not stun_is_success_response_str(hattr.method):
             if cmp(hattr.method[-2:],STUN_METHOD_REGISTER[-2:]):
-                errlog.log(','.join(['sock','%d'% fileno,'recv server error',\
-                        'method',hattr.method]))
-                continue
+                self.errlog.log(','.join(['sock','%d'% self.fileno,'recv server error',\
+                        'method',hattr.method,rbuf]))
+                return False
+            else:
+                self.responses = stun_login_request(self.user,self.pwd)
+                return self.socket_write()
+    
         hattr.method = stun_get_type(hattr.method)
-        rdict = parser_stun_package(myrecv[STUN_HEADER_LENGTH:-8]) # 去头去尾
-        print "hattr",hattr.__dict__,"rdict",rdict
+        p  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-8]) # 去头去尾
+        if p is None:
+            return False
+        rdict = p[0]
         if not cmp(hattr.method,STUN_METHOD_BINDING):
-            p = threading.Thread(target=refresh_time,args=(sock,timer_queue,errlog,refresh_buf))
+            p = threading.Thread(target=refresh_time,args=(self.sock,self.timer_queue,self.errlog,self.refresh_buf))
             p.start()
-            stat = rdict[STUN_ATTRIBUTE_STATE][-1]
-            mysock = int(stat[:8],16)
-            buf = stun_pull_user_binds(user)
+            stat = rdict[STUN_ATTRIBUTE_STATE]
+            self.mysock = int(stat[:8],16)
             # 下面绑定一些UUID
-#            if len(ulist) > 1:
-#                buf = stun_bind_uuids(''.join(ulist))
-#            else:
-#                buf = stun_bind_single_uuid(ulist[0])
+            if len(self.ulist) > 1:
+                self.responses = stun_bind_uuids(''.join(self.ulist))
+            else:
+                self.responses= stun_bind_single_uuid(self.ulist[0])
         elif hattr.method == STUN_METHOD_REGISTER:
-            buf = stun_login_request(user,pwd)
+            self.responses = stun_login_request(self.user,self.pwd)
         elif hattr.method  == STUN_METHOD_REFRESH:
-            continue
+            return False
         elif hattr.method == STUN_METHOD_CHANNEL_BIND:
             # 绑定小机命令o
-            if rdict.has_key(STUN_ATTRIBUTE_RUUID):
-                dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
-                if dstsock != 0xFFFFFFFF:
-                   buf = stun_send_data_to_devid(mysock,dstsock,'03%06x' % mynum)
-                else:
-                    continue
- 
-            elif rdict.has_key(STUN_ATTRIBUTE_MRUUID):
-                mlist = split_mruuid(rdict[STUN_ATTRIBUTE_MRUUID])
-                for n in mlist:
-                    time.sleep(0.2)
-                    dstsock = int(n[-8:],16)
-                    if dstsock != 0xFFFFFFFF:
-                        pass
-                        #send_forward_buf(sock,mysock,dstsock)
-                continue
- 
-        elif hattr.method == STUN_METHOD_INFO:
-            slog.log(','.join(['sock','%d'% fileno,'recv server info']))
             try:
-                dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-1][-8:],16)
-                buf = stun_send_data_to_devid(mysock,dstsock,'03%06x' % mynum)
+                dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-8:],16)
+                if dstsock != 0xFFFFFFFF:
+                   self.responses = stun_send_data_to_devid(self.mysock,dstsock,'03%06x' % self.mynum)
+                else:
+                    return False
             except KeyError:
                 pass
+     
+#            elif rdict.has_key(STUN_ATTRIBUTE_MRUUID):
+#                mlist = split_mruuid(rdict[STUN_ATTRIBUTE_MRUUID])
+#                for n in mlist:
+#                    time.sleep(0.2)
+#                    dstsock = int(n[-8:],16)
+#                    if dstsock != 0xFFFFFFFF:
+#                        pass
+#                        #send_forward_buf(sock,mysock,dstsock)
+#                return False
+     
+        elif hattr.method == STUN_METHOD_INFO:
+            self.slog.log(','.join(['sock','%d'% self.fileno,'recv server info']))
+            try:
+                dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-8:],16)
+                self.responses = stun_send_data_to_devid(self.mysock,dstsock,'03%06x' % self.mynum)
+            except KeyError:
+                self.errlog.log("sock %d,recv no UUID" % self.fileno)
+        elif hattr.method == STUN_METHOD_PULL:
+            print "pull table"
+        elif hattr.method == STUN_METHOD_MODIFY:
+            pass
+        elif hattr.method == STUN_METHOD_DELETE:
+            pass
         else:
+            print "hattr.method",hattr.method
             print "Command error"
-        if socket_write(sock,buf,errlog):
-            break
-
-
-    errlog.log(','.join(['sock','%d'% fileno,' closed,occur error,send packets %d ' % mynum]))
-    sock.close()
-
-def socket_write(sock,buf,errlog):
-    if buf:
-        try:
-            nbyte = sock.send(binascii.unhexlify(''.join(buf)))
-            #slog.log(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
-            print "sock %d,send buf %s" % (sock.fileno(),buf)
-        except IOError:
-            errlog.log(','.join(['sock','%d'% sock.fileno(),'closed']))
-            return True
-        except TypeError:
-            errlog.log('send buf is wrong format %s' % buf)
-    return False
+        return  self.socket_write()
+    
+    
+    def socket_write(self):
+        if self.responses:
+            try:
+                nbyte = self.sock.send(binascii.unhexlify(''.join(self.responses)))
+                #slog.log(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
+                #print ''.join(buf)
+            except IOError:
+                self.errlog.log(','.join(['sock','%d'% self.fileno,'closed']))
+                return True
+            except TypeError:
+                self.errlog.log('send buf is wrong format %s' % self.responses)
+        return False
 
 
 def send_forward_buf(sock,srcsock,dstsock):
@@ -339,7 +404,6 @@ if __name__ == '__main__':
 
 
    ulist = []
-   slog.log(','.join([appname,'Start']))
    while True:
        try:
            ulist.append(pickle.load(args.uuidfile))
@@ -368,10 +432,9 @@ if __name__ == '__main__':
            #mulpool.apply_async(stun_setLogin,args=(host,muuid[0],uname,uname))
            #glist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
            uname = muuid[0][0]
-           print uname
            pt = threading.Thread(target=APPfunc,args=(host,muuid[0],uname,uname))
-           glist.append(pt)
            pt.start()
+           glist.append(pt)
            tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
        time.sleep(0.3)
    #gevent.joinall(glist)

@@ -19,7 +19,7 @@ import signal
 from multiprocessing import Queue
 
 
-from epoll_global import *
+from sockbasic import *
 
 reload(sys)
 sys.setdefaultencoding("utf-8")
@@ -83,11 +83,6 @@ def DevicesFunc(host,uuid):
     sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
     sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
     sock.settimeout(SOCK_TIMEOUT)
-    host = host
-    uuid = uuid
-    appname = 'devices_demo'
-    slog  = StatLog(appname)
-    errlog = ErrLog(appname)
     mysock = 0xFFFFFFFF
     dstsock = 0xFFFFFFFF
     mynum = 0
@@ -103,6 +98,7 @@ def DevicesFunc(host,uuid):
     if write_sock(sock,buf,errlog):
         return
     sendtrigger = 1
+    myrecv = ''
     while True:
         try:
             data = sock.recv(SOCK_BUFSIZE)
@@ -111,51 +107,53 @@ def DevicesFunc(host,uuid):
             break
         timer_queue.put(0)
         if not data:
+            errlog.log('sock %d,recv not data' % fileno)
+            if write_sock(sock,buf,errlog):
+                break
             continue
         hbuf = binascii.hexlify(data)
         hattr = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH])
-        if  stun_get_type(hattr.method) == STUN_METHOD_SEND:
-            time.sleep(1)
-            dstsock = int(hattr.srcsock,16)
-            if mysock != 0xFFFFFFFF and dstsock != 0xFFFFFFFF:
-
-                if hattr.sequence[:2] == '03':
-                    time.sleep(1)
-                    buf = send_data_to_app(mysock,dstsock,'02%s' % hattr.sequence[2:])
-                    slog.log("sock %d,recv app send num hex(%s)" % (fileno,hattr.sequence[2:]))
-                #下面是我方主动发数据
-                elif hattr.sequence[:2] == '02':
-                    rnum = int(hattr.sequence[2:],16)
-                    if mynum > 0xFFFFFF:
-                        mynum = 0
-                        errlog.log('socket %d,packet counter is over 0xFFFFFF once' % fileno)
-                    elif mynum == rnum:
-                        mynum +=1
-                        slog.log("sock %d,recv my confirm num %d is ok,data %s" % (fileno,rnum,hbuf))
-                    else:
-                        errlog.log('sock %d,losing packet,recv  number  %d, my counter %d' % (fileno,rnum,mynum))
-                    buf = send_data_to_app(mysock,dstsock,'03%06x' % mynum)
-                if write_sock(sock,buf,errlog):
-                    break
-
-                if sendtrigger:
-                    time.sleep(1)
-                    buf = send_data_to_app(mysock,dstsock,'03%06x' % mynum)
-                    if write_sock(sock,buf,errlog):
-                        break
-                    sendtrigger = 0
-            else:
-                errlog.log('error forward packet')
+        if not hattr:
+            errlog.log('sock %d,recv wrong head' % fileno)
             continue
 
+        if  stun_get_type(hattr.method) == STUN_METHOD_SEND:
+            time.sleep(1)
+            if hattr.srcsock == 0xFFFFFFFF:
+                errlog.log('sock %d,recv forward packet not srcsock' % fileno)
+                continue
+            dstsock = hattr.srcsock
+            if hattr.sequence[:2] == '03':
+                time.sleep(1)
+                buf = send_data_to_app(mysock,dstsock,'02%s' % hattr.sequence[2:])
+                slog.log("sock %d,recv app send num hex(%s)" % (fileno,hattr.sequence[2:]))
+            #下面是我方主动发数据
+            elif hattr.sequence[:2] == '02':
+                rnum = int(hattr.sequence[2:],16)
+                if mynum > 0xFFFFFF:
+                    mynum = 0
+                    errlog.log('socket %d,packet counter is over 0xFFFFFF once' % fileno)
+                elif mynum == rnum:
+                    mynum +=1
+                    slog.log("sock %d,recv my confirm num %d is ok,data %s" % (fileno,rnum,hbuf))
+                else:
+                    errlog.log('sock %d,losing packet,recv  number  %d, my counter %d' % (fileno,rnum,mynum))
+                buf = send_data_to_app(mysock,dstsock,'03%06x' % mynum)
+            if write_sock(sock,buf,errlog):
+                break
 
-        rdict = parser_stun_package(hbuf[STUN_HEADER_LENGTH:-8])
-        if not rdict:
+#            if sendtrigger:
+#                time.sleep(1)
+#                buf = send_data_to_app(mysock,dstsock,'03%06x' % mynum)
+#                if write_sock(sock,buf,errlog):
+#                    break
+#                sendtrigger = 0
+            continue
+        p = parser_stun_package(hbuf[STUN_HEADER_LENGTH:-8])
+        if not p:
             slog.log(','.join(['sock','%d' % fileno,'server packet is wrong,rdict is empty']))
             break # 出错了
 
-        print hattr.__dict__
-        print rdict
 
         if not stun_is_success_response_str(hattr.method):
                 slog.log(','.join(['sock','%d' % fileno,'server error responses',\
@@ -163,23 +161,25 @@ def DevicesFunc(host,uuid):
                 continue
 
         hattr.method = stun_get_type(hattr.method)
+        rdict = p[0]
         if hattr.method == STUN_METHOD_ALLOCATE:
             pt = threading.Thread(target=refresh_time,args=(sock,timer_queue,errlog,refresh_buf))
             pt.start()
             try:
-                stat = rdict[STUN_ATTRIBUTE_STATE][-1]
+                stat = rdict[STUN_ATTRIBUTE_STATE]
                 mysock = int(stat[:8],16)
             except KeyError:
                 pass
         elif hattr.method == STUN_METHOD_INFO:
             try:
-                stat = rdict[STUN_ATTRIBUTE_STATE][-1]
+                stat = rdict[STUN_ATTRIBUTE_STATE]
                 buf = send_data_to_app(mysock,int(stat[:8],16),'03%06x' % mynum)
                 
                 if write_sock(sock,buf,errlog):
                     break
             except KeyError:
-                pass
+                errlog.log("sock %d,recv not state" % fileno)
+
 
     errlog.log(','.join(['sock','%d' % fileno,'close,forward packets %d' % mynum]))
     sock.close()
@@ -189,7 +189,6 @@ def write_sock(sock,buf,errlog):
     if buf:
         try:
             nbyte = sock.send(binascii.unhexlify(''.join(buf)))
-            print "sock %d,buf %s" % (sock.fileno(),buf)
             return False
         except IOError:
             errlog.log('socket %d close,' % sock.fileno())
@@ -259,6 +258,9 @@ if __name__ == '__main__':
 
     #slog.log(','.join(['Start UUID',uid]))
     #gp = [gevent.spawn(device_login,host,uid) for uid in uulist]
+    appname = "thread_devices"
+    slog  = StatLog(appname)
+    errlog = ErrLog(appname)
     for uid in uulist:
         it = threading.Thread(target=DevicesFunc,args=(host,uid))
         it.start()

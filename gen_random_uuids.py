@@ -1,4 +1,4 @@
-#!/bin/python2
+#!/opt/pypy-2.5.0-src/pypy-c
 #coding=utf-8
 import binascii
 import random
@@ -14,8 +14,7 @@ import pickle
 import select
 import argparse
 import os
-
-from epoll_global import *
+from sockbasic import *
 reload(sys)
 sys.setdefaultencoding("utf-8")
 

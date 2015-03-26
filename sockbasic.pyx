@@ -5,9 +5,19 @@ import uuid
 import time
 import logging
 from logging import handlers
-from multiprocessing import Pool,Pipe
+import threading
 import multiprocessing as mp
+from multiprocessing  import Pool,Queue
 from select import epoll,EPOLLET,EPOLLIN,EPOLLOUT,EPOLLHUP,EPOLLERR
+
+from binascii import hexlify,unhexlify
+from datetime import datetime
+from sqlalchemy import *
+from sqlalchemy.exc import *
+from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,MetaData,DateTime,Boolean,SmallInteger,VARCHAR
+from sqlalchemy import sql,and_
+from sqlalchemy.dialects import postgresql as pgsql
+
 
 STUN_METHOD_BINDING='0001'   # APP登录命令
 STUN_METHOD_ALLOCATE='0003'   #小机登录命令
@@ -34,8 +44,6 @@ STUN_ATTRIBUTE_CHANGE_REQUEST='0003'
 STUN_ATTRIBUTE_USERNAME='0006'
 STUN_ATTRIBUTE_MESSAGE_INTEGRITY='0008'
 STUN_ATTRIBUTE_MESSAGE_ERROR_CODE='0009'
-STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS='0020'
-OLD_STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS='8020'
 
 
 STUN_ATTRIBUTE_CHANNEL_NUMBER='000c'
@@ -43,16 +51,7 @@ STUN_ATTRIBUTE_LIFETIME='000d'
 STUN_ATTRIBUTE_BANDWIDTH='0010'
 STUN_ATTRIBUTE_XOR_PEER_ADDRESS='0012'
 STUN_ATTRIBUTE_DATA='0013'
-STUN_ATTRIBUTE_XOR_RELAYED_ADDRESS='0016'
-STUN_ATTRIBUTE_EVENT_PORT='0018'
-STUN_ATTRIBUTE_REQUESTED_TRANSPORT='0019'
-STUN_ATTRIBUTE_DONT_FRAGMENT='001a'
-STUN_ATTRIBUTE_TIMER_VAL='0021'
-STUN_ATTRIBUTE_RESERVATION_TOKEN='0022'
 
-
-STUN_ATTRIBUTE_SOFTWARE='8022'
-STUN_ATTRIBUTE_ALTERNATE_SERVER='8023'
 STUN_ATTRIBUTE_FINGERPRINT='8028'
 STUN_ATTRIBUTE_UUID='8001'
 STUN_ATTRIBUTE_RUUID='8002'
@@ -60,42 +59,24 @@ STUN_ATTRIBUTE_STATE='8003'
 STUN_ATTRIBUTE_MUUID='8004'
 STUN_ATTRIBUTE_MRUUID='8005'
 
-STUN_ATTRIBUTE_TRANSPORT_TCP_VALUE=int(6)
-STUN_ATTRIBUTE_TRANSPORT_UDP_VALUE=int(17)
-STUN_ATTRIBUTE_TRANSPORT_TLS_VALUE=int(56)
-STUN_ATTRIBUTE_TRANSPORT_DTLS_VALUE=int(250)
-
 
 #Lifetimes
-STUN_DEFAULT_ALLOCATE_LIFETIME=int(600)
-UCLIENT_SESSION_LIFETIME=int(60)
-STR_UCLIENT_SESSION_LIFETIME='%08x' % UCLIENT_SESSION_LIFETIME
 
-STUN_MAGIC_COOKIE=0x2112A442
-STUN_MAGIC_COOKIE_STR = struct.pack("I",STUN_MAGIC_COOKIE)
 CRC_MASK=0xFFFFFFFF
 STUN_STRUCT_FMT='!HHI12s' # 固定20Byte的头， 类型，长度，魔数，SSID
-
-
-STUN_DEFAULT_ALLOCATE_LIFETIME=int(600)
-#UCLIENT_SESSION_LIFETIME=int(160)
-
 STUN_UUID_VENDOR='20sI'
 STUN_UVC='16s4sI' # uuireturn check_packet_crc32(buf)
-STUN_MAGIC_COOKIE=0x2112A442
-SOCK_BUFSIZE=1024
+SOCK_BUFSIZE=4096
 SOCK_TIMEOUT=7200
 UUID_SIZE=struct.calcsize(STUN_UVC)
 TUUID_SIZE=16
 REFRESH_TIME=50
 CRCMASK=0x5354554e
 CRCPWD=0x6a686369
-HEX4B=16
-HEX2B=8
-FINDDEV_TIMEOUT=10
 HEAD_MAGIC=binascii.hexlify('JL')
 STUN_HEADER_FMT='!2sHHIIHI'
 STUN_HEADER_LENGTH=struct.calcsize(STUN_HEADER_FMT)*2
+UCLIENT_SESSION_LIFETIME=int(600)
 
 STUN_ERROR_UNKNOWN_ATTR='%08x' % 0x401
 STUN_ERROR_UNKNOWN_HEAD='%08x' % 0x402
@@ -108,15 +89,6 @@ STUN_ERROR_FORMAT='%08x' % 0x408
 STUN_ERROR_OBJ_NOT_EXIST='%08x' % 0x409
 STUN_ERROR_NONE=None
 
-errDict={STUN_ERROR_UNKNOWN_ATTR:'Unkown attribute',
-        STUN_ERROR_UNKNOWN_HEAD:'packet head error',
-        STUN_ERROR_UNKNOWN_PACKET:'packet format error',
-        STUN_ERROR_UNKNOWN_METHOD:'unkown method',
-        STUN_ERROR_USER_EXIST:'User has exist',
-        STUN_ERROR_AUTH:'Unauthorized error',
-        STUN_ERROR_DEVOFFLINE:'target devices offline',
-        STUN_ERROR_FORMAT:'Format error'
-        }
 
 STUN_ONLINE='00000001'
 STUN_OFFLINE='00000000'
@@ -127,7 +99,6 @@ LOG_COUNT=128
 STUN_HEAD_CUTS=[4,8,12,20,28,32,40] # 固定长度的包头
 STUN_HEAD_KEY=['magic','version','length','srcsock','dstsock','method','sequence'] # 包头的格式的名称
 __author__ = 'liuchunyang'
-
 
 class DictClass:
     def __init__(self,**kwargs):
@@ -154,7 +125,10 @@ def get_packet_head_class(buf): # 把包头解析成可以识的类属性
     d = dict(zip(STUN_HEAD_KEY,get_packet_head_list(buf)))
     cc = DictClass()
     for k in d.keys():
-        setattr(cc,k,d.get(k))
+        if k == 'srcsock' or k == 'dstsock':
+            setattr(cc,k,int(d.get(k),16))
+        else:
+            setattr(cc,k,d.get(k))
     return cc
 
 def stun_make_success_response(method):
@@ -201,7 +175,7 @@ def stun_add_fingerprint(buf):
     crcstr = "%08x" % ((crcval  ^ CRCMASK) & 0xFFFFFFFF)
     buf[-1] = crcstr.replace('-','')
 
-def multiprocessing_handle(func,arglist):
+def mcore_handle(func,arglist):
     ps = mp.cpu_count()*2
     pl = Pool(ps)
     pl.map(func,arglist)
@@ -256,6 +230,13 @@ def check_jluuid(huid): # 自定义24B的UUID
         return STUN_ERROR_UNKNOWN_PACKET
     return None
 
+def check_dst_and_src(res):
+    if res.dstsock == 0xFFFFFFFF or res.srcsock == 0xFFFFFFFF:
+        res.eattr = STUN_ERROR_UNKNOWN_HEAD
+        return
+    else:
+        return None
+
 def get_muluuid_fmt(num):
     n = 1
     p = []
@@ -264,14 +245,21 @@ def get_muluuid_fmt(num):
         n+=1
     return p
 
+def split_jl_head(hbuf,fileno):
+    return [(''.join([HEAD_MAGIC,n]),fileno) for n in hbuf.split(HEAD_MAGIC) if n]
+
+def split_requests_buf(hbuf):
+    return [''.join([HEAD_MAGIC,n]) for n in hbuf.split(HEAD_MAGIC) if n]
+
+
 def read_attributes_from_buf(response):
     attr_name = response[:4]
     fmt = []
     vfunc = lambda x: [4,8,int(x,16)]
     if attr_name == STUN_ATTRIBUTE_LIFETIME:
         fmt = vfunc(response[4:8])
-    elif attr_name == STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:
-        fmt = '!HH2sHI'
+    #elif attr_name == STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:
+    #    fmt = '!HH2sHI'
     elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
         fmt = '!HHI'
     elif attr_name == STUN_ATTRIBUTE_STATE:
@@ -437,3 +425,84 @@ class EpollReactor(object):
 
     def modify(self,fd,mode):
         self._poller.modify(fd,mode)
+
+
+class QueryDB():
+    def __init__(self):
+        self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=10240,max_overflow=20)
+
+    def check_table(self,table):
+        return table.exists(self.engine)
+
+    def get_engine(self):
+        return self.engine
+
+    def get_dbconn(self):
+        return self.get_engine().connect()
+    
+    def execute(self,stmt):
+        return self.get_dbconn().execute(stmt)
+        
+
+    def create_table(self,sql_txt):
+        self.engine.connect().execute(sql_txt)
+
+    @staticmethod
+    def get_account_bind_table(name):
+        metadata = MetaData()
+        table = Table(name,metadata,
+                Column('uuid',pgsql.VARCHAR(48),nullable=False,primary_key=True),
+                Column('pwd',pgsql.BYTEA),
+                Column('reg_time',pgsql.TIME,nullable=False)
+                )
+        return (table,metadata)
+
+    @staticmethod
+    def get_account_status_table():
+        metadata = MetaData()
+        table = Table('account_status',metadata,
+                Column('uname',pgsql.VARCHAR(255)),
+                Column('is_login',pgsql.BOOLEAN,nullable=False),
+                Column('last_login_time',pgsql.TIME,nullable=False),
+                Column('chost',pgsql.ARRAY(pgsql.BIGINT),nullable=False)
+                )
+        return table
+    
+    @staticmethod
+    def get_account_table():
+        metadata = MetaData()
+        account = Table('account',metadata,
+                #Column('uuid',pgsql.UUID,primary_key=True),
+                Column('uname',pgsql.VARCHAR(255),primary_key=True),
+                Column('pwd',pgsql.BYTEA),
+                Column('is_active',pgsql.BOOLEAN,nullable=False),
+                Column('reg_time',pgsql.TIME,nullable=False)
+                )
+        return account
+
+    @staticmethod
+    def get_devices_table(tname):
+        metadata = MetaData()
+        mirco_devices = Table(tname,metadata,
+                Column('devid',pgsql.UUID,primary_key=True,unique=True),
+                Column('is_active',pgsql.BOOLEAN,nullable=False),
+                Column('last_login_time',pgsql.TIMESTAMP,nullable=False),
+                Column('is_online',pgsql.BOOLEAN,nullable=False),
+                Column('chost',pgsql.ARRAY(pgsql.BIGINT),nullable=False),
+                Column('data',pgsql.BYTEA)
+                )
+        return mirco_devices
+
+
+class WorkerThread(threading.Thread):
+    def __init__(self,queue,logger):
+        threading.Thread.__init__(self)
+        self.queue = queue 
+        self.log = logger
+
+    def run(self):
+        while True:
+            msg = self.queue.get()
+            self.log.log(msg)
+            time.sleep(0.1)
+
