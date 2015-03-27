@@ -73,7 +73,7 @@ TUUID_SIZE=16
 REFRESH_TIME=50
 CRCMASK=0x5354554e
 CRCPWD=0x6a686369
-HEAD_MAGIC=binascii.hexlify('JL')
+HEAD_MAGIC="4a4c0001"
 STUN_HEADER_FMT='!2sHHIIHI'
 STUN_HEADER_LENGTH=struct.calcsize(STUN_HEADER_FMT)*2
 UCLIENT_SESSION_LIFETIME=int(600)
@@ -183,8 +183,8 @@ def mcore_handle(func,arglist):
     pl.join()
 
 def stun_init_command_str(msg_type,buf):
-    buf.append(binascii.hexlify('JL')) # 魔数字
-    buf.append("%04x" % 1) # 版本号
+    buf.append("4a4c") # 魔数字
+    buf.append("0001") # 版本号
     buf.append("%04x" % 20) # 长度
     buf.append("%08x" % 0) # SRC
     buf.append("%08x" % 0) # DST
@@ -197,7 +197,7 @@ def check_packet_crc32(buf): # 检查包的CRC
     return cmp(buf[-8:],'%08x' %  rcrc)
 
 def check_packet_vaild(buf):
-    if cmp(buf[:4],HEAD_MAGIC) or check_packet_crc32(buf):
+    if cmp(buf[:8],HEAD_MAGIC) or check_packet_crc32(buf):
         return True
     else:
         return False
@@ -322,6 +322,9 @@ def parser_stun_package(buf):
         v = [ v[2][:int(v[1],16)*2] for v in lst]
     except TypeError:
         print "TypeError,buf",buf
+        del k
+        del v
+        del lst
         return None
     return  (dict(zip(k,v)),lst)
 

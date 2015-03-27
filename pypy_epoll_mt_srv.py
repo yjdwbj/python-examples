@@ -15,6 +15,7 @@ import threading
 import uuid
 import sys
 import os
+import gc
 import unittest
 import argparse
 import errno
@@ -40,9 +41,9 @@ LOG_ERROR_IILAGE_CLIENT='Iilega Client request'
 
 class ComState: pass
 
-def clean_dict(d,k):
+def clean_dict(p):
     try:
-        d.pop(k)
+        p[0].pop(p[1])
     except KeyError:
         pass
 
@@ -134,6 +135,9 @@ class EpollServer(EpollReactor):
         self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
         self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
         self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_DEBUG,0)
+        self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
+        self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
+        self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
         self.srvsocket.settimeout(SOCK_TIMEOUT)
         self.srvsocket.bind(('',port))
         self.srvsocket.listen(1024)
@@ -197,16 +201,12 @@ class EpollServer(EpollReactor):
             popfunc = lambda d,v: d.pop(v)
             k = mcore_handle(popfunc,(n))
         except TypeError:
-            print "TypeError %d" % res.fileno,self.appbinds.values
-            print "will pop ",uids
-
-
+            print "TypeError %d,n is none" % res.fileno,n
         self.delete_binds_in_db(uname,uids)
         return  stun_return_same_package(res)
         
 
     def delete_binds_in_db(self,uname,uids):
-        
         try:
             btable = QueryDB.get_account_bind_table(uname)[0]
             self.execute(btable.delete().where(btable.c.uuid == uids ))
@@ -217,22 +217,21 @@ class EpollServer(EpollReactor):
 
     def handle_app_pull(self,res):
         uname = self.users[res.fileno]
-        print "pull command from",uname
         try:
             btable = QueryDB.get_account_bind_table(uname)[0]
             s = sql.select([btable])
             fall = self.execute(s).fetchall()
             data = ''.join([ ''.join([r[0],hexlify(r[1])]) for r in fall])
-            print "pull data is",data
-            return  app_user_pull_table(res,data)
+            if not data:
+                res.eattr = STUN_ERROR_OBJ_NOT_EXIST
+                return  stun_error_response(res)
+            return  app_user_pull_table(res,unhexlify(data))
         except ProgrammingError:
             #print "table not exits"
             res.eattr = STUN_ERROR_OBJ_NOT_EXIST
-            print "ProgrammingError in pull"
             return  stun_error_response(res)
         except KeyError:
             res.eattr =STUN_ERROR_UNKNOWN_PACKET
-            print "KeyError in pull"
             return  stun_error_response(res)
 
     def delete_fileno(self,fileno):
@@ -291,7 +290,7 @@ class EpollServer(EpollReactor):
                             csock = self.clients[fileno]
                         except KeyError:
                             self.statqueue.put(','.join(['sock %d' % fileno,'not in clients']))
-                            self.delete_fileno(fileno)
+                            self.dealwith_peer_hup(fileno)
                             continue
 
                         #while True:
@@ -301,7 +300,7 @@ class EpollServer(EpollReactor):
                                 self.dealwith_peer_hup(fileno)
                                 continue
                             self.requests[fileno] += hexlify(recvbuf)
-                            ch.send(fileno)
+                            self.process_handle_first(fileno)
                         except KeyError:
                             continue
                         except IOError:
@@ -313,14 +312,13 @@ class EpollServer(EpollReactor):
                             nbyte =  self.clients[fileno].send(\
                                     unhexlify(''.join(self.responses[fileno])))
                         except TypeError:
-                            print "odd buf is",self.responses[fileno]
+                            continue
                         except KeyError:
-                            print sendbuf," len ",len(sendbuf)
                             continue
                         except IOError:
                             self.errqueue.put(','.join(["sock has closed %d,host %s" %(fileno,self.hosts[fileno][0]),\
                                     str(sys._getframe().f_lineno)]))
-                            self.sock_send_fail(fileno,sendbuf)
+                            self.sock_send_fail(fileno)
                         else:
                             self.responses.pop(fileno)
                         self.modify(fileno,self.EV_IN)
@@ -337,34 +335,28 @@ class EpollServer(EpollReactor):
 
 
     def process_handle_first(self,fileno):
-        hbuf = ''
-        try:
-            hbuf = self.requests[fileno]
-        except KeyError:
-            print "sock %d, not requests" % fileno
-        l = hbuf.count(HEAD_MAGIC) #没有找到JL关键字
-
-        if l == 0:
-            print "unkown packet",hbuf
-            self.errqueue.put(','.join([LOG_ERROR_PACKET,self.hosts[fileno][0],str(sys._getframe().f_lineno)]))
-            self.dealwith_peer_hup(fileno)
+        l = self.requests[fileno].count(HEAD_MAGIC) #没有找到JL关键字
+        if not l:
+            self.errqueue.put('sock %d, recv no HEAD_MAGIC packet %s' % (fileno,self.requests[fileno]))
             return
-
+        plen = len(self.requests[fileno])
         if l > 1:
             #self.errqueue.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
-            print "sock %d,recv multi buf,len %d" % (fileno,len(hbuf))
+            self.statqueue.put("sock %d,recv multi buf,len %d, buf: %s" % (fileno,plen,self.requests[fileno]))
             #hbuf = hbuf[l:] # 从找到标识头开始处理
-            pos = sum([len(v) for v in split_requests_buf(hbuf)])
+            pos = sum([len(v) for v in split_requests_buf(self.requests[fileno])])
             self.requests[fileno] = self.requests[fileno][pos:]
-            [self.handle_requests_buf(n,fileno) for n in  split_requests_buf(hbuf)]
-        else:
-            nlen = int(hbuf[8:12],16) * 2
-            if len(hbuf) < nlen:
-                print "sock %d, recv packet not complete, %s" % (fileno,hbuf)
+            [self.handle_requests_buf(n,fileno) for n in  split_requests_buf(self.requests[fileno])]
+        else: # 找到一个标识，还不知在什么位置
+            pos = self.requests[fileno].index(HEAD_MAGIC)
+            self.requests[fileno] = self.requests[fileno][pos:]
+            nlen = int(self.requests[fileno][8:12],16) *2
+            if len(self.requests[fileno]) < nlen:
+                print "sock %d, recv packet not complete, %s" % (fileno,self.requests[fileno])
                 return
-            hbuf = self.requests[fileno][:nlen]
+            onepack = self.requests[fileno][:nlen]
             self.requests[fileno] = self.requests[fileno][nlen:]
-            self.handle_requests_buf(hbuf,fileno)
+            self.handle_requests_buf(onepack,fileno)
             
     def stackless_loop(self,channel):
         while True:
@@ -380,6 +372,7 @@ class EpollServer(EpollReactor):
         res.eattr = STUN_ERROR_NONE
         res.host= self.hosts[fileno]
         res.fileno=fileno
+        gc.collect()
 
         #通过认证的socket 直接转发了
         try:
@@ -430,7 +423,7 @@ class EpollServer(EpollReactor):
         trip =  parser_stun_package(hbuf[hexpos:-8])
         if trip is None:
             res.eattr = STUN_ERROR_UNKNOWN_ATTR
-            print "hbuf is wrong",hbuf
+            print "hbuf is wrong",hbuf,self.hosts[res.fileno]
             self.errqueue.put(','.join([LOG_ERROR_ATTR,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             self.responses[res.fileno] = stun_error_response(res)
             self.modify(res.fileno,self.EV_OUT)
@@ -441,7 +434,7 @@ class EpollServer(EpollReactor):
                self.responses[res.fileno]=  self.postfunc[res.method](res)
                self.modify(res.fileno,self.EV_OUT)
             except KeyError:
-                print "fileno %d,method %s" % (res.fileno,res.method)
+                print "KeyError,fileno %d,method %s,not auth clients" % (res.fileno,res.method)
 
         
     
@@ -528,7 +521,7 @@ class EpollServer(EpollReactor):
         self.appsock[res.fileno] = tcs = ComState()
         tcs.name = result[0][0]
         self.app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME],res.host)
-        self.statqueue.put('user %s login,socket is %d' % (tcs.name,res.fileno))
+        self.statqueue.put('user %s login,socket is %d,host %s:%d' % (tcs.name,res.fileno,res.host[0],res.host[1]))
         self.users[res.fileno] = user
         return app_user_auth_success(res)
 
@@ -564,7 +557,7 @@ class EpollServer(EpollReactor):
         self.devuuid[huid] = res.fileno
         tcs.uuid = huid
         #print "login devid is",tcs.uuid
-        #self.statqueue.put('device login uuid is %s,socket is %d' % (huid,res.fileno))
+        self.statqueue.put('device login uuid is %s,socket is %d, host %s:%d' % (huid,res.fileno,res.host[0],res.host[1]))
         return device_login_sucess(res)
 
     def handle_chkuser_request(self,res):
@@ -644,20 +637,27 @@ class EpollServer(EpollReactor):
 
     def dealwith_sock_close_update_db(self,fileno):
         # socket 关闭，更新数据库
-        if self.appsock.has_key(fileno): #更新相应的数据库在线状态
-            self.statqueue.put('app sock close, %d' % fileno)
-            #print "appsock is",self.appsock
-            self.app_user_logout(self.appsock[fileno].name)
-        elif self.devsock.has_key(fileno):
+        try:
+            name = self.appsock[fileno].name
+            self.statqueue.put('dev sock close, %d' % fileno)
+            self.app_user_logout(name)
+            return
+        except KeyError:
+            pass
+
+        try:
+            uuid = self.devsock[fileno].uuid
             self.statqueue.put('dev sock close, %d' % fileno)
             self.mirco_devices_logout(self.devsock[fileno].uuid)
+        except KeyError:
+            pass
 
 
     def dealwith_peer_hup(self,fileno):
+        self.delete_fileno(fileno)
         self.dealwith_sock_close_update_db(fileno)
         self.dealwith_sock_close_update_binds(fileno)
         self.remove_fileno_resources(fileno)
-        self.delete_fileno(fileno)
 
     def notify_peer_is_logout(self,pair): # pair[0] == fileno, pair[1] == dstsock
         fileno = pair[0]
@@ -721,16 +721,23 @@ class EpollServer(EpollReactor):
     
     
     def dealwith_sock_close_update_binds(self,fileno):
-        if self.appsock.has_key(fileno):
-            self.statqueue.put('app logout info dev, %d' % fileno)
+        try:
+            name = self.appsock[fileno].name
+            self.statqueue.put('app %s logout info dev,self fileno %d' % (name,fileno))
             self.notify_uuid_app_logout(fileno)
             # APP 应该下线了
-        elif self.devsock.has_key(fileno):
-            self.statqueue.put('dev logout info app, %d' % fileno)
+        except KeyError:
+            pass
+
+        try:
+            uuid = self.devsock[fileno].uuid
+            self.statqueue.put('dev %s logout info app,self fileno %d' % (uuid,fileno))
             self.notify_app_uuid_logout(fileno)
             # 小机下线，通知APP
+        except KeyError:
+            pass
     
-    def sock_send_fail(self,fileno,hbuf):
+    def sock_send_fail(self,fileno):
         # 要检查一下是不是转发失败了，要通知发送方
 #        phead = get_packet_head_class(hbuf)
 #        if phead.method == STUN_METHOD_SEND or phead.method == STUN_METHOD_DATA:
@@ -753,7 +760,8 @@ class EpollServer(EpollReactor):
         self.dealwith_peer_hup(fileno)
     
     def remove_fileno_resources(self,fileno):
-        [clean_dict(getattr(self,n),fileno) for n in store]
+        m = [(getattr(self,n),fileno) for n in store]
+        mcore_handle(clean_dict,m)
 
 
     def bind_each_uuid(self,pair): # pair[0] == ustr,pair[1] == fileno

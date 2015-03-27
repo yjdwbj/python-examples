@@ -20,6 +20,7 @@ from multiprocessing import Queue
 
 
 from sockbasic import *
+import gc
 
 reload(sys)
 sys.setdefaultencoding("utf-8")
@@ -61,7 +62,7 @@ def send_data_to_app(srcsock,dstsock,sequence):
 #class Devices(threading.Thread):
 class Devices:
     pass
-def refresh_time(sock,timer_queue,errlog,refresh_buf):
+def refresh_time(sock,timer_queue,errqueue,refresh_buf):
        n = time.time() + 30
        while True:
            try:
@@ -73,129 +74,176 @@ def refresh_time(sock,timer_queue,errlog,refresh_buf):
                    try:
                        sock.send(refresh_buf)
                    except IOError:
-                      errlog.log(','.join(['sock','%d'% sock.fileno(),' closed,occur error,send packets %d ' % mynum]))
+                      errqueue.put(','.join(['sock','%d'% sock.fileno(),' closed,refresh_time']))
+class DevicesFunc():
+    def __init__(self,host,uuid,errqueue,statqueue):
+        #threading.Thread.__init__(devclass)
+        self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        self.sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
+        self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
+        self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
+        self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
+        self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
+        self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
 
-def DevicesFunc(host,uuid):
-    devclass = Devices()
-    #threading.Thread.__init__(devclass)
-    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-    sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
-    sock.settimeout(SOCK_TIMEOUT)
-    mysock = 0xFFFFFFFF
-    dstsock = 0xFFFFFFFF
-    mynum = 0
-    refresh_buf = binascii.unhexlify(''.join(stun_struct_refresh_request()))
-    timer_queue = Queue()
-    fileno = sock.fileno()
-    try:
-        sock.connect(host)
-    except socket.timeout:
-        errlog.log('sock %d timeout' % sock.fileno())
-        return 
-    buf = device_struct_allocate(uuid)
-    if write_sock(sock,buf,errlog):
-        return
-    sendtrigger = 1
-    myrecv = ''
-    while True:
-        try:
-            data = sock.recv(SOCK_BUFSIZE)
-        except IOError:
-            errlog.log('sock %d,recv occur erro' % fileno)
-            break
-        timer_queue.put(0)
-        if not data:
-            errlog.log('sock %d,recv not data' % fileno)
-            if write_sock(sock,buf,errlog):
+        self.sock.settimeout(SOCK_TIMEOUT)
+        self.mysock = 0xFFFFFFFF
+        self.dstsock = 0xFFFFFFFF
+        self.mynum = 0
+        self.refresh_buf = binascii.unhexlify(''.join(stun_struct_refresh_request()))
+        self.timer_queue = Queue()
+        self.fileno = self.sock.fileno()
+        self.host = host
+        self.uuid = uuid
+        self.errqueue = errqueue
+        self.statqueue = statqueue
+        self.fileno = self.sock.fileno()
+        self.recv = ''
+        self.sbuf = ''
+        self.start()
+
+    def start(self):
+        nums = 100
+        while nums >0:
+            n = time.time()
+            nums -= 1
+            try:
+                self.sock.connect(self.host)
                 break
-            continue
-        hbuf = binascii.hexlify(data)
+            except socket.timeout:
+                self.errqueue.put('sock %d timeout %f' % (sock.fileno,time.time()-n))
+                time.sleep(5)
+                continue
+            except socket.error:
+                self.errqueue.put('sock %d socket.error %f,sleep 5.0 try again' % (sock.fileno,time.time()-n))
+                time.sleep(5)
+                continue
+
+        if not nums:
+            return
+        self.sbuf = device_struct_allocate(self.uuid)
+        if self.write_sock():
+            return
+        while True:
+            try:
+                data = self.sock.recv(SOCK_BUFSIZE)
+            except IOError:
+                self.errqueue.put('sock %d,recv occur erro' % self.fileno)
+                break
+            self.timer_queue.put(0)
+            if not data:
+                self.errqueue.put('sock %d,recv not data' % self.fileno)
+                break
+            self.recv += binascii.hexlify(data)
+            self.process_handle_first()
+        self.errqueue.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
+        self.sock.close()
+
+    def process_handle_first(self):
+        l = self.recv.count(HEAD_MAGIC) #没有找到JL关键字
+        if not l:
+            self.errqueue.put('sock %d, recv no HEAD_MAGIC packet %s' % (self.fileno,self.recv))
+            return
+        plen = len(self.recv)
+        if l > 1:
+            #self.errqueue.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
+            self.statqueue.put("sock %d,recv multi buf,len %d, buf: %s" % (self.fileno,plen,self.recv))
+            #hbuf = hbuf[l:] # 从找到标识头开始处理
+            pos = sum([len(v) for v in split_requests_buf(self.recv)])
+            self.recv = self.recv[pos:]
+            [self.process_loop(n) for n in  split_requests_buf(self.recv)]
+        else: # 找到一个标识，还不知在什么位置
+            pos = self.recv.index(HEAD_MAGIC)
+            self.recv = self.recv[pos:]
+            nlen = int(self.recv[8:12],16) *2
+            if len(self.recv) < nlen:
+                self.errqueue.put("sock %d, recv packet not complete, %s" % (self.fileno,self.recv))
+                return
+            onepack = self.recv[:nlen]
+            self.recv = self.recv[nlen:]
+            self.process_loop(onepack)
+
+
+    def process_loop(self,hbuf):
+        gc.collect()
+        if check_packet_vaild(hbuf): # 校验包头
+           self.errqueue.put(','.join(['sock','%d'% self.fileno,'check_packet_vaild',hbuf]))
+           self.errqueue.put(hbuf)
+           return False
+
+
         hattr = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH])
         if not hattr:
-            errlog.log('sock %d,recv wrong head' % fileno)
-            continue
-
+            self.errqueue.put('sock %d,recv wrong head' % self.fileno)
+            return False
+    
         if  stun_get_type(hattr.method) == STUN_METHOD_SEND:
-            time.sleep(1)
             if hattr.srcsock == 0xFFFFFFFF:
-                errlog.log('sock %d,recv forward packet not srcsock' % fileno)
-                continue
+                self.errqueue.put('sock %d,recv forward packet not srcsock,buf %s' % (self.fileno,hbuf))
+                return False
             dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
                 time.sleep(1)
-                buf = send_data_to_app(mysock,dstsock,'02%s' % hattr.sequence[2:])
-                slog.log("sock %d,recv app send num hex(%s)" % (fileno,hattr.sequence[2:]))
+                self.sbuf = send_data_to_app(self.mysock,dstsock,'02%s' % hattr.sequence[2:])
+                self.statqueue.put("sock %d,recv app send me num hex(%s), buf %s" % (self.fileno,hattr.sequence[2:],hbuf))
             #下面是我方主动发数据
             elif hattr.sequence[:2] == '02':
                 rnum = int(hattr.sequence[2:],16)
-                if mynum > 0xFFFFFF:
-                    mynum = 0
-                    errlog.log('socket %d,packet counter is over 0xFFFFFF once' % fileno)
-                elif mynum == rnum:
-                    mynum +=1
-                    slog.log("sock %d,recv my confirm num %d is ok,data %s" % (fileno,rnum,hbuf))
+                if self.mynum > 0xFFFFFF:
+                    self.mynum = 0
+                    self.errqueue.put('socket %d,packet counter is over 0xFFFFFF once' % self.fileno)
+                elif self.mynum == rnum:
+                    self.mynum +=1
+                    self.statqueue.put("sock %d,recv my confirm num %d is ok,data %s" % (self.fileno,rnum,hbuf))
                 else:
-                    errlog.log('sock %d,losing packet,recv  number  %d, my counter %d' % (fileno,rnum,mynum))
-                buf = send_data_to_app(mysock,dstsock,'03%06x' % mynum)
-            if write_sock(sock,buf,errlog):
-                break
-
-#            if sendtrigger:
-#                time.sleep(1)
-#                buf = send_data_to_app(mysock,dstsock,'03%06x' % mynum)
-#                if write_sock(sock,buf,errlog):
-#                    break
-#                sendtrigger = 0
-            continue
+                    self.errqueue.put('sock %d,losing packet,recv  number  %d, my counter %d' % (self.fileno,rnum,self.mynum))
+                self.sbuf = send_data_to_app(self.mysock,dstsock,'03%06x' % self.mynum)
+            return  self.write_sock()
         p = parser_stun_package(hbuf[STUN_HEADER_LENGTH:-8])
         if not p:
-            slog.log(','.join(['sock','%d' % fileno,'server packet is wrong,rdict is empty']))
-            break # 出错了
-
-
+            self.statqueue.put(','.join(['sock','%d' % self.fileno,'server packet is wrong,rdict is empty']))
+            return False # 出错了
+    
+    
         if not stun_is_success_response_str(hattr.method):
-                slog.log(','.join(['sock','%d' % fileno,'server error responses',\
+                self.errqueue.put(','.join(['sock','%d' % self.fileno,'server error responses',\
                         'method',hattr.method]))
-                continue
-
+                return False
+    
         hattr.method = stun_get_type(hattr.method)
         rdict = p[0]
         if hattr.method == STUN_METHOD_ALLOCATE:
-            pt = threading.Thread(target=refresh_time,args=(sock,timer_queue,errlog,refresh_buf))
-            pt.start()
+            self.statqueue.put('sock %d, login' % self.fileno)
+            #pt = threading.Thread(target=refresh_time,args=(self.sock,self.timer_queue,errlog,self.refresh_buf))
+            #pt.start()
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
-                mysock = int(stat[:8],16)
+                self.mysock = int(stat[:8],16)
             except KeyError:
                 pass
         elif hattr.method == STUN_METHOD_INFO:
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
-                buf = send_data_to_app(mysock,int(stat[:8],16),'03%06x' % mynum)
-                
-                if write_sock(sock,buf,errlog):
-                    break
+                self.sbuf = send_data_to_app(self.mysock,int(stat[:8],16),'03%06x' % self.mynum)
+                return self.write_sock()
             except KeyError:
-                errlog.log("sock %d,recv not state" % fileno)
-
-
-    errlog.log(','.join(['sock','%d' % fileno,'close,forward packets %d' % mynum]))
-    sock.close()
-
-
-def write_sock(sock,buf,errlog):
-    if buf:
-        try:
-            nbyte = sock.send(binascii.unhexlify(''.join(buf)))
-            return False
-        except IOError:
-            errlog.log('socket %d close,' % sock.fileno())
-            return True
-        except TypeError:
-            errlog.log('send buf is wrong format %s' % buf)
-            return False
+                self.errqueue.put("sock %d,recv not state" % self.fileno)
+        return False
+    
+    
+    
+    def write_sock(self):
+        if self.sbuf:
+            try:
+                nbyte = self.sock.send(binascii.unhexlify(''.join(self.sbuf)))
+                return False
+            except IOError:
+                self.errqueue.put('socket %d close,' % self.file)
+                return True
+            except TypeError:
+                self.errqueue.put('send buf is wrong format %s' % self.sbuf)
+                return False
         
     
 def make_argument_parser():
@@ -256,13 +304,20 @@ if __name__ == '__main__':
         except EOFError:
             break
 
-    #slog.log(','.join(['Start UUID',uid]))
+    #statqueue.put(','.join(['Start UUID',uid]))
     #gp = [gevent.spawn(device_login,host,uid) for uid in uulist]
     appname = "thread_devices"
-    slog  = StatLog(appname)
-    errlog = ErrLog(appname)
+    errqueue = Queue()
+    statqueue = Queue()
+    errlog = ErrLog('devices_err')
+    statlog = StatLog('devices_stat')
+    errworker = WorkerThread(errqueue,errlog,)
+    errworker.start()
+    statworker = WorkerThread(statqueue,statlog)
+    statworker.start()
+
     for uid in uulist:
-        it = threading.Thread(target=DevicesFunc,args=(host,uid))
+        it = threading.Thread(target=DevicesFunc,args=(host,uid,errqueue,statqueue))
         it.start()
         time.sleep(0.3)
 
