@@ -86,8 +86,7 @@ class DevicesFunc():
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
-
-        self.sock.settimeout(SOCK_TIMEOUT)
+        self.sock.settimeout(None)
         self.mysock = 0xFFFFFFFF
         self.dstsock = 0xFFFFFFFF
         self.mynum = 0
@@ -104,23 +103,14 @@ class DevicesFunc():
         self.start()
 
     def start(self):
-        nums = 100
-        while nums >0:
-            n = time.time()
-            nums -= 1
-            try:
-                self.sock.connect(self.host)
-                break
-            except socket.timeout:
-                self.errqueue.put('sock %d timeout %f' % (sock.fileno,time.time()-n))
-                time.sleep(5)
-                continue
-            except socket.error:
-                self.errqueue.put('sock %d socket.error %f,sleep 5.0 try again' % (sock.fileno,time.time()-n))
-                time.sleep(5)
-                continue
-
-        if not nums:
+        n = time.time()
+        try:
+            self.sock.connect(self.host)
+        except socket.timeout:
+            self.errqueue.put('sock %d timeout %f' % (sock.fileno,time.time()-n))
+            return
+        except socket.error:
+            self.errqueue.put('sock %d socket.error %f' % (sock.fileno,time.time()-n))
             return
         self.sbuf = device_struct_allocate(self.uuid)
         if self.write_sock():

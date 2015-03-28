@@ -168,7 +168,7 @@ class APPfunc():
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
-        self.sock.settimeout(SOCK_TIMEOUT)
+        self.sock.settimeout(None)
         self.mynum = 0
         self.timer_queue = Queue()
         self.refresh_buf = binascii.unhexlify(''.join(stun_struct_refresh_request()))
@@ -186,23 +186,15 @@ class APPfunc():
         self.start()
 
     def start(self):
-        nums = 100
-        while nums > 0:
-            n = time.time()
-            try:
-                self.sock.connect(self.addr)
-                break
-            except socket.timeout:
-                self.errqueue.put('sock timeout %d time %f' % (self.fileno,time.time() -n))
-                time.sleep(5)
-                continue
-            except socket.error:
-                self.errqueue.put('sock error %d time %f,sleep 5.0 try again' % (self.fileno,time.time() -n))
-                time.sleep(5.0)
-                continue
-        if not nums:
+        n = time.time()
+        try:
+            self.sock.connect(self.addr)
+        except socket.timeout:
+            self.errqueue.put('sock timeout %d time %f' % (self.fileno,time.time() -n))
             return
-        
+        except socket.error:
+            self.errqueue.put('sock error %d time %f' % (self.fileno,time.time() -n))
+            return
     
         self.responses = stun_register_request(self.user,self.pwd)
         if self.socket_write():

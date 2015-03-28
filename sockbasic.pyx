@@ -458,7 +458,7 @@ class QueryDB():
                 Column('pwd',pgsql.BYTEA),
                 Column('reg_time',pgsql.TIME,nullable=False)
                 )
-        return (table,metadata)
+        return table
 
     @staticmethod
     def get_account_status_table():
