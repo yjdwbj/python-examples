@@ -278,17 +278,21 @@ class EpollServer(EpollReactor):
 #                                self.modify(servfd,self.EV_IN)
 #                            else:
 #                                self.errqueue.put(','.join([LOG_ERROR_FILENO,str(sys._getframe().f_lineno)]))
-                        nsock,addr = self.srvsocket.accept()
-                        nf = nsock.fileno()
-                        #self.statqueue.put(','.join(["new client %s:%d" % addr,"new fileno %d" % nf, 'srv fileno %d'%fileno]))
-                        nsock.setblocking(0)
-                        self.register(nsock,self.EV_IN)
-                        self.clients[nf] = nsock
-                        self.hosts[nf] = nsock.getpeername()
-                        self.requests[nf] =''
+                        try:
+                            nsock,addr = self.srvsocket.accept()
+                            nf = nsock.fileno()
+                            #self.statqueue.put(','.join(["new client %s:%d" % addr,"new fileno %d" % nf, 'srv fileno %d'%fileno]))
+                            nsock.setblocking(0)
+                            self.register(nsock,self.EV_IN)
+                            self.clients[nf] = nsock
+                            self.hosts[nf] = nsock.getpeername()
+                            self.requests[nf] =''
+                        except socket.error:
+                            continue
                     #self.timer[nf] = time.time()+10
                     elif event & self.EV_DISCONNECTED:
                         self.errqueue.put("sock %d disconnected" % fileno)
+                        print "disconnected"
                         self.dealwith_peer_hup(fileno)
                     elif event & self.EV_IN:
                         try:
@@ -296,6 +300,7 @@ class EpollServer(EpollReactor):
                         except KeyError:
                             self.statqueue.put(','.join(['sock %d' % fileno,'not in clients']))
                             self.dealwith_peer_hup(fileno)
+                            print "not in clients"
                             continue
 
                         #while True:
@@ -303,6 +308,7 @@ class EpollServer(EpollReactor):
                             recvbuf = self.clients[fileno].recv(SOCK_BUFSIZE)
                             if not recvbuf:
                                 self.dealwith_peer_hup(fileno)
+                                print "not data"
                                 continue
                             self.requests[fileno] += hexlify(recvbuf)
                             self.process_handle_first(fileno)
@@ -439,7 +445,9 @@ class EpollServer(EpollReactor):
                self.responses[res.fileno]=  self.postfunc[res.method](res)
                self.modify(res.fileno,self.EV_OUT)
             except KeyError:
-                print "KeyError,fileno %d,method %s,not auth clients" % (res.fileno,res.method)
+                self.handle_preauth_funcs(res)
+                print "maybe this clients shutdown and then restart,%d, %s" % (res.fileno,res.host[0])
+                #print "KeyError,fileno %d,method %s,not auth clients" % (res.fileno,res.method)
 
         
     
@@ -498,13 +506,13 @@ class EpollServer(EpollReactor):
             res.eattr = STUN_ERROR_AUTH
             self.errqueue.put(','.join([LOG_ERROR_AUTH,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return
+        self.handle_preauth_funcs(res)
+
+    def handle_preauth_funcs(self,res):
         try:
             self.responses[res.fileno] = self.prefunc[res.method](res)
         except KeyError:
             res.eattr = STUN_ERROR_UNKNOWN_METHOD
-            print "head",res.__dict__
-            print "attrs",upkg
-            print "method",res.method
             self.errqueue.put(','.join([LOG_ERROR_METHOD,res.method,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
         else:
             self.modify(res.fileno,self.EV_OUT)
@@ -651,7 +659,8 @@ class EpollServer(EpollReactor):
         # socket 关闭，更新数据库
         try:
             name = self.appsock[fileno].name
-            self.statqueue.put('dev sock close, %d' % fileno)
+            self.appsock.pop(fileno)
+            self.statqueue.put('app sock close, %d' % fileno)
             self.app_user_logout(name)
             return
         except KeyError:
@@ -659,6 +668,7 @@ class EpollServer(EpollReactor):
 
         try:
             uuid = self.devsock[fileno].uuid
+            self.devsock.pop(fileno)
             self.statqueue.put('dev sock close, %d' % fileno)
             self.mirco_devices_logout(self.devsock[fileno].uuid)
         except KeyError:

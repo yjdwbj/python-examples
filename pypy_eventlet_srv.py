@@ -8,7 +8,7 @@
 #
 #
 ####################################################################
-import socket
+#import socket
 import time
 import struct
 import threading
@@ -25,6 +25,7 @@ from datetime import datetime
 import hashlib
 from sockbasic import *
 import eventlet
+import socket
 
 
 
@@ -130,39 +131,8 @@ def stun_return_same_package(res):
 
 class EpollServer():
     def __init__(self,port,errqueue,statqueue):
-#        self.srvsocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-#        self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-#        self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
-#        self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
-#        self.srvsocket.setsockopt(socket.SOL_SOCKET,socket.SO_DEBUG,0)
-#        self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
-#        self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
-#        self.srvsocket.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
-#        self.srvsocket.settimeout(SOCK_TIMEOUT)
-#        self.srvsocket.bind(('',port))
-#        self.srvsocket.listen(1024)
-#        self.srvsocket.setblocking(0)
-        #self.register(self.srvsocket.fileno(),self.EV_IN)
         self.server = eventlet.listen(('0.0.0.0',3478))
-        self.gpool = eventlet.GreenPool()
-        
-
-    #def start(self):
-
-        #mt = MTWorker(errqueue,statqueue)
-        #mt.setDaemon(True)
-     #   mt = threading.Thread(target=MTWorker,args=(errqueue,statqueue))
-     #   mt.run()
-        #psize = multiprocessing.cpu_count()*2
-        #pool = multiprocessing.Pool(psize)
-        #res = pool.apply_async(MPrun,(self.srvsocket,self.epoll))
-        #handle_proc.apply_async()
-        #pool_size = multiprocessing.cpu_count() * 2
-        #gpool  = Pool(pool_size) 
-#class MTWorker(threading.Thread):
-#class MTWorker():
-#    def __init__(self,obj,errqueue,statqueue):
-#        threading.Thread.__init__(self)
+        self.gpool = eventlet.GreenPool(500000)
         self.errqueue = errqueue
         self.statqueue = statqueue
         self.db_engine = QueryDB().get_engine()
@@ -184,6 +154,30 @@ class EpollServer():
                 STUN_METHOD_DELETE:self.handle_delete_bind_item, #删除现有的绑定
                 STUN_METHOD_PULL:self.handle_app_pull
                 }
+
+    def run(self):
+        while True:
+            try:
+                nsock,addr = self.server.accept()
+                nf = nsock.fileno()
+                self.clients[nf] = nsock
+                self.hosts[nf] = addr
+                self.requests[nf] =''
+                self.gpool.spawn_n(self.handle_new_accept,nsock)
+            except (SystemExit,KeyboardInterrupt):
+                print "Server exit"
+                break
+
+    def handle_new_accept(self,fd):
+        fileno = fd.fileno()
+        print "got new clients"
+        while True:
+            recvbuf = fd.recv(SOCK_BUFSIZE)
+            if not recvbuf:
+                break
+            self.requests[fileno] += hexlify(recvbuf)
+            self.process_handle_first(fileno)
+
 
     def handle_modify_bind_item(self,res):
         try:
@@ -254,31 +248,13 @@ class EpollServer():
             pass
 
 
-    def run(self):
-        while True:
-            try:
-                nsock,addr = self.server.accept()
-                nf = nsock.fileno()
-                self.clients[nf] = nsock
-                self.hosts[nf] = addr
-                self.requests[nf] =''
-                self.gpool.spawn_n(self.handle_new_accept,nsock)
-            except (SystemExit,KeyboardInterrupt):
-                break
-
-    def handle_new_accept(self,fd):
-        while True:
-            recvbuf = fd.recv(SOCK_BUFSIZE)
-            fileno = fd.fileno()
-            if not recvbuf:
-                break
-            self.requests[fileno] += hexlify(recvbuf)
-            self.process_handle_first(fileno)
-
 
     def write_to_sock(self,fileno):
         sock = self.clients[fileno]
-        sock.send(unhexlify(''.join(self.responses[fileno])))
+        try:
+            sock.send(unhexlify(''.join(self.responses[fileno])))
+        except socket.error:
+            self.dealwith_peer_hup(fileno)
 
 
     def handle_refresh_request(self,res):
@@ -600,6 +576,7 @@ class EpollServer():
         # socket 关闭，更新数据库
         try:
             name = self.appsock[fileno].name
+            self.appsock.pop(fileno)
             self.statqueue.put('dev sock close, %d' % fileno)
             self.app_user_logout(name)
             return
@@ -608,6 +585,7 @@ class EpollServer():
 
         try:
             uuid = self.devsock[fileno].uuid
+            self.devsock.pop(fileno)
             self.statqueue.put('dev sock close, %d' % fileno)
             self.mirco_devices_logout(self.devsock[fileno].uuid)
         except KeyError:
@@ -635,7 +613,7 @@ class EpollServer():
         if self.timer.has_key(fileno):
             if self.timer[fileno] < time.time():
                 self.statqueue.put("Client %d life time is end,close it" % fileno )
-                dealwith_peer_hup(fileno)
+                self.dealwith_peer_hup(fileno)
     
     def mirco_devices_logout(self,devid):
         vendor = devid[32:40]
@@ -744,7 +722,7 @@ class EpollServer():
                 self.write_to_sock(dstsock)
             except IOError:
                 self.errqueue.put(','.join(['dstsock %d has closed' % dstsock,'host is',self.hosts[dstsock][0]]))  
-                dealwith_peer_hup(dstsock)
+                self.dealwith_peer_hup(dstsock)
         except KeyError:
             self.appbinds[fileno][ustr]=0xFFFFFFFF
     
@@ -769,6 +747,7 @@ class EpollServer():
 
     def noify_app_uuid_just_login(self,sock,uuidstr,devsock):
         self.responses[sock] = notify_app_bind_islogin(''.join([uuidstr,'%08x' % devsock]))
+        self.statqueue.put('sock %d, uuid %s login,info to %d user %s' % (devsock,uuidstr,sock,self.users[sock]))
         self.write_to_sock(sock)
     
     def device_login_notify_app(self,uuidstr,devsock):
@@ -975,8 +954,10 @@ if __name__ == '__main__':
     errlog = ErrLog('epoll_mt_srv')
     statlog = StatLog('epoll_mt_srv')
     errworker = WorkerThread(errqueue,errlog,)
+    errworker.daemon = True
     errworker.start()
     statworker = WorkerThread(statqueue,statlog)
+    statworker.daemon = True
     statworker.start()
     EpollServer(port,errqueue,statqueue).run()
 

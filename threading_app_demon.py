@@ -22,6 +22,18 @@ import gc
 
 reload(sys)
 sys.setdefaultencoding("utf-8")
+class WorkerThread(threading.Thread):
+    def __init__(self,queue,logger):
+        threading.Thread.__init__(self)
+        self.queue = queue 
+        self.log = logger
+
+    def run(self):
+        while True:
+            msg = self.queue.get()
+            self.log.log(msg)
+            time.sleep(0.01)
+
 
 
 def stun_register_request(uname,pwd):

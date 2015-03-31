@@ -25,6 +25,18 @@ import gc
 reload(sys)
 sys.setdefaultencoding("utf-8")
 
+class WorkerThread(threading.Thread):
+    def __init__(self,queue,logger):
+        threading.Thread.__init__(self)
+        self.queue = queue 
+        self.log = logger
+
+    def run(self):
+        while True:
+            msg = self.queue.get()
+            self.log.log(msg)
+            time.sleep(0.1)
+
 
 def stun_struct_refresh_request():
     buf = []
@@ -107,10 +119,10 @@ class DevicesFunc():
         try:
             self.sock.connect(self.host)
         except socket.timeout:
-            self.errqueue.put('sock %d timeout %f' % (sock.fileno,time.time()-n))
+            self.errqueue.put('sock %d timeout %f' % (self.fileno,time.time()-n))
             return
         except socket.error:
-            self.errqueue.put('sock %d socket.error %f' % (sock.fileno,time.time()-n))
+            self.errqueue.put('sock %d socket.error %f' % (self.fileno,time.time()-n))
             return
         self.sbuf = device_struct_allocate(self.uuid)
         if self.write_sock():
