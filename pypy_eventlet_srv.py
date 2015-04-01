@@ -170,7 +170,6 @@ class EpollServer():
 
     def handle_new_accept(self,fd):
         fileno = fd.fileno()
-        print "got new clients"
         while True:
             recvbuf = fd.recv(SOCK_BUFSIZE)
             if not recvbuf:
@@ -202,7 +201,7 @@ class EpollServer():
             popfunc = lambda d,v: d.pop(v)
             k = mcore_handle(popfunc,(n))
         except TypeError:
-            print "TypeError %d,n is none" % res.fileno,n
+            print "TypeError %d,n is none" % res.fileno
         self.delete_binds_in_db(uname,uids)
         return  stun_return_same_package(res)
         
@@ -236,11 +235,6 @@ class EpollServer():
             return  stun_error_response(res)
 
     def delete_fileno(self,fileno):
-        try:
-            self.unregister(fileno)
-        except IOError:
-            self.statqueue.put('already delete socket %d' % fileno)
-
         try:
             self.clients[fileno].close()
             self.clients.pop(fileno)

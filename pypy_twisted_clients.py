@@ -25,104 +25,54 @@ from binascii import unhexlify,hexlify
 from datetime import datetime
 import hashlib
 from sockbasic import *
+from twisted.internet import protocol,reactor,epollreactor
 import asyncore
 
 
-class WorkerThread(threading.Thread):
-    def __init__(self,queue,logger):
-        threading.Thread.__init__(self)
-        self.queue = queue 
-        self.log = logger
-
-    def run(self):
-        while True:
-            msg = self.queue.get()
-            self.log.log(msg)
-            time.sleep(0.01)
-
-
-
-class DevSocket(asyncore.dispatcher):
-    def __init__(self,host,uid,errqueue,statqueue):
-        asyncore.dispatcher.__init__(self)
-        self.create_socket(socket.AF_INET,socket.SOCK_STREAM)
-        self.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-        self.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-        self.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
-        self.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
-        self.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
-        self.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
-        self.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
-        self.fd = self.fileno()    
+class DevProtocol(protocol.Protocol):
+    def connectionMade(self):
         self.mynum = 0
         self.srcsock = 0xFFFFFFFF
         self.dstsock = 0xFFFFFFFF
-        self.uid = uid
-        self.errqueue = errqueue
-        self.statqueue = statqueue
         self.sbuf = ''
-        self.host = host
         self.recv = ''
-        self.connect(self.host)
-        return
-#        except socket.timeout:
-#            self.errqueue.put('sock %d timeout %f' % (self.fileno,time.time()-n))
-#            return None
-#        except socket.error:
-#            self.errqueue.put('sock %d socket.error %f' % (self.fileno,time.time()-n))
-#            return None
-#        stl.tasklet(self.run)()
-#  
-
-
-    def handle_connect(self):
-        print "connect"
-        self.statqueue.put('connected')
+        self.fileno = self.transport.getHandle().fileno()
+        self.uid = self.factory.uid
+        self.errqueue = self.factory.errqueue
+        self.statqueue = self.factory.statqueue
         self.sbuf = self.device_struct_allocate()
-        return self.handle_write()
+        self.handle_write()
 
-
-    def handle_close(self):
-        self.close()
-    
     def handle_write(self):
-        print self.sbuf
-        sent = self.send(unhexlify(''.join(self.sbuf)))
+        self.transport.write(unhexlify(''.join(self.sbuf)))
 
-    def writable(self):
-        return len(self.sbuf) > 0
-
-    def readable(self):
-        return True
-
-    def handle_read(self):
-        data = self.sock.recv(SOCK_BUFSIZE)
+    def dataReceived(self,data):
         self.recv +=  hexlify(data)
         self.process_handle_first()
 
     def process_handle_first(self):
-         l = self.recv.count(HEAD_MAGIC) #没有找到JL关键字
-         if not l:
-             self.errqueue.put('sock %d, recv no HEAD_MAGIC packet %s' % (self.fileno,self.recv))
-             return
-         plen = len(self.recv)
-         if l > 1:
-             #self.errqueue.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
-             self.statqueue.put("sock %d,recv multi buf,len %d, buf: %s" % (self.fileno,plen,self.recv))
-             #hbuf = hbuf[l:] # 从找到标识头开始处理
-             pos = sum([len(v) for v in split_requests_buf(self.recv)])
-             self.recv = self.recv[pos:]
-             [self.process_loop(n) for n in  split_requests_buf(self.recv)]
-         else: # 找到一个标识，还不知在什么位置
-             pos = self.recv.index(HEAD_MAGIC)
-             self.recv = self.recv[pos:]
-             nlen = int(self.recv[8:12],16) *2
-             if len(self.recv) < nlen:
-                 self.errqueue.put("sock %d, recv packet not complete, %s" % (self.fileno,self.recv))
-                 return
-             onepack = self.recv[:nlen]
-             self.recv = self.recv[nlen:]
-             self.process_loop(onepack)
+        l = self.recv.count(HEAD_MAGIC) #没有找到JL关键字
+        if not l:
+            self.errqueue.put('sock %d, recv no HEAD_MAGIC packet %s' % (self.fileno,self.recv))
+            return
+        plen = len(self.recv)
+        if l > 1:
+            #self.errqueue.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
+            self.statqueue.put("sock %d,recv multi buf,len %d, buf: %s" % (self.fileno,plen,self.recv))
+            #hbuf = hbuf[l:] # 从找到标识头开始处理
+            pos = sum([len(v) for v in split_requests_buf(self.recv)])
+            self.recv = self.recv[pos:]
+            [self.process_loop(n) for n in  split_requests_buf(self.recv)]
+        else: # 找到一个标识，还不知在什么位置
+            pos = self.recv.index(HEAD_MAGIC)
+            self.recv = self.recv[pos:]
+            nlen = int(self.recv[8:12],16) *2
+            if len(self.recv) < nlen:
+                self.errqueue.put("sock %d, recv packet not complete, %s" % (self.fileno,self.recv))
+                return
+            onepack = self.recv[:nlen]
+            self.recv = self.recv[nlen:]
+            self.process_loop(onepack)
 
     def device_struct_allocate(self):
         buf = []
@@ -159,7 +109,6 @@ class DevSocket(asyncore.dispatcher):
             return False
     
         if  stun_get_type(hattr.method) == STUN_METHOD_SEND:
-            time.sleep(1)
             if hattr.srcsock == 0xFFFFFFFF:
                 self.errqueue.put('sock %d,recv forward packet not srcsock,buf %s' % (self.fileno,hbuf))
                 return False
@@ -213,79 +162,58 @@ class DevSocket(asyncore.dispatcher):
             except KeyError:
                 self.errqueue.put("sock %d,recv not state" % self.fileno)
         return False
-    
-    
-    
-    def socket_write(self):
-        if self.sbuf:
-            try:
-                nbyte = self.sock.send(binascii.unhexlify(''.join(self.sbuf)))
-                return False
-            except IOError:
-                self.errqueue.put('socket %d close,' % self.fileno)
-                return True
-            except TypeError:
-                self.errqueue.put('send buf is wrong format %s' % self.sbuf)
-                return False
+
+class DevFactory(protocol.ClientFactory):
+    protocol = DevProtocol
+    #clientConnectionLost = clientConnectionFailed = \
+    #        lambda self,connector,reason: reactor.stop()
+    def __init__(self,uid,errqueue,statqueue):
+        self.uid = uid
+        self.errqueue = errqueue
+        self.statqueue = statqueue
+
+    def clientConnectionLost(self,connector,reason):
+        print "connect lost"
+        print reason
+        print "connector ",connector
+
+    def clientConnectionFailed(self,connector,reason):
+        print "connect failed"
+        print reason
+        print "connector ",connector
+
+
+class WorkerThread(threading.Thread):
+    def __init__(self,queue,logger):
+        threading.Thread.__init__(self)
+        self.queue = queue 
+        self.log = logger
+
+    def run(self):
+        while True:
+            msg = self.queue.get()
+            self.log.log(msg)
+            time.sleep(0.01)
 
 
 
 
-class AppSocket(asyncore.dispatcher):
-    def __init__(self,host,sublst,user,pwd,errqueue,statqueue):
-        asyncore.dispatcher.__init__(self)
-        self.create_socket(socket.AF_INET,socket.SOCK_STREAM)
-        self.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-        self.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-        self.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
-        self.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
-        self.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
-        self.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
-        self.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
-        self.fd = self.fileno()    
+class AppProtocol(protocol.Protocol):
+    def connectionMade(self):
+        self.fd = self.transport.getHandle().fileno()
         self.mynum = 0
         self.srcsock = 0xFFFFFFFF
         self.dstsock = 0xFFFFFFFF
-        self.jluid = sublst[0]
-        self.user = user
-        self.pwd = pwd
-        self.host = host
+        self.jluid = self.factory.uid
+        self.user = self.factory.user
+        self.pwd = self.factory.user
         self.recv =''
-        self.sbuf =[]
-        self.errqueue = errqueue
-        self.statqueue = statqueue
-        return
-
-    def handle_connect(self):
-        print "connect"
-        print self.sbuf
-        self.connect(self.host)
+        self.errqueue = self.factory.errqueue
+        self.statqueue = self.factory.statqueue
         self.sbuf = self.stun_register_request()
-        return self.handle_write()
+        self.handle_write()
 
-    def handle_close(self):
-        self.close()
-    
-    def handle_write(self):
-        print self.sbuf
-        sent = self.send(unhexlify(''.join(self.sbuf)))
-        #self.sbuf = []
-
-    def writable(self):
-        return len(self.sbuf)>0
-
-    def readable(self):
-        return True
-
-    def handle_read(self):
-        try:
-            data =  self.recv(SOCK_BUFSIZE)
-        except socket.timeout:
-            raise
-        except socket.error,error:
-            return self._handle_error(error)
-        if not data:
-            return self.handle_close()
+    def dataReceived(self,data):
         self.recv += hexlify(data)
         self.process_handle_first()
 
@@ -331,7 +259,6 @@ class AppSocket(asyncore.dispatcher):
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
                 self.statqueue.put("recv dev send to me,sock %d, num hex(%s), data: %s" % (self.fd,hattr.sequence[2:],rbuf))
-                time.sleep(1)
                 self.sbuf = self.stun_send_data_to_devid('02%s' % hattr.sequence[2:])
             elif hattr.sequence[:2] == '02':
                 n = int(hattr.sequence[2:],16)
@@ -406,7 +333,6 @@ class AppSocket(asyncore.dispatcher):
                 self.statqueue.put('sock %d,send packet to dev %d,buf %s' % (self.fd,self.dstsock,rbuf))
             except KeyError:
                 self.errqueue.put("sock %d,recv no STATE" % self.fd)
-                print rdict
         elif hattr.method == STUN_METHOD_PULL:
             pass
         elif hattr.method == STUN_METHOD_MODIFY:
@@ -417,6 +343,9 @@ class AppSocket(asyncore.dispatcher):
             pass
         return  self.handle_write()
 
+    
+    def handle_write(self):
+        sent = self.transport.write(unhexlify(''.join(self.sbuf)))
 
     def stun_bind_single_uuid(self):
         buf = []
@@ -461,6 +390,28 @@ class AppSocket(asyncore.dispatcher):
         stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,binascii.hexlify('abcdefgh'))
         stun_add_fingerprint(buf)
         return buf
+
+class AppFactory(protocol.ClientFactory):
+    protocol = AppProtocol
+    #clientConnectionLost = clientConnectionFailed = \
+    #        lambda self,connector,reason: reactor.stop()
+    def __init__(self,uid,errqueue,statqueue,uname):
+        self.uid = uid[0]
+        self.errqueue = errqueue
+        self.statqueue = statqueue
+        self.user = uname
+
+    def clientConnectionLost(self,connector,reason):
+        print "connect lost"
+        print reason
+        print "connector ",connector
+
+    def clientConnectionFailed(self,connector,reason):
+        print "connect failed"
+        print reason
+        print "connector ",connector
+
+
 
     
 def make_argument_parser():
@@ -523,13 +474,16 @@ def AppDemo(args):
         host = (args.srv_host,3478)
     ulist = read_uuid_file(args.uuidfile)
     bind = args.b_count if args.b_count < len(ulist) else len(ulist)
+    bind = 1
+    ucount = len(ulist)
+
     tbuf = ulist
     #mqueue = Manager().Queue()
     #mqueue = stl.channel()
     #et = Process(target=EpollHandler,args=(errqueue,statqueue,mqueue))
     #et.daemon = True
     #et.start()
-    for i in xrange(args.u_count):
+    for i in xrange(ucount):
        cuts = [bind]
        muuid = [tbuf[i:j] for i,j in zip([0]+cuts,cuts+[None])]
        if len(muuid) == 2:
@@ -537,9 +491,14 @@ def AppDemo(args):
            #mulpool.apply_async(stun_setLogin,args=(host,muuid[0],uname,uname))
            #glist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
            uname = muuid[0][0]
-           ap = AppSocket(host,muuid[0],uname,uname,errqueue,statqueue)
+           reactor.connectTCP(args.srv_host,3478,AppFactory(muuid[0],errqueue,statqueue,uname),3)
+           #ap = AppSocket(host,muuid[0],uname,uname,errqueue,statqueue)
            tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
-    asyncore.loop()
+    reactor.run()
+    #asyncore.loop(use_poll=True)
+
+
+
 
 def DevDemo(args):
     args = make_argument_parser().parse_args()
@@ -565,8 +524,10 @@ def DevDemo(args):
         host = (args.srv_host,3478)
     uulist = read_uuid_file(args.uuidfile)
     for uid in uulist:
-        apps = DevSocket(host,uid,errqueue,statqueue)
-    asyncore.loop(timeout=2)
+        #apps = DevSocket(host,uid,errqueue,statqueue)
+        reactor.connectTCP(args.srv_host,3478,DevFactory(uid,errqueue,statqueue),3)
+    reactor.run()
+    #asyncore.loop(use_poll=True)
     
 
 if __name__ == '__main__':
