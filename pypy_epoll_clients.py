@@ -11,7 +11,6 @@
 import socket
 import time
 import struct
-import threading
 import uuid
 import sys
 import os
@@ -20,12 +19,13 @@ import unittest
 import argparse
 import errno
 import pickle
+import threading
+from multiprocessing import Process
 from Queue import Queue
 from binascii import unhexlify,hexlify
 from datetime import datetime
 import hashlib
 from sockbasic import *
-import asyncore
 
 from select import epoll,EPOLLET,EPOLLIN,EPOLLOUT,EPOLLHUP,EPOLLERR
 
@@ -37,19 +37,17 @@ class WorkerThread(threading.Thread):
 
     def run(self):
         while True:
-            msg = self.queue.get()
-            self.log.log(msg)
-            time.sleep(0.01)
+            while not self.queue.empty():
+                msg = self.queue.get_nowait()
+                self.log.log(msg)
 
 
-devqueue = Queue()
-appqueue = Queue()
 
 class DevThread():
     EV_IN = EPOLLIN | EPOLLET
     EV_OUT = EPOLLOUT  | EPOLLET
     EV_DISCONNECTED =(EPOLLHUP | EPOLLERR)
-    def __init__(self,host,errqueue,statqueue,pqueue):
+    def __init__(self,host,errqueue,statqueue):
         self.errqueue = errqueue
         self.statqueue = statqueue
         self.epoll = epoll()
@@ -60,22 +58,21 @@ class DevThread():
         self.numbers = {}
         self.srcsock = {}
         self.dstsock = {}
-        self.queue = pqueue
         self.host = host
         self.run()
     
     def run(self):
         while True:
-            pa = devqueue.get()
-            self.create_new_socket(pa)
+            while not sockqueue.empty():
+                pa = sockqueue.get_nowait()
+                self.create_new_socket(pa)
             events = self.epoll.poll(1)
             for fileno,event in events:
-                print event,fileno
                 if event & self.EV_IN:
                     self.handle_read(fileno)
-                    self.epoll.modify(fileno,self.EV_OUT)
                 elif event & self.EV_OUT:
-                    self.clients[fileno].send(unhexlify(''.join(self.sbuf[fileno])))
+                    #self.clients[fileno].send(unhexlify(''.join(self.sbuf[fileno])))
+                    self.socket_write(fileno)
                     self.epoll.modify(fileno,self.EV_IN)
                 elif event & self.EV_DISCONNECTED:
                     pass
@@ -83,15 +80,19 @@ class DevThread():
     def create_new_socket(self,uid):
 
         sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-        sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-        sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
+        #sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
+        #sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
         sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
         sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
         sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
         sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
+        n = time.time()
+        try:
+            sock.connect(self.host)
+        except (socket.error,socket.timeout):
+            self.errqueue.put("sock %d, connect timeout %f" % (sock.fileno(),time.time() -n ))
+            return
 
-        sock.connect(self.host)
         sock.setblocking(0)
         fd = sock.fileno()
         self.uids[fd] = uid
@@ -101,13 +102,22 @@ class DevThread():
         self.numbers[fd] = 0
         self.srcsock[fd] = 0xFFFFFFFF
         self.dstsock[fd] = 0xFFFFFFFF
-        sock.send(unhexlify(''.join(self.device_struct_allocate(fd))))
+        #self.sbuf[fd] = self.device_struct_allocate(fd)
+        self.sbuf[fd] = self.device_struct_allocate(fd)
+        sock.send(unhexlify(''.join(self.sbuf[fd])))
         self.epoll.register(fd,self.EV_IN)
 
     def handle_read(self,fileno):
-        data = self.clients[fileno].recv(SOCK_BUFSIZE)
-        self.recv[fileno] +=  hexlify(data)
-        self.process_handle_first(fileno)
+        try:
+            data = self.clients[fileno].recv(SOCK_BUFSIZE)
+        except IOError:
+            self.epoll.unregister(fileno)
+        else:
+            if not data:
+                self.epoll.unregister(fileno)
+                return
+            self.recv[fileno] +=  hexlify(data)
+            self.process_handle_first(fileno)
 
     def process_handle_first(self,fileno):
         pbuf = self.recv[fileno]
@@ -122,7 +132,7 @@ class DevThread():
             #hbuf = hbuf[l:] # 从找到标识头开始处理
             pos = sum([len(v) for v in split_requests_buf(pbuf)])
             self.recv[fileno] = pbuf[pos:]
-            [self.process_loop(n) for n in  split_requests_buf(pbuf)]
+            [self.process_loop(n,fileno) for n in  split_requests_buf(pbuf)]
         else: # 找到一个标识，还不知在什么位置
             pos = pbuf.index(HEAD_MAGIC)
             self.recv[fileno]  = pbuf[pos:]
@@ -174,8 +184,7 @@ class DevThread():
                 return False
             self.dstsock[fileno] = hattr.srcsock
             if hattr.sequence[:2] == '03':
-                time.sleep(1)
-                self.sbuf = self.send_data_to_app('02%s' % hattr.sequence[2:],fileno)
+                self.sbuf[fileno] = self.send_data_to_app('02%s' % hattr.sequence[2:],fileno)
                 self.statqueue.put("sock %d,recv app send me num hex(%s), buf %s" % (fileno,hattr.sequence[2:],hbuf))
             #下面是我方主动发数据
             elif hattr.sequence[:2] == '02':
@@ -188,7 +197,7 @@ class DevThread():
                     self.statqueue.put("sock %d,recv my confirm num %d is ok,data %s" % (fileno,rnum,hbuf))
                 else:
                     self.errqueue.put('sock %d,losing packet,recv  number  %d, my counter %d' % (fileno,rnum,self.numbers[fileno]))
-                self.sbuf = self.send_data_to_app('03%06x' % self.numbers[fileno],fileno)
+                self.sbuf[fileno] = self.send_data_to_app('03%06x' % self.numbers[fileno],fileno)
             #return  self.handle_write()
             self.epoll.modify(fileno,self.EV_OUT)
             return
@@ -218,9 +227,8 @@ class DevThread():
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
                 self.dstsock[fileno] = int(stat[:8],16)
-                self.sbuf = self.send_data_to_app('03%06x' % self.numbers[fileno])
+                self.sbuf[fileno] = self.send_data_to_app('03%06x' % self.numbers[fileno],fileno)
                 self.epoll.modify(fileno,self.EV_OUT)
-                #return self.handle_write()
                 return
             except KeyError:
                 self.errqueue.put("sock %d,recv not state" % fileno)
@@ -228,16 +236,16 @@ class DevThread():
     
     
     
-    def socket_write(self):
-        if self.sbuf:
+    def socket_write(self,fileno):
+        if self.sbuf[fileno]:
             try:
-                nbyte = self.sock.send(binascii.unhexlify(''.join(self.sbuf)))
+                nbyte = self.sock.send(binascii.unhexlify(''.join(self.sbuf[fileno])))
                 return False
             except IOError:
                 self.errqueue.put('socket %d close,' % self.fileno)
                 return True
             except TypeError:
-                self.errqueue.put('send buf is wrong format %s' % self.sbuf)
+                self.errqueue.put('send buf is wrong format %s' % self.sbuf[fileno])
                 return False
 
 
@@ -265,14 +273,13 @@ class AppThread():
     
     def run(self):
         while True:
-            pa = appqueue.get()
-            self.create_new_socket(pa)
+            while not sockqueue.empty():
+                pa = sockqueue.get_nowait()
+                self.create_new_socket(pa)
             events = self.epoll.poll(1)
             for fileno,event in events:
-                print event,fileno
                 if event & self.EV_IN:
                     self.handle_read(fileno)
-                    self.epoll.modify(fileno,self.EV_OUT)
                 elif event & self.EV_OUT:
                     self.clients[fileno].send(unhexlify(''.join(self.sbuf[fileno])))
                     self.epoll.modify(fileno,self.EV_IN)
@@ -281,15 +288,20 @@ class AppThread():
 
     def create_new_socket(self,pa):
         sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-        sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-        sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
+        #sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
+        #sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
         sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
         sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
         sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
         sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
 
-        sock.connect(self.host)
+        n = time.time()
+        try:
+            sock.connect(self.host)
+        except (socket.error,socket.timeout):
+            self.errqueue.put("sock %d, connect timeout %f" % (sock.fileno(),time.time() -n ))
+            return
+
         sock.setblocking(0)
         fd = sock.fileno()
         self.users[fd] = pa
@@ -300,16 +312,22 @@ class AppThread():
         self.numbers[fd] = 0
         self.srcsock[fd] = 0xFFFFFFFF
         self.dstsock[fd] = 0xFFFFFFFF
-        #sock.send(unhexlify(''.join(self.device_struct_allocate(fd))))
         self.sbuf[fd] = self.stun_register_request(fd)
-        #sock.send(unhexlify(''.join(self.stun_register_request(fd))))
         self.epoll.register(fd,self.EV_OUT)
 
 
     def handle_read(self,fileno):
-        data =  self.clients[fileno].recv(SOCK_BUFSIZE)
-        self.recv[fileno] += hexlify(data)
-        self.process_handle_first(fileno)
+        try:
+            data =  self.clients[fileno].recv(SOCK_BUFSIZE)
+        except IOError:
+            self.epoll.unregister(fileno)
+            return
+        else:
+            if not data:
+                self.epoll.unregister(fileno)
+                return
+            self.recv[fileno] += hexlify(data)
+            self.process_handle_first(fileno)
 
     def process_handle_first(self,fileno):
         pbuf = self.recv[fileno]
@@ -319,12 +337,11 @@ class AppThread():
             return
         plen = len(pbuf)
         if l > 1:
-            #self.errqueue.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
             self.statqueue.put("sock %d,recv multi buf,len %d, buf: %s" % (fileno,plen,pbuf))
             #hbuf = hbuf[l:] # 从找到标识头开始处理
             pos = sum([len(v) for v in split_requests_buf(pbuf)])
             self.recv[fileno] = pbuf[pos:]
-            [self.process_loop(n) for n in  split_requests_buf(pbuf)]
+            [self.process_loop(n,fileno) for n in  split_requests_buf(pbuf)]
         else: # 找到一个标识，还不知在什么位置
             pos = pbuf.index(HEAD_MAGIC)
             self.recv[fileno]  = pbuf[pos:]
@@ -354,7 +371,6 @@ class AppThread():
             self.dstsock[fileno] = hattr.srcsock
             if hattr.sequence[:2] == '03':
                 self.statqueue.put("recv dev send to me,sock %d, num hex(%s), data: %s" % (fileno,hattr.sequence[2:],rbuf))
-                time.sleep(1)
                 self.sbuf[fileno] = self.stun_send_data_to_devid('02%s' % hattr.sequence[2:],fileno)
             elif hattr.sequence[:2] == '02':
                 n = int(hattr.sequence[2:],16)
@@ -366,10 +382,11 @@ class AppThread():
                     self.statqueue.put("sock %d,recv dev confirm num %d ok,data %s" % (fileno,n,rbuf))
                 else:
                     self.errqueue.put('sock %d,lost packet,recv num %d,my counter %d' %(fileno,n,self.numbers[fileno]),fileno)
-                self.sbuf[fileno] = self.stun_send_data_to_devid('03%06x' % self.numbers[fileno])
+                self.sbuf[fileno] = self.stun_send_data_to_devid('03%06x' % self.numbers[fileno],fileno)
                 self.statqueue.put("sock %d,send packet of %d to dev,data %s" % (fileno,n,''.join(self.sbuf[fileno])))
 
-            return self.epoll.modify(fileno,self.EV_OUT)
+            self.epoll.modify(fileno,self.EV_OUT)
+            return 
     
         if not stun_is_success_response_str(hattr.method):
             if cmp(hattr.method[-2:],STUN_METHOD_REGISTER[-2:]):
@@ -378,7 +395,8 @@ class AppThread():
                 return False
             else:
                 self.sbuf[fileno] = self.stun_login_request(fileno)
-                return self.epoll.modify(fileno,self.EV_OUT)
+                self.epoll.modify(fileno,self.EV_OUT)
+                return 
     
         hattr.method = stun_get_type(hattr.method)
         p  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-8]) # 去头去尾
@@ -412,15 +430,6 @@ class AppThread():
             except KeyError:
                 self.errqueue.put('sock %d,recv server packet not RUUID ,buf %s' % (fileno,rbuf))
      
-#            elif rdict.has_key(STUN_ATTRIBUTE_MRUUID):
-#                mlist = split_mruuid(rdict[STUN_ATTRIBUTE_MRUUID])
-#                for n in mlist:
-#                    time.sleep(0.2)
-#                    dstsock = int(n[-8:],16)
-#                    if dstsock != 0xFFFFFFFF:
-#                        pass
-#                        #send_forward_buf(sock,mysock,dstsock)
-#                return False
      
         elif hattr.method == STUN_METHOD_INFO:
             try:
@@ -429,7 +438,6 @@ class AppThread():
                 self.statqueue.put('sock %d,send packet to dev %d,buf %s' % (fileno,self.dstsock[fileno],rbuf))
             except KeyError:
                 self.errqueue.put("sock %d,recv no STATE" % fileno)
-                print rdict
         elif hattr.method == STUN_METHOD_PULL:
             pass
         elif hattr.method == STUN_METHOD_MODIFY:
@@ -444,8 +452,6 @@ class AppThread():
     def stun_bind_single_uuid(self,fileno):
         buf = []
         stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
-        #jluid = '19357888AA07418584391D0ADB61E7902653716613920FBF'
-        #jluid = 'e68cd4167aea4f85a7242031252be15874657374a860a02f'
         stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,self.uids[fileno].lower())
         stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,self.uids[fileno].lower())
         stun_add_fingerprint(buf)
@@ -528,9 +534,10 @@ def read_uuid_file(fd):
 
 
 def AppDemo(args):
-    port = args.srv_host if args.srv_host else 3478
-    errqueue = Queue()
-    statqueue = Queue()
+    args = make_argument_parser().parse_args()
+    if not args.srv_host or not args.uuidfile:
+        print make_argument_parser().parse_args(['-h'])
+        exit(1)
     errlog = ErrLog('AppDemo')
     statlog = StatLog('AppDemo')
     errworker = WorkerThread(errqueue,errlog,)
@@ -547,24 +554,23 @@ def AppDemo(args):
     ulist = read_uuid_file(args.uuidfile)
     bind = args.b_count if args.b_count < len(ulist) else len(ulist)
     tbuf = ulist
+    bind = 1
+    ucount = len(ulist)
     #mqueue = Manager().Queue()
     #mqueue = stl.channel()
     #et = Process(target=EpollHandler,args=(errqueue,statqueue,mqueue))
     #et.daemon = True
     #et.start()
-    ap = threading.Thread(target=AppThread,args=(host,errqueue,statqueue))
+    #ap = threading.Thread(target=AppThread,args=(host,errqueue,statqueue))
+    ap = Process(target = AppThread,args=(host,errqueue,statqueue))
     ap.daemon = True
     ap.start()
-    for i in xrange(args.u_count):
-       cuts = [bind]
-       muuid = [tbuf[i:j] for i,j in zip([0]+cuts,cuts+[None])]
-       if len(muuid) == 2:
-           #stackless.tasklet(stun_setLogin)(host,muuid[0],uname,uname)
-           #mulpool.apply_async(stun_setLogin,args=(host,muuid[0],uname,uname))
-           #glist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
-           uname = muuid[0][0]
-           appqueue.put(uname)
-           tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
+    for i in ulist:
+        #stackless.tasklet(stun_setLogin)(host,muuid[0],uname,uname)
+        #mulpool.apply_async(stun_setLogin,args=(host,muuid[0],uname,uname))
+        #glist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
+        sockqueue.put_nowait(i)
+        time.sleep(0.3)
     ap.join()
 
 def DevDemo(args):
@@ -573,11 +579,9 @@ def DevDemo(args):
         print make_argument_parser().parse_args(['-h'])
         exit(1)
 
-
-    errqueue = Queue()
-    statqueue = Queue()
     errlog = ErrLog('DevDemo')
     statlog = StatLog('DevDemo')
+
     errworker = WorkerThread(errqueue,errlog,)
     errworker.start()
     statworker = WorkerThread(statqueue,statlog)
@@ -590,17 +594,20 @@ def DevDemo(args):
     except:
         host = (args.srv_host,3478)
     uulist = read_uuid_file(args.uuidfile)
-    pqueue = Queue()
-    mainThread = threading.Thread(target=DevThread,args=(host,errqueue,statqueue,pqueue))
-    mainThread.daemon = True
-    mainThread.start()
+    #mainThread = threading.Thread(target=DevThread,args=(host,errqueue,statqueue))
+    ap = Process(target=DevThread,args=(host,errqueue,statqueue))
+    ap.daemon = True
+    ap.start()
     for uid in uulist:
-        devqueue.put_nowait(uid)
-        print uid
+        sockqueue.put_nowait(uid)
+        time.sleep(0.3)
         #apps = DevSocket(host,uid,errqueue,statqueue)
-    mainThread.join()
+    ap.join()
     
 
+sockqueue = Queue()
+errqueue = Queue()
+statqueue = Queue()
 if __name__ == '__main__':
     args = make_argument_parser().parse_args()
     args.func(args)

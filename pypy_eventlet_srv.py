@@ -19,6 +19,7 @@ import gc
 import unittest
 import argparse
 import errno
+from eventlet import tpool
 
 from binascii import unhexlify,hexlify
 from datetime import datetime
@@ -92,7 +93,7 @@ def check_user_sucess(res):
 def app_user_auth_success(res):
     buf = []
     stun_init_command_str(stun_make_success_response(res.method),buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
+    #stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
     stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,res.attrs[STUN_ATTRIBUTE_USERNAME])
     stun_add_fingerprint(buf)
@@ -101,7 +102,7 @@ def app_user_auth_success(res):
 def device_login_sucess(res): # 客服端向服务器绑定自己的IP
     buf = []
     stun_init_command_str(stun_make_success_response(res.method),buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
+    #stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
     stun_attr_append_str(buf,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
     stun_add_fingerprint(buf)
     return (buf)
@@ -132,7 +133,7 @@ def stun_return_same_package(res):
 class EpollServer():
     def __init__(self,port,errqueue,statqueue):
         self.server = eventlet.listen(('0.0.0.0',3478))
-        self.gpool = eventlet.GreenPool(500000)
+        self.gpool = eventlet.GreenPool(1048576)
         self.errqueue = errqueue
         self.statqueue = statqueue
         self.db_engine = QueryDB().get_engine()
@@ -171,12 +172,22 @@ class EpollServer():
     def handle_new_accept(self,fd):
         fileno = fd.fileno()
         while True:
-            recvbuf = fd.recv(SOCK_BUFSIZE)
-            if not recvbuf:
+            try:
+                recvbuf = fd.recv(SOCK_BUFSIZE)
+            except IOError:
+                self.errqueue.put('sock %d, IOError ,host: %s:%d' % (fileno,self.hosts[fileno][0],self.hosts[fileno][1]))
+                self.dealwith_peer_hup(fileno)
                 break
-            self.requests[fileno] += hexlify(recvbuf)
-            self.process_handle_first(fileno)
-
+            except socket.error:
+                self.dealwith_peer_hup(fileno)
+                break
+            else:
+                if not recvbuf:
+                    self.dealwith_peer_hup(fileno)
+                    break
+                self.requests[fileno] += hexlify(recvbuf)
+                self.process_handle_first(fileno)
+    
 
     def handle_modify_bind_item(self,res):
         try:
@@ -282,10 +293,6 @@ class EpollServer():
             self.requests[fileno] = self.requests[fileno][nlen:]
             self.handle_requests_buf(onepack,fileno)
             
-    def stackless_loop(self,channel):
-        while True:
-            fileno = channel.receive()
-            self.process_handle_first(fileno)
                     
     def handle_requests_buf(self,hbuf,fileno): # pair[0] == hbuf, pair[1] == fileno
         if len(hbuf) % 2:
@@ -358,7 +365,9 @@ class EpollServer():
                self.responses[res.fileno]=  self.postfunc[res.method](res)
                self.write_to_sock(res.fileno)
             except KeyError:
-                print "KeyError,fileno %d,method %s,not auth clients" % (res.fileno,res.method)
+                self.handle_client_request_preauth(res,hbuf)
+                print hbuf
+                print "KeyError,fileno %d,method %s,not auth clients,forward to preauth" % (res.fileno,res.method)
 
         
     
@@ -373,7 +382,8 @@ class EpollServer():
             res.eattr = STUN_ERROR_DEVOFFLINE
             #self.epoll.modify(fileno,select.EPOLLOUT)
             #self.responses[fileno] = ''.join(stun_error_response(res))
-            tbuf = stun_error_response(res)
+            #tbuf = stun_error_response(res)
+            tbuf =  notify_peer(''.join(['%08x' % res.dstsock,STUN_OFFLINE]))
             tbuf[3]='%08x' % res.srcsock
             tbuf[4]='%08x' % res.dstsock
             tbuf.pop()
@@ -517,11 +527,9 @@ class EpollServer():
         except KeyError:
             self.errqueue.put(','.join(['sock %d' % res.fileno,'no uuid attr to bind']))
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
-            print "bind KeyError",fileno
             return 
         except TypeError:
             p = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
-            print "pwd len %d, %s" %(len(p),p)
             return
 
         try:
@@ -558,7 +566,6 @@ class EpollServer():
         except KeyError:
             res.eattr = STUN_ERROR_UNKNOWN_PACKET 
             self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
-            print "uuid KeyError,sock %d, dicts" % res.fileno,res.attrs
             return stun_error_response(res)
         if res.eattr != STUN_ERROR_NONE:
             self.errqueue.put("socket %d,bind error" % res.fileno)
@@ -710,7 +717,7 @@ class EpollServer():
             dstsock = self.devuuid[ustr]
             self.appbinds[fileno][ustr]= dstsock
             b = '%08x' % fileno
-            notifybuf = notify_peer(''.join([b,STUN_ONLINE]))
+            #notifybuf = notify_peer(''.join([b,STUN_ONLINE]))
             self.responses[dstsock] = notify_peer(''.join([b,STUN_ONLINE]))
             try:
                 self.write_to_sock(dstsock)
@@ -953,6 +960,7 @@ if __name__ == '__main__':
     statworker = WorkerThread(statqueue,statlog)
     statworker.daemon = True
     statworker.start()
-    EpollServer(port,errqueue,statqueue).run()
+    srv = EpollServer(port,errqueue,statqueue)
+    tpool.execute(srv.run)
 
 
