@@ -11,7 +11,6 @@
 #import socket
 import time
 import struct
-import threading
 import uuid
 import sys
 import os
@@ -26,7 +25,7 @@ from datetime import datetime
 import hashlib
 from sockbasic import *
 import eventlet
-import socket
+from eventlet.green import socket,threading
 
 
 
@@ -132,7 +131,8 @@ def stun_return_same_package(res):
 
 class EpollServer():
     def __init__(self,port,errqueue,statqueue):
-        self.server = eventlet.listen(('0.0.0.0',3478))
+        self.srvsocket = eventlet.listen(('0.0.0.0',3478),backlog = 8192)
+        #self.serve = eventlet.serve(self.srvsocket,self.run,1048576)
         self.gpool = eventlet.GreenPool(1048576)
         self.errqueue = errqueue
         self.statqueue = statqueue
@@ -156,10 +156,11 @@ class EpollServer():
                 STUN_METHOD_PULL:self.handle_app_pull
                 }
 
+
     def run(self):
         while True:
             try:
-                nsock,addr = self.server.accept()
+                nsock,addr = self.srvsocket.accept()
                 nf = nsock.fileno()
                 self.clients[nf] = nsock
                 self.hosts[nf] = addr
@@ -378,6 +379,10 @@ class EpollServer():
             # 转发到时目地
             self.responses[res.dstsock] = hbuf
             self.write_to_sock(res.dstsock)
+            fileno = res.fileno
+            dstsock = res.dstsock
+            self.statqueue.put('%s , sock %d, foward to %s, sock %d, %s' % (str(res.host),fileno,str(self.hosts[dstsock]),dstsock,hbuf))
+            
         except KeyError: # 目标不存在
             res.eattr = STUN_ERROR_DEVOFFLINE
             #self.epoll.modify(fileno,select.EPOLLOUT)
@@ -961,6 +966,6 @@ if __name__ == '__main__':
     statworker.daemon = True
     statworker.start()
     srv = EpollServer(port,errqueue,statqueue)
-    tpool.execute(srv.run)
+    srv.run()
 
 

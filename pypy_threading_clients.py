@@ -8,6 +8,7 @@
 #
 #
 ####################################################################
+import socket
 import time
 import struct
 import uuid
@@ -22,14 +23,15 @@ from binascii import unhexlify,hexlify
 from datetime import datetime
 import hashlib
 from sockbasic import *
-import eventlet
-from eventlet.green import threading,socket
-from eventlet.green.Queue import Queue
+#import eventlet
+import socket
+from multiprocessing import Queue
+import threading
 
 
 def logger_worker(queue,logger):
     while True:
-        eventlet.sleep(0.01)
+        time.sleep(0.01)
         try:
             msg = queue.get_nowait()
             logger.log(msg)
@@ -81,7 +83,7 @@ class DevicesFunc():
                 break
             self.recv += binascii.hexlify(data)
             self.process_handle_first()
-            eventlet.sleep(0.01)
+            time.sleep(0.01)
         errqueue.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
         self.sock.close()
 
@@ -130,7 +132,7 @@ class DevicesFunc():
             dstsock = hattr.srcsock
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
-                eventlet.sleep(0.01)
+                time.sleep(0.01)
                 self.sbuf = self.send_data_to_app('02%s' % hattr.sequence[2:])
                 statqueue.put("sock %d,recv app send me num hex(%s), buf %s" % (self.fileno,hattr.sequence[2:],hbuf))
             #下面是我方主动发数据
@@ -182,16 +184,18 @@ class DevicesFunc():
     def retransmit_packet(self):
         n = time.time() + 30
         while True:
-            eventlet.sleep(0.01)
+            time.sleep(0.01)
             try:
-                num = timer_queue.get_nowait()
+                num = self.timer_queue.get_nowait()
                 n = time.time()+30
             except:
                 if time.time() > n:
                     try:
                         self.responses = self.stun_send_data_to_devid('03%06x' % self.mynum)
+                        self.write_sock()
+                        statqueue.put('sock %d ,retransmit_packet %s' % (self.fileno,''.join(self.responses)))
                     except:
-                        self.errqueue.put('sock %d ,retransmit_packet error' % self.fileno)
+                        errqueue.put('sock %d ,retransmit_packet error' % self.fileno)
     
     
     def write_sock(self):
@@ -277,7 +281,7 @@ class APPfunc():
                 break
             self.recv += binascii.b2a_hex(data)
             self.process_handle_first()
-            eventlet.sleep(0.01)
+            time.sleep(0.01)
         errqueue.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
         self.sock.close()
 
@@ -385,7 +389,7 @@ class APPfunc():
 #            elif rdict.has_key(STUN_ATTRIBUTE_MRUUID):
 #                mlist = split_mruuid(rdict[STUN_ATTRIBUTE_MRUUID])
 #                for n in mlist:
-#                    eventlet.sleep(0.2)
+#                    time.sleep(0.2)
 #                    dstsock = int(n[-8:],16)
 #                    if dstsock != 0xFFFFFFFF:
 #                        pass
@@ -424,19 +428,20 @@ class APPfunc():
         return False
 
     def retransmit_packet(self):
-        n = time.time() + 30
-    
+        n = time.time() + 10
         while True:
-            eventlet.sleep(0.01)
+            time.sleep(0.01)
             try:
-                num = timer_queue.get_nowait()
+                num = self.timer_queue.get_nowait()
                 n = time.time()+30
             except:
                 if time.time() > n:
                     try:
                         self.responses = self.stun_send_data_to_devid('03%06x' % self.mynum)
+                        self.socket_write()
+                        statqueue.put('sock %d ,retransmit_packet %s' % (self.fileno,''.join(self.responses)))
                     except:
-                        self.errqueue.put('sock %d ,retransmit_packet error' % self.fileno)
+                        errqueue.put('sock %d ,retransmit_packet error' % self.fileno)
 
 
 
@@ -530,6 +535,14 @@ def AppDemo(args):
     if not args.srv_host or not args.uuidfile:
         print make_argument_parser().parse_args(['-h'])
         exit(1)
+    errlog = ErrLog('AppDemo')
+    statlog = StatLog('AppDemo')
+    errworker = threading.Thread(target=logger_worker,args=(errqueue,errlog))
+    #errworker.daemon = True
+    errworker.start()
+    statworker = threading.Thread(target=logger_worker,args=(statqueue,statlog))
+    #statworker.daemon = True
+    statworker.start()
     host = ()
     try:
         d = args.srv_host.index(':')
@@ -541,14 +554,11 @@ def AppDemo(args):
     tbuf = ulist
     bind = 1
     ucount = len(ulist)
-    errlog = ErrLog('AppDemo')
-    statlog = StatLog('AppDemo')
-    pool = eventlet.GreenPool(ucount+1)
-    pool.spawn_n(logger_worker,errqueue,errlog)
-    pool.spawn_n(logger_worker,statqueue,statlog)
     for uid in ulist:
-        pool.spawn_n(APPfunc,host,uid)
-        eventlet.sleep(0.01)
+        pt = threading.Thread(target=APPfunc,args=(host,uid))
+        #pt.daemon = True
+        pt.start()
+        time.sleep(0.3)
 
 def DevDemo(args):
     args = make_argument_parser().parse_args()
@@ -556,7 +566,15 @@ def DevDemo(args):
         print make_argument_parser().parse_args(['-h'])
         exit(1)
 
+    errlog = ErrLog('DevDemo')
+    statlog = StatLog('DevDemo')
 
+    errworker = threading.Thread(target=logger_worker,args=(errqueue,errlog))
+    #errworker.daemon = True
+    errworker.start()
+    statworker = threading.Thread(target=logger_worker,args=(statqueue,statlog))
+    #statworker.daemon = True
+    statworker.start()
 
     host = ()
     try:
@@ -564,15 +582,12 @@ def DevDemo(args):
         host = (args.srv_host[:d],int(args.srv_host[d:]))
     except:
         host = (args.srv_host,3478)
-    ulist = read_uuid_file(args.uuidfile)
-    errlog = ErrLog('DevDemo')
-    statlog = StatLog('DevDemo')
-    pool = eventlet.GreenPool(len(ulist)+2)
-    pool.spawn_n(logger_worker,errqueue,errlog)
-    pool.spawn_n(logger_worker,statqueue,statlog)
-    for uid in ulist:
-        pool.spawn_n(DevicesFunc,host,uid)
-        eventlet.sleep(0.1)
+    uulist = read_uuid_file(args.uuidfile)
+    for uid in uulist:
+        pt = threading.Thread(target=DevicesFunc,args=(host,uid))
+        #pt.daemon = True
+        pt.start()
+        time.sleep(0.3)
     
 
 errqueue = Queue()
@@ -580,12 +595,12 @@ statqueue = Queue()
 if __name__ == '__main__':
     args = make_argument_parser().parse_args()
     args.func(args)
-    while True:
-        try:
-            pass
-        except (SystemExit,KeyboardInterrupt):
-            print "Server exit"
-            break
+#    while True:
+#        try:
+#            pass
+#        except (SystemExit,KeyboardInterrupt):
+#            print "Server exit"
+#            break
 
 
 

@@ -37,9 +37,12 @@ class WorkerThread(threading.Thread):
 
     def run(self):
         while True:
-            while not self.queue.empty():
+            try:
                 msg = self.queue.get_nowait()
                 self.log.log(msg)
+            except:
+                pass
+            time.sleep(0.01)
 
 
 
@@ -63,9 +66,10 @@ class DevThread():
     
     def run(self):
         while True:
+            time.sleep(0.01)
             while not sockqueue.empty():
                 pa = sockqueue.get_nowait()
-                self.create_new_socket(pa)
+                yield self.create_new_socket(pa)
             events = self.epoll.poll(1)
             for fileno,event in events:
                 if event & self.EV_IN:
@@ -231,7 +235,7 @@ class DevThread():
                 self.epoll.modify(fileno,self.EV_OUT)
                 return
             except KeyError:
-                self.errqueue.put("sock %d,recv not state" % fileno)
+                self.errqueue.put("sock %d,recv not state %s" % (fileno,','.join(rdict.values())))
         return False
     
     
@@ -273,9 +277,10 @@ class AppThread():
     
     def run(self):
         while True:
+            time.sleep(0.01)
             while not sockqueue.empty():
                 pa = sockqueue.get_nowait()
-                self.create_new_socket(pa)
+                yield self.create_new_socket(pa)
             events = self.epoll.poll(1)
             for fileno,event in events:
                 if event & self.EV_IN:
@@ -284,6 +289,8 @@ class AppThread():
                     self.clients[fileno].send(unhexlify(''.join(self.sbuf[fileno])))
                     self.epoll.modify(fileno,self.EV_IN)
                 elif event & self.EV_DISCONNECTED:
+                    self.epoll.unregister(fileno)
+                    self.errqueue('sock %d ,disconnected' % fileno)
                     pass
 
     def create_new_socket(self,pa):
@@ -420,11 +427,10 @@ class AppThread():
         elif hattr.method == STUN_METHOD_CHANNEL_BIND:
             # 绑定小机命令o
             try:
-                dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-8:],16)
-                self.dstsock[fileno] = dstsock
-                if dstsock != 0xFFFFFFFF:
+                self.dstsock[fileno] = int(rdict[STUN_ATTRIBUTE_RUUID][-8:],16)
+                if self.dstsock[fileno] != 0xFFFFFFFF:
                    self.sbuf[fileno] = self.stun_send_data_to_devid('03%06x' % self.numbers[fileno],fileno)
-                   self.statqueue.put('sock %d,start send packet to dev %d,buf %s' % (fileno,dstsock,''.join(self.sbuf[fileno])))
+                   self.statqueue.put('sock %d,start send packet to dev %d,buf %s' % (fileno,self.dstsock[fileno],''.join(self.sbuf[fileno])))
                 else:
                     return False
             except KeyError:
@@ -433,11 +439,11 @@ class AppThread():
      
         elif hattr.method == STUN_METHOD_INFO:
             try:
-                self.dstsock[fileno] =  int(rdict[STUN_ATTRIBUTE_RUUID][-8:],16)
+                self.dstsock[fileno] =  int(rdict[STUN_ATTRIBUTE_STATE][:8],16)
                 self.sbuf[fileno] = self.stun_send_data_to_devid('03%06x' % self.numbers[fileno],fileno)
                 self.statqueue.put('sock %d,send packet to dev %d,buf %s' % (fileno,self.dstsock[fileno],rbuf))
             except KeyError:
-                self.errqueue.put("sock %d,recv no STATE" % fileno)
+                self.errqueue.put("sock %d,recv no STATE %s" % (fileno,','.join(rdict.values())))
         elif hattr.method == STUN_METHOD_PULL:
             pass
         elif hattr.method == STUN_METHOD_MODIFY:

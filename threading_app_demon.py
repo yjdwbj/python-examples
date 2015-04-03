@@ -173,14 +173,10 @@ def refresh_time(sock,timer_queue,errlog,refresh_buf):
 class APPfunc():
     def __init__(self,addr,sublst,user,pwd,errqueue,statqueue):
         self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-        self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
-        self.sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
-        self.sock.settimeout(None)
         self.mynum = 0
         self.timer_queue = Queue()
         self.refresh_buf = binascii.unhexlify(''.join(stun_struct_refresh_request()))
@@ -269,7 +265,6 @@ class APPfunc():
             dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
                 self.statqueue.put("recv dev send to me,sock %d, num hex(%s), data: %s" % (self.fileno,hattr.sequence[2:],rbuf))
-                time.sleep(1)
                 self.responses = stun_send_data_to_devid(self.mysock,dstsock,'02%s' % hattr.sequence[2:])
             elif hattr.sequence[:2] == '02':
                 n = int(hattr.sequence[2:],16)
@@ -447,27 +442,12 @@ if __name__ == '__main__':
    statworker = WorkerThread(statqueue,statlog)
    statworker.start()
 
-   tbuf = ulist
-   tt = 0 
-   glist = []
-   for i in xrange(args.u_count):
-       #uname  = str(uuid.uuid4()).replace('-','')
-       #n = random.randint(0,15)
-       zi = []
-       #for y in xrange(n):
-       #    zi.append(chr(random.randint(97,122)))
-       #uname = ''.join([z,''.join(zi)])
-       cuts = [bind]
-       muuid = [tbuf[i:j] for i,j in zip([0]+cuts,cuts+[None])]
-       if len(muuid) == 2:
-           #stackless.tasklet(stun_setLogin)(host,muuid[0],uname,uname)
-           #mulpool.apply_async(stun_setLogin,args=(host,muuid[0],uname,uname))
-           #glist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
-           uname = muuid[0][0]
-           pt = threading.Thread(target=APPfunc,args=(host,muuid[0],uname,uname,errqueue,statqueue))
-           pt.start()
-           glist.append(pt)
-           tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
+   for uid in ulist
+       uname = muuid[0][0]
+       pt = threading.Thread(target=APPfunc,args=(host,muuid[0],uname,uname,errqueue,statqueue))
+       pt.start()
+       glist.append(pt)
+       tbuf = muuid[-1] if len(muuid[-1]) > bind else muuid[-1]+ulist
        time.sleep(0.3)
    #gevent.joinall(glist)
    #stackless.run()
