@@ -13,7 +13,6 @@ import struct
 import uuid
 import sys
 import os
-import gc
 import unittest
 import argparse
 import errno
@@ -23,21 +22,21 @@ from datetime import datetime
 import hashlib
 from sockbasic import *
 from random import randint
-
 import gevent
 from gevent import monkey,socket
-import threading
 from gevent.queue import Queue
 monkey.patch_all()
+import threading
 
 def logger_worker(queue,logger):
-    while True:
-        gevent.sleep(0.01)
-        try:
-            msg = queue.get_nowait()
-            logger.log(msg)
-        except:
-            pass
+    while 1:
+        for x in xrange(1,20):
+            try:
+                msg = queue.get_nowait()
+                logger.log(msg)
+            except:
+                break
+        gevent.sleep(0.001)
 
 class DevicesFunc():
     def __init__(self,host,uid):
@@ -55,30 +54,30 @@ class DevicesFunc():
         self.uid = uid
         self.recv = ''
         self.sbuf = ''
-        self.retry = 50
+        self.retry = 60
         self.start()
 
     def start(self):
-        gevent.sleep(0.3)
-        while True:
+        while 1:
             n = time.time()
-            rt = randint(10,100)
+            rt = randint(10,30)
             try:
                 self.sock.connect(self.host)
             except socket.timeout:
                 errqueue.put('sock connect timeout %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
-                gevent.sleep(5)
+                gevent.sleep(rt)
                 continue
             except socket.error:
                 errqueue.put('sock connect error %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
-                gevent.sleep(5)
+                gevent.sleep(rt)
                 continue
             else:
                 break
 
         self.sbuf = self.device_struct_allocate()
         self.write_sock()
-        while True:
+        gevent.sleep(0.2)
+        while 1:
             try:
                 data = self.sock.recv(SOCK_BUFSIZE)
             except IOError:
@@ -89,7 +88,7 @@ class DevicesFunc():
                 break
             self.recv += hexlify(data)
             self.process_handle_first()
-            gevent.sleep(0.01)
+            gevent.sleep(0)
         errqueue.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
         self.sock.close()
 
@@ -119,7 +118,6 @@ class DevicesFunc():
 
 
     def process_loop(self,hbuf):
-        gc.collect()
         if check_packet_vaild(hbuf): # 校验包头
            errqueue.put(','.join(['sock','%d'% self.fileno,'check_packet_vaild',hbuf]))
            errqueue.put(hbuf)
@@ -187,26 +185,34 @@ class DevicesFunc():
             else:
                 self.dstsock = int(stat[:8],16)
                 self.sbuf = self.send_data_to_app('03%06x' % self.mynum)
-                pt = threading.Thread(target=self.retransmit_packet)
-                pt.start()
-                self.timer_queue.put(0)
+                if not self.retry_t:
+                    self.retry_t  = threading.Thread(target=self.retransmit_packet)
+                    self.retry_t.start()
+                self.add_queue.put(0)
                 return self.write_sock()
         return False
     
     def retransmit_packet(self):
-        while True:
-            gevent.sleep(0.01)
+        while 1:
+            gevent.sleep(0.001)
             try:
-                p = self.timer_queue.get_nowait()
+                p = self.add_queue.get_nowait()
                 n = time.time() + self.retry
             except:
                 pass
             else:
-                while True:
-                    gevent.sleep(0.01)
+                while 1:
+                    time.sleep(0.001)
+                    try:
+                        rm = self.rm_queue.get_nowait()
+                        break
+                    except:
+                        pass
+
                     if time.time() > n:
                         self.write_sock()
                         statqueue.put('sock %d ,retransmit_packet %s' % (self.fileno,self.sbuf))
+                        self.add_queue.put(0)
                         break
                         """break inside loop"""
                         #except:
@@ -255,7 +261,9 @@ class APPfunc():
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
         self.mynum = 0
-        self.timer_queue = Queue()
+        self.add_queue = Queue()
+        self.rm_queue = Queue()
+        self.retry_t = None
         self.fileno = self.sock.fileno()
         self.srcsock = 0xFFFFFFFF
         self.dstsock = 0xFFFFFFFF
@@ -269,26 +277,26 @@ class APPfunc():
         self.start()
 
     def start(self):
-        gevent.sleep(0.3)
-        while True:
+        while 1:
             n = time.time()
-            rt = randint(10,100)
+            rt = randint(10,30)
             try:
                 self.sock.connect(self.addr)
             except socket.timeout:
                 errqueue.put('sock connect timeout %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
-                gevent.sleep(5)
+                gevent.sleep(rt)
                 continue
             except socket.error:
                 errqueue.put('sock connect error %d time %f,sleep %s retry' % (self.fileno,time.time() -n,rt))
-                gevent.sleep(5)
+                gevent.sleep(rt)
                 continue
             else:
                 break
     
         self.sbuf = self.stun_register_request()
         self.write_sock()
-        while True:
+        gevent.sleep(0.2)
+        while 1:
             try:
                 data = self.sock.recv(SOCK_BUFSIZE)
             except IOError:
@@ -298,7 +306,7 @@ class APPfunc():
                 break
             self.recv += binascii.b2a_hex(data)
             self.process_handle_first()
-            gevent.sleep(0.01)
+            gevent.sleep(0)
         errqueue.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
         self.sock.close()
 
@@ -328,7 +336,6 @@ class APPfunc():
 
 
     def process_loop(self,rbuf):
-        gc.collect()
         if check_packet_vaild(rbuf): # 校验包头
             errqueue.put(','.join(['sock','%d'% self.fileno,'check_packet_vaild',rbuf]))
             errqueue.put(rbuf)
@@ -355,10 +362,13 @@ class APPfunc():
                 elif n == self.mynum: 
                     self.mynum+=1
                     statqueue.put("%s,sock %d,recv dev confirm num %d ok,data: %s" % (str(self.sock.getsockname()),self.fileno,n,rbuf))
+                    self.rm_queue.put(0)
                 else:
                     errqueue.put('sock %d,lost packet,recv num %d,my counter %d' %(self.fileno,n,self.mynum))
+                    """收到的包序错了，直接返回"""
+                    return
                 self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
-                self.timer_queue.put(0)
+                self.add_queue.put(0)
                 statqueue.put("sock %d,send packet of %d to dev,data %s" % (self.fileno,n,self.sbuf))
 
             return self.write_sock()
@@ -394,14 +404,15 @@ class APPfunc():
             # 绑定小机命令o
 
             # 开启重传线程
-            p = threading.Thread(target=self.retransmit_packet)
-            p.start()
+            if not self.retry_t:
+                self.retry_t  = threading.Thread(target=self.retransmit_packet)
+                self.retry_t.start()
             try:
                 self.dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-8:],16)
                 if self.dstsock != 0xFFFFFFFF:
                    self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
                    statqueue.put('sock %d,start send packet to dev %d,buf %s' % (self.fileno,self.dstsock,self.sbuf))
-                   self.timer_queue.put(0) 
+                   self.add_queue.put(0) 
                 else:
                     return False
             except KeyError:
@@ -422,7 +433,7 @@ class APPfunc():
                 self.dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-8:],16)
                 self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
                 statqueue.put('sock %d,start send packet to dev %d,buf: %s' % (self.fileno,self.dstsock,self.sbuf))
-                self.timer_queue.put(0) 
+                self.add_queue.put(0) 
             except KeyError:
                 errqueue.put('sock %d,recv server info not RUUID ,buf %s' % (self.fileno,rbuf))
      
@@ -451,6 +462,7 @@ class APPfunc():
         if self.sbuf:
             try:
                 nbyte = self.sock.send(unhexlify(self.sbuf))
+                rsqueue.put('sock %d,send buf %s' %(self.fileno,self.sbuf))
                 #statqueue.put(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
                 #print ''.join(buf)
             except IOError:
@@ -459,19 +471,25 @@ class APPfunc():
                 errqueue.put('send buf is wrong format %s' % self.sbuf)
 
     def retransmit_packet(self):
-        while True:
-            gevent.sleep(0.01)
+        while 1:
+            gevent.sleep(0.001)
             try:
-                p = self.timer_queue.get_nowait()
+                p = self.add_queue.get_nowait()
                 n = time.time() + self.retry
             except:
                 pass
             else:
-                while True:
-                    gevent.sleep(0.01)
+                while 1:
+                    time.sleep(0.001)
+                    try:
+                        n = self.rm_queue.get_nowait()
+                        break
+                    except:
+                        pass
                     if time.time() > n:
                         self.write_sock()
                         statqueue.put('sock %d ,retransmit_packet %s' % (self.fileno,self.sbuf))
+                        self.add_queue.put(0)
                         break
                         """break inside loop"""
                         #except:
@@ -553,7 +571,7 @@ __version__ = '0.1.0'
 
 def read_uuid_file(fd):
     ulist = []
-    while True:
+    while 1:
         try:
             ulist.append(pickle.load(fd))
         except EOFError:
@@ -624,7 +642,7 @@ statqueue = Queue()
 if __name__ == '__main__':
     args = make_argument_parser().parse_args()
     args.func(args)
-    while True:
+    while 1:
         try:
             pass
         except (SystemExit,KeyboardInterrupt):

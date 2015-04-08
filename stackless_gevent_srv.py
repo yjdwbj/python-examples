@@ -1,6 +1,5 @@
-#!/opt/pypy-2.5.0-src/pypy-c
-#-*- coding: utf-8 -*-
 #!/opt/stackless-279/bin/python2 
+#-*- coding: utf-8 -*-
 #####################################################################
 # lcy
 #                                                                   #
@@ -22,9 +21,16 @@ from binascii import unhexlify,hexlify
 from datetime import datetime
 import hashlib
 from sockbasic import *
-import eventlet
-from eventlet.green import socket,threading
-from multiprocessing import Pool,Queue
+import gevent
+from gevent.server import StreamServer,_tcp_listener
+from gevent import monkey,socket,server
+from gevent.queue import Queue
+#monkey.patch_all()
+import threading
+
+
+
+from multiprocessing import Pool,Process
 import  multiprocessing as mp
 
 
@@ -147,9 +153,11 @@ def stun_return_same_package(res):
 
 class EpollServer():
     def __init__(self,port,errqueue,statqueue):
-        self.srvsocket = eventlet.listen(('0.0.0.0',3478),backlog = 8192)
-        #self.serve = eventlet.serve(self.srvsocket,self.run,1048576)
-        self.gpool = eventlet.GreenPool(1048576)
+
+        self.listener = _tcp_listener(('0.0.0.0',3478),8192,1)
+        #self.server = StreamServer(('0.0.0.0',3478),self.handle_new_accept,backlog = 8192)
+        #self.serve = gevent.serve(self.srvsocket,self.run,1048576)
+        #self.gpool = gevent.GreenPool(1048576)
         self.errqueue = errqueue
         self.statqueue = statqueue
         self.write_engine = QueryDB().get_engine()
@@ -174,26 +182,35 @@ class EpollServer():
                 STUN_METHOD_PULL:self.handle_app_pull
                 }
 
+        for i in xrange(1):
+            Process(target=self.server_forever).start()
 
-    def run(self):
-        while 1:
-            try:
-                nsock,addr = self.srvsocket.accept()
-                nf = nsock.fileno()
-                self.clients[nf] = nsock
-                self.hosts[nf] = addr
-                self.requests[nf] =''
-                self.gpool.spawn_n(self.handle_new_accept,nsock)
-            except (SystemExit,KeyboardInterrupt):
-                print "Server exit"
-                break
+    def server_forever(self):
+        StreamServer(self.listener,self.handle_new_accept).serve_forever()
 
-    def handle_new_accept(self,fd):
-        fileno = fd.fileno()
-        while 1:
+
+#    def run(self):
+#        while True:
+#            try:
+#                nsock,addr = self.srvsocket.accept()
+#                nf = nsock.fileno()
+#                self.clients[nf] = nsock
+#                self.hosts[nf] = addr
+#                self.requests[nf] =''
+#                self.gpool.spawn_n(self.handle_new_accept,nsock)
+#            except (SystemExit,KeyboardInterrupt):
+#                print "Server exit"
+#                break
+
+    def handle_new_accept(self,nsock,addr):
+        fileno = nsock.fileno()
+        self.clients[fileno] = nsock
+        self.hosts[fileno] = addr
+        self.requests[fileno] =''
+        while True:
             try:
-                recvbuf = fd.recv(SOCK_BUFSIZE)
-                recvqueue.put("%s,%d,recv data: %s" % (str(self.hosts[fileno]),fileno,hexlify(recvbuf)))
+                recvbuf = nsock.recv(SOCK_BUFSIZE)
+                #recvqueue.put("%s,%d,recv data: %s" % (str(self.hosts[fileno]),fileno,hexlify(recvbuf)))
             except IOError:
                 self.errqueue.put('sock %d, IOError ,%s' % (fileno,str(self.hosts[fileno])))
                 self.dealwith_peer_hup(fileno)
@@ -208,7 +225,7 @@ class EpollServer():
                 hdata = hexlify(recvbuf)
                 self.requests[fileno] += hdata
                 self.process_handle_first(fileno)
-                eventlet.sleep(0.001)
+                gevent.sleep(0.001)
     
 
     def handle_modify_bind_item(self,res):
@@ -324,7 +341,7 @@ class EpollServer():
         res.eattr = STUN_ERROR_NONE
         res.host= self.hosts[fileno]
         res.fileno=fileno
-        #gc.collect()
+        gc.collect()
 
         #通过认证的socket 直接转发了
         try:
@@ -398,10 +415,11 @@ class EpollServer():
             s = dst[res.dstsock]
             # 转发到时目地
             self.responses[res.dstsock] = hbuf
+            self.write_to_sock(res.dstsock)
             fileno = res.fileno
             dstsock = res.dstsock
             self.statqueue.put('%s , sock %d, foward to %s, sock %d, %s' % (str(res.host),fileno,str(self.hosts[dstsock]),dstsock,hbuf))
-            self.write_to_sock(res.dstsock)
+            
         except KeyError: # 目标不存在
             res.eattr = STUN_ERROR_DEVOFFLINE
             #self.epoll.modify(fileno,select.EPOLLOUT)
@@ -557,13 +575,13 @@ class EpollServer():
             return
 
         try:
-            self.db_write(ins)
+             self.db_write(ins)
         except IntegrityError:
             stmt = table.update().values(reg_time = datetime.now()).where(table.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID])
-            self.db_write(stmt)
+             self.db_write(stmt)
         except ProgrammingError:
             stmt = table.update().values(reg_time = datetime.now()).where(table.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID])
-            self.db_write(stmt)
+             self.db_write(stmt)
 
     def handle_app_bind_device(self,res):
         """
@@ -626,7 +644,7 @@ class EpollServer():
         #ss = mtable.update().values(is_online=False).where(mtable.c.devid == hexlify(suid[0]))
         ss = mtable.update().values(is_online=False).where(mtable.c.devid == devid[:32])
         try:
-            res = self.db_write(ss)
+            res =  self.db_write(ss)
         except IOError:
             self.errqueue.put(','.join([LOG_ERROR_DB,devid,str(sys._getframe().f_lineno)]))
             return 0
@@ -663,7 +681,7 @@ class EpollServer():
         atable = QueryDB.get_account_status_table()
         ss = atable.update().values(is_login=False).where(atable.c.uname == uname)
         try:
-            res = self.db_write(ss)
+            res =  self.db_write(ss)
         except :
             self.errqueue.put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
 
@@ -689,7 +707,7 @@ class EpollServer():
         try:
             binds = self.appbinds[fileno].values()
             del self.appbinds[fileno]
-            #gc.collect()
+            gc.collect()
             [self.notify_peer_is_logout((n,fileno)) for n in binds if self.devsock.has_key(n)]
         except KeyError:
             pass
@@ -809,6 +827,7 @@ class EpollServer():
         except DataError:
             self.errqueue.put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
             return True
+        except 
 
     
     def app_user_update_status(self,user,host):
@@ -824,7 +843,7 @@ class EpollServer():
             sss = status_tables.insert().values(uname=uname,is_login=True,chost=[ipadr,ipprt])
 
         try:
-            result = self.db_write(sss)
+            result =  self.db_write(sss)
         except:
             self.errqueue.put(','.join([LOG_ERROR_DB,host[0],str(sys._getframe().f_lineno)]))
     
@@ -887,14 +906,14 @@ class EpollServer():
             upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
                     last_login_time=datetime.now()).where(mirco_devices.c.devid == res.tuid)
             try:
-                result = self.db_write(upd)
+                result =  self.db_write(upd)
             except:
                 self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
         except exc.DataError: 
             ins = mirco_devices.insert().values(devid=res.tuid,is_active=True,
                     is_online=True,chost=[ipadr,ipprt],data=data,last_login_time=datetime.now())
             try:
-                result = self.db_write(ins)
+                result =  self.db_write(ins)
             except:
                 self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
             #print "insert new devices result fetchall"
@@ -904,15 +923,14 @@ class EpollServer():
 
 
 def logger_worker(queue,logger):
-    while 1:
-        eventlet.sleep(0.001)
-        for n in xrange(1,10):
+    while True:
+        for x in xrange(1,10):
             try:
                 msg = queue.get_nowait()
                 logger.log(msg)
             except:
                 break
-
+        gevent.sleep(0)
 
     
 def get_log_level(id):
@@ -999,9 +1017,8 @@ if __name__ == '__main__':
 
     errqueue = Queue()
     statqueue = Queue()
-    recvqueue = Queue()
-    errlog = ErrLog('srv_log')
-    statlog = StatLog('srv_stat')
+    errlog = ErrLog('epoll_mt_srv')
+    statlog = StatLog('epoll_mt_srv')
     recvlog = StatLog('srv_recv')
     errworker = threading.Thread(target=logger_worker,args=(errqueue,errlog))
     errworker.daemon = True
@@ -1009,12 +1026,7 @@ if __name__ == '__main__':
     statworker = threading.Thread(target=logger_worker,args=(statqueue,statlog))
     statworker.daemon = True
     statworker.start()
-    recvworker = threading.Thread(target=logger_worker,args=(recvqueue,recvlog))
-    recvworker.daemon = True
-    recvworker.start()
-    srv =EpollServer(port,errqueue,statqueue)
-    srv.run()
-
-    
+    srv = EpollServer(port,errqueue,statqueue)
+    #srv.run()
 
 

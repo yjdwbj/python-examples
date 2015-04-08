@@ -5,7 +5,7 @@ import binascii
 import uuid
 import unittest
 
-from epoll_global import *
+from sockbasic import *
 
 class dumpclass:
     pass
@@ -68,13 +68,10 @@ class TestEpollSrv(unittest.TestCase):
 #        self.assertFalse(res)
 
     def test_stun_buf_to_list(self):
-        buf='8002001ccf85d35cd9ce441283409e093335340c000000005930b1ffffffffff'
-        buf='80010018cf85d35cd9ce441283409e093335340c000000005930b1ff00080018cf85d35cd9ce441283409e093335340c000000005930b1ff'
+        buf="00060030353062303139623263326338343662343966306363323531643464323339643430303030303030303132383835343734000800203f0acccc2ebf8f8f955224c55306ed51a7d6040ec154dc92c59db4105761be58"
         attrdict,lst = parser_stun_package(buf)
-        print attrdict
-
         print lst
-        assert lst is None
+        print attrdict
 
 
 

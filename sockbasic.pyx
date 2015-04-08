@@ -5,8 +5,6 @@ import uuid
 import time
 import logging
 from logging import handlers
-import threading
-import multiprocessing as mp
 from multiprocessing  import Pool,Queue
 from select import epoll,EPOLLET,EPOLLIN,EPOLLOUT,EPOLLHUP,EPOLLERR
 
@@ -86,7 +84,7 @@ STUN_ERROR_USER_EXIST='%08x' % 0x405
 STUN_ERROR_AUTH='%08x' % 0x406
 STUN_ERROR_DEVOFFLINE='%08x' % 0x407
 STUN_ERROR_FORMAT='%08x' % 0x408
-STUN_ERROR_OBJ_NOT_EXIST='%08x' % 0x409
+STUN_ERROR_OBJ_NOT_EXIST='%08x' % 0x410
 STUN_ERROR_NONE=None
 
 
@@ -175,12 +173,6 @@ def stun_add_fingerprint(buf):
     crcstr = "%08x" % ((crcval  ^ CRCMASK) & 0xFFFFFFFF)
     buf[-1] = crcstr.replace('-','')
 
-def mcore_handle(func,arglist):
-    ps = mp.cpu_count()*2
-    pl = Pool(ps)
-    pl.map(func,arglist)
-    pl.close()
-    pl.join()
 
 def stun_init_command_str(msg_type,buf):
     buf.append("4a4c") # 魔数字
@@ -385,6 +377,17 @@ def stun_struct_refresh_request():
     stun_add_fingerprint(buf)
     return buf
 
+def logger_worker(queue,logger):
+    while 1:
+        for n in xrange(1,0):
+            try:
+                msg = queue.get_nowait()
+                logger.log(msg)
+            except:
+                pass
+        time.sleep(0.005)
+
+
 
 class ErrLog(logging.Logger):
     def __init__(self,aname):
@@ -495,17 +498,4 @@ class QueryDB():
                 Column('data',pgsql.BYTEA)
                 )
         return mirco_devices
-
-
-class WorkerThread(threading.Thread):
-    def __init__(self,queue,logger):
-        threading.Thread.__init__(self)
-        self.queue = queue 
-        self.log = logger
-
-    def run(self):
-        while True:
-            msg = self.queue.get()
-            self.log.log(msg)
-            time.sleep(0.1)
 

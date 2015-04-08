@@ -21,28 +21,26 @@ import errno
 import pickle
 import threading
 from multiprocessing import Process
+from random import randint
 from Queue import Queue
 from binascii import unhexlify,hexlify
 from datetime import datetime
 import hashlib
 from sockbasic import *
+import eventlet
 
 from select import epoll,EPOLLET,EPOLLIN,EPOLLOUT,EPOLLHUP,EPOLLERR
 
-class WorkerThread(threading.Thread):
-    def __init__(self,queue,logger):
-        threading.Thread.__init__(self)
-        self.queue = queue 
-        self.log = logger
 
-    def run(self):
-        while True:
-            try:
-                msg = self.queue.get_nowait()
-                self.log.log(msg)
-            except:
-                pass
-            time.sleep(0.01)
+def logger_worker(queue,logger):
+    while True:
+        time.sleep(0.01)
+        try:
+            msg = queue.get_nowait()
+            logger.log(msg)
+        except:
+            pass
+
 
 
 
@@ -62,6 +60,9 @@ class DevThread():
         self.srcsock = {}
         self.dstsock = {}
         self.host = host
+        self.rm_queue = Queue()
+        self.add_queue = Queue()
+        self.retran_t = None
         self.run()
     
     def run(self):
@@ -82,21 +83,22 @@ class DevThread():
                     pass
 
     def create_new_socket(self,uid):
-
         sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-        #sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-        #sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
         sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
         sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
         sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
         sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
-        n = time.time()
-        try:
-            sock.connect(self.host)
-        except (socket.error,socket.timeout):
-            self.errqueue.put("sock %d, connect timeout %f" % (sock.fileno(),time.time() -n ))
-            return
-
+        while True:
+            n = time.time()
+            rt = randint(10,40)
+            try:
+                sock.connect(self.host)
+            except (socket.error,socket.timeout):
+                self.errqueue.put("sock %d, connect timeout %f,sleep %d retry" % (sock.fileno(),time.time() -n,rt ))
+                time.sleep(rt)
+                continue
+            else:
+                break
         sock.setblocking(0)
         fd = sock.fileno()
         self.uids[fd] = uid
@@ -198,11 +200,13 @@ class DevThread():
                     self.errqueue.put('socket %d,packet counter is over 0xFFFFFF once' % fileno)
                 elif self.numbers[fileno] == rnum:
                     self.numbers[fileno] +=1
+                    self.rm_queue.put(0)
                     self.statqueue.put("sock %d,recv my confirm num %d is ok,data %s" % (fileno,rnum,hbuf))
                 else:
                     self.errqueue.put('sock %d,losing packet,recv  number  %d, my counter %d' % (fileno,rnum,self.numbers[fileno]))
+                    return
                 self.sbuf[fileno] = self.send_data_to_app('03%06x' % self.numbers[fileno],fileno)
-            #return  self.handle_write()
+                self.add_queue.put(0)
             self.epoll.modify(fileno,self.EV_OUT)
             return
         p = parser_stun_package(hbuf[STUN_HEADER_LENGTH:-8])
@@ -220,18 +224,20 @@ class DevThread():
         rdict = p[0]
         if hattr.method == STUN_METHOD_ALLOCATE:
             self.statqueue.put('sock %d, login' % fileno)
-            #pt = threading.Thread(target=refresh_time,args=(self.sock,self.timer_queue,errlog,self.refresh_buf))
-            #pt.start()
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
                 self.srcsock[fileno] = int(stat[:8],16)
             except KeyError:
                 pass
         elif hattr.method == STUN_METHOD_INFO:
+            if self.retran_t is None:
+                self.retran_t = threading.Thread(target=self.retransmit_packet)
+                self.start()
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
                 self.dstsock[fileno] = int(stat[:8],16)
                 self.sbuf[fileno] = self.send_data_to_app('03%06x' % self.numbers[fileno],fileno)
+                self.add_queue.put(0)
                 self.epoll.modify(fileno,self.EV_OUT)
                 return
             except KeyError:
@@ -252,7 +258,29 @@ class DevThread():
                 self.errqueue.put('send buf is wrong format %s' % self.sbuf[fileno])
                 return False
 
-
+    def retransmit_packet(self):
+       while True:
+           time.sleep(0.01)
+           try:
+               p = self.add_queue.get_nowait()
+               n = time.time() + self.retry
+           except:
+               pass
+           else:
+               while True:
+                   time.sleep(0.01)
+                   try:
+                       n = self.rm_queue.get_nowait()
+                       break
+                   except:
+                       pass
+                   if time.time() > n:
+                       self.write_sock()
+                       statqueue.put('sock %d ,retransmit_packet %s' % (self.fileno,self.sbuf))
+                       self.add_queue.put(0)
+                       break
+                       #except:
+                       #    errqueue.put('sock %d ,retransmit_packet error' % self.fileno)
 
 
 class AppThread():
@@ -273,6 +301,9 @@ class AppThread():
         self.host = host
         self.users = {}
         self.pwds = {}
+        self.rm_queue = Queue()
+        self.add_queue = Queue()
+        self.retran_t = None
         self.run()
     
     def run(self):
@@ -301,13 +332,17 @@ class AppThread():
         sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
         sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
         sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
-
-        n = time.time()
-        try:
-            sock.connect(self.host)
-        except (socket.error,socket.timeout):
-            self.errqueue.put("sock %d, connect timeout %f" % (sock.fileno(),time.time() -n ))
-            return
+        while True:
+            n = time.time()
+            rt = randint(10,40)
+            try:
+                sock.connect(self.host)
+            except (socket.error,socket.timeout):
+                self.errqueue.put("sock %d, connect timeout %f,sleep %d retry" % (sock.fileno(),time.time() -n,rt ))
+                time.sleep(rt)
+                continue
+            else:
+                break
 
         sock.setblocking(0)
         fd = sock.fileno()
@@ -386,11 +421,14 @@ class AppThread():
                     self.errqueue.put('packet counter over 0xFFFFFF once')
                 elif n == self.numbers[fileno]: 
                     self.numbers[fileno]+=1
+                    self.rm_queue.put(0)
                     self.statqueue.put("sock %d,recv dev confirm num %d ok,data %s" % (fileno,n,rbuf))
                 else:
                     self.errqueue.put('sock %d,lost packet,recv num %d,my counter %d' %(fileno,n,self.numbers[fileno]),fileno)
+                    return
                 self.sbuf[fileno] = self.stun_send_data_to_devid('03%06x' % self.numbers[fileno],fileno)
                 self.statqueue.put("sock %d,send packet of %d to dev,data %s" % (fileno,n,''.join(self.sbuf[fileno])))
+                self.add_queue.put(0)
 
             self.epoll.modify(fileno,self.EV_OUT)
             return 
@@ -411,8 +449,7 @@ class AppThread():
             return False
         rdict = p[0]
         if not cmp(hattr.method,STUN_METHOD_BINDING):
-            #p = threading.Thread(target=refresh_time,args=(self.sock,self.timer_queue,self.errlog,self.refresh_buf))
-            #p.start()
+            threading
             stat = rdict[STUN_ATTRIBUTE_STATE]
             self.srcsock[fileno]= int(stat[:8],16)
             # 下面绑定一些UUID
@@ -425,11 +462,15 @@ class AppThread():
         elif hattr.method  == STUN_METHOD_REFRESH:
             return False
         elif hattr.method == STUN_METHOD_CHANNEL_BIND:
+            if self.retran_t is None:
+                self.retran_t = threading.Thread(target = self.retransmit_packet)
+                self.retran_t.start()
             # 绑定小机命令o
             try:
                 self.dstsock[fileno] = int(rdict[STUN_ATTRIBUTE_RUUID][-8:],16)
                 if self.dstsock[fileno] != 0xFFFFFFFF:
                    self.sbuf[fileno] = self.stun_send_data_to_devid('03%06x' % self.numbers[fileno],fileno)
+                   self.add_queue.put(0)
                    self.statqueue.put('sock %d,start send packet to dev %d,buf %s' % (fileno,self.dstsock[fileno],''.join(self.sbuf[fileno])))
                 else:
                     return False
@@ -438,9 +479,13 @@ class AppThread():
      
      
         elif hattr.method == STUN_METHOD_INFO:
+            if self.retran_t is None:
+                self.retran_t = threading.Thread(target = self.retransmit_packet)
+                self.retran_t.start()
             try:
                 self.dstsock[fileno] =  int(rdict[STUN_ATTRIBUTE_STATE][:8],16)
                 self.sbuf[fileno] = self.stun_send_data_to_devid('03%06x' % self.numbers[fileno],fileno)
+                self.add_queue.put(0)
                 self.statqueue.put('sock %d,send packet to dev %d,buf %s' % (fileno,self.dstsock[fileno],rbuf))
             except KeyError:
                 self.errqueue.put("sock %d,recv no STATE %s" % (fileno,','.join(rdict.values())))
@@ -497,6 +542,29 @@ class AppThread():
         stun_add_fingerprint(buf)
         return buf
 
+    def retransmit_packet(self):
+       while True:
+           time.sleep(0.01)
+           try:
+               p = self.add_queue.get_nowait()
+               n = time.time() + self.retry
+           except:
+               pass
+           else:
+               while True:
+                   time.sleep(0.01)
+                   try:
+                       n = self.rm_queue.get_nowait()
+                       break
+                   except:
+                       pass
+                   if time.time() > n:
+                       self.write_sock()
+                       statqueue.put('sock %d ,retransmit_packet %s' % (self.fileno,self.sbuf))
+                       self.add_queue.put(0)
+                       break
+                       #except:
+                       #    errqueue.put('sock %d ,retransmit_packet error' % self.fileno)
     
 def make_argument_parser():
     parser = argparse.ArgumentParser(
@@ -546,9 +614,11 @@ def AppDemo(args):
         exit(1)
     errlog = ErrLog('AppDemo')
     statlog = StatLog('AppDemo')
-    errworker = WorkerThread(errqueue,errlog,)
+    errworker = threading.Thread(target=logger_worker,args=(errqueue,errlog))
+    errworker.daemon = True
     errworker.start()
-    statworker = WorkerThread(statqueue,statlog)
+    statworker = threading.Thread(target=logger_worker,args=(statqueue,statlog))
+    statworker.daemon = True
     statworker.start()
     uulist = []
     host = ()
@@ -577,7 +647,6 @@ def AppDemo(args):
         #glist.append(gevent.spawn(stun_setLogin,host,muuid[0],uname,uname))
         sockqueue.put_nowait(i)
         time.sleep(0.3)
-    ap.join()
 
 def DevDemo(args):
     args = make_argument_parser().parse_args()
@@ -588,9 +657,11 @@ def DevDemo(args):
     errlog = ErrLog('DevDemo')
     statlog = StatLog('DevDemo')
 
-    errworker = WorkerThread(errqueue,errlog,)
+    errworker = threading.Thread(target =logger_worker,args=(errqueue,errlog))
+    errworker.daemon = True
     errworker.start()
-    statworker = WorkerThread(statqueue,statlog)
+    statworker = threading.Thread(target=logger_worker,args=(statqueue,statlog))
+    statworker.daemon = True
     statworker.start()
 
     host = ()
@@ -608,7 +679,6 @@ def DevDemo(args):
         sockqueue.put_nowait(uid)
         time.sleep(0.3)
         #apps = DevSocket(host,uid,errqueue,statqueue)
-    ap.join()
     
 
 sockqueue = Queue()
