@@ -225,9 +225,9 @@ def check_jluuid(huid): # 自定义24B的UUID
 def check_dst_and_src(res):
     if res.dstsock == 0xFFFFFFFF or res.srcsock == 0xFFFFFFFF:
         res.eattr = STUN_ERROR_UNKNOWN_HEAD
-        return
+        return True
     else:
-        return None
+        return False
 
 def get_muluuid_fmt(num):
     n = 1

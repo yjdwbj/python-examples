@@ -193,7 +193,6 @@ class EpollServer():
         while 1:
             try:
                 recvbuf = fd.recv(SOCK_BUFSIZE)
-                recvqueue.put("%s,%d,recv data: %s" % (str(self.hosts[fileno]),fileno,hexlify(recvbuf)))
             except IOError:
                 self.errqueue.put('sock %d, IOError ,%s' % (fileno,str(self.hosts[fileno])))
                 self.dealwith_peer_hup(fileno)
@@ -206,6 +205,7 @@ class EpollServer():
                     self.dealwith_peer_hup(fileno)
                     break
                 hdata = hexlify(recvbuf)
+                del recvbuf
                 self.requests[fileno] += hdata
                 self.process_handle_first(fileno)
                 eventlet.sleep(0.001)
@@ -234,8 +234,10 @@ class EpollServer():
             popfunc = lambda d,v: d.pop(v)
             k = mcore_handle(popfunc,(n))
         except TypeError:
-            print "TypeError %d,n is none" % res.fileno
+            self.errqueue.put("TypeError %d,n is none" % res.fileno)
         self.delete_binds_in_db(uname,uids)
+        del uname
+        del uids
         return  stun_return_same_package(res)
         
 
@@ -282,6 +284,7 @@ class EpollServer():
         sock = self.clients[fileno]
         try:
             sock.send(unhexlify(''.join(self.responses[fileno])))
+            self.responses[fileno] = None
         except socket.error:
             self.dealwith_peer_hup(fileno)
 
@@ -313,6 +316,7 @@ class EpollServer():
             onepack = self.requests[fileno][:nlen]
             self.requests[fileno] = self.requests[fileno][nlen:]
             self.handle_requests_buf(onepack,fileno)
+            del onepack
             
                     
     def handle_requests_buf(self,hbuf,fileno): # pair[0] == hbuf, pair[1] == fileno
@@ -324,7 +328,6 @@ class EpollServer():
         res.eattr = STUN_ERROR_NONE
         res.host= self.hosts[fileno]
         res.fileno=fileno
-        #gc.collect()
 
         #通过认证的socket 直接转发了
         try:
@@ -342,6 +345,8 @@ class EpollServer():
                     self.handle_forward_packet(hbuf,res,self.devsock)
             else:
                 self.handle_postauth_process(res,hbuf)
+            del hbuf
+            del res
             return # 一切正常返回
         except KeyError:
             pass
@@ -358,6 +363,8 @@ class EpollServer():
                     self.handle_forward_packet(hbuf,res,self.appsock)
             else:
                 self.handle_postauth_process(res,hbuf)
+            del hbuf
+            del res
             return # 一切正常返回
         except KeyError:
             pass
@@ -366,6 +373,8 @@ class EpollServer():
         处理要认证的客务端
         """
         self.handle_client_request_preauth(res,hbuf)
+        del res
+        del hbuf
 
     def handle_postauth_process(self,res,hbuf):
         """
@@ -375,7 +384,6 @@ class EpollServer():
         trip =  parser_stun_package(hbuf[hexpos:-8])
         if trip is None:
             res.eattr = STUN_ERROR_UNKNOWN_ATTR
-            print "hbuf is wrong",hbuf,self.hosts[res.fileno]
             self.errqueue.put(','.join([LOG_ERROR_ATTR,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             self.responses[res.fileno] = stun_error_response(res)
             self.write_to_sock(res.fileno)
@@ -387,8 +395,6 @@ class EpollServer():
                self.write_to_sock(res.fileno)
             except KeyError:
                 self.handle_client_request_preauth(res,hbuf)
-                print hbuf
-                print "KeyError,fileno %d,method %s,not auth clients,forward to preauth" % (res.fileno,res.method)
 
         
     
@@ -438,16 +444,15 @@ class EpollServer():
         hexpos = STUN_HEADER_LENGTH
         trip = parser_stun_package(hbuf[hexpos:-8])
         if trip is None:
-            print "preauth hbuf is wrong",hbuf,self.hosts[res.fileno]
+            #print "preauth hbuf is wrong",hbuf,self.hosts[res.fileno]
             res.eattr = STUN_ERROR_UNKNOWN_ATTR
             self.errqueue.put(','.join([LOG_ERROR_ATTR,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return
     
         res.attrs = trip[0]
         res.reqlst = trip[1]
+        del trip
         if res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and (len(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])/2) != 32:
-            print "attrs",res.attrs
-            print 'pwd',res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
             res.eattr = STUN_ERROR_AUTH
             self.errqueue.put(','.join([LOG_ERROR_AUTH,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return
@@ -455,9 +460,6 @@ class EpollServer():
             self.responses[res.fileno] = self.prefunc[res.method](res)
         except KeyError:
             res.eattr = STUN_ERROR_UNKNOWN_METHOD
-            print "head",res.__dict__
-            print "attrs",upkg
-            print "method",res.method
             self.errqueue.put(','.join([LOG_ERROR_METHOD,res.method,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
         else:
             self.write_to_sock(res.fileno)
@@ -490,9 +492,9 @@ class EpollServer():
         try:
             chk = check_jluuid(res.attrs[STUN_ATTRIBUTE_UUID])
             if chk:
-                print "chkuuid",chk
                 res.eattr = chk
                 self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
+                del chk
                 return stun_error_response(res)
         except KeyError:
             #res.eattr= hexlify("Not Found UUID")
@@ -516,6 +518,7 @@ class EpollServer():
         tcs.uuid = huid
         #print "login devid is",tcs.uuid
         self.statqueue.put('device login uuid is %s,socket is %d, host %s:%d' % (huid,res.fileno,res.host[0],res.host[1]))
+        del huid
         return device_login_sucess(res)
 
     def handle_chkuser_request(self,res):
@@ -573,7 +576,7 @@ class EpollServer():
             chk = check_jluuid(res.attrs[STUN_ATTRIBUTE_UUID])
             if chk:
                 res.eattr = chk
-                print "sock %d, uuid wrong %s" %(res.fileno,res.attrs[STUN_ATTRIBUTE_UUID])
+                del chk
                 self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(str(sys._getframe().f_lineno))]))
                 return stun_error_response(res)
             self.bind_each_uuid((res.attrs[STUN_ATTRIBUTE_UUID],res.fileno))
@@ -612,6 +615,8 @@ class EpollServer():
         except IOError:
             self.errqueue.put(''.join([LOG_ERROR_SOCK,\
                     'socket error %d' % fileno,str(sys._getframe().f_lineno)]))
+        del fileno
+        del dstsock
     
     def clean_timeout_sock(self,fileno): # 清除超时的连接
         if self.timer.has_key(fileno):
@@ -625,6 +630,7 @@ class EpollServer():
         mtable = QueryDB.get_devices_table(vendor)
         #ss = mtable.update().values(is_online=False).where(mtable.c.devid == hexlify(suid[0]))
         ss = mtable.update().values(is_online=False).where(mtable.c.devid == devid[:32])
+        vendor = None
         try:
             res = self.db_write(ss)
         except IOError:
@@ -658,6 +664,8 @@ class EpollServer():
             alist = [n for n in binds if self.appsock.has_key(n)]
             for n in alist:
                 self.appbinds[n][uuid]=0xFFFFFFFF
+            del uuid
+            del alist[:]
     
     def app_user_logout(self,uname):
         atable = QueryDB.get_account_status_table()
@@ -674,6 +682,7 @@ class EpollServer():
             del self.appsock[fileno]
             self.statqueue.put('app %s logout info dev,self fileno %d' % (name,fileno))
             self.app_user_logout(name)
+            name = None
         except KeyError:
             pass
         else:
@@ -727,7 +736,9 @@ class EpollServer():
     
     def remove_fileno_resources(self,fileno):
         m = [(getattr(self,n),fileno) for n in store]
-        mcore_handle(clean_dict,m)
+        pool = eventlet.GreenPool(len(m))
+        pool.imap(clean_dict,m)
+        del m[:]
             
 
 
@@ -755,6 +766,8 @@ class EpollServer():
                 self.dealwith_peer_hup(dstsock)
         except KeyError:
             self.appbinds[fileno][ustr]=0xFFFFFFFF
+        ustr = None
+        fileno = None
     
     
     
@@ -805,9 +818,11 @@ class EpollServer():
             return False
         except IntegrityError:
             self.errqueue.put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
+            uname = None
             return True
         except DataError:
             self.errqueue.put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
+            uname = None
             return True
 
     
@@ -827,6 +842,11 @@ class EpollServer():
             result = self.db_write(sss)
         except:
             self.errqueue.put(','.join([LOG_ERROR_DB,host[0],str(sys._getframe().f_lineno)]))
+        uname = None
+        status_tables = None
+        ipadr = None
+        ipprt = None
+        sss = None
     
     
     def app_user_login(self,uname,pwd):
@@ -841,6 +861,7 @@ class EpollServer():
             return result.fetchall()
         except:
             self.errqueue.put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
+        s = None
     
     
     def check_user_in_database(self,uname):
@@ -898,6 +919,9 @@ class EpollServer():
             except:
                 self.errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
             #print "insert new devices result fetchall"
+        ipadr = None
+        ipprt = None
+        data = None
 
 
 
@@ -999,19 +1023,14 @@ if __name__ == '__main__':
 
     errqueue = Queue()
     statqueue = Queue()
-    recvqueue = Queue()
     errlog = ErrLog('srv_log')
     statlog = StatLog('srv_stat')
-    recvlog = StatLog('srv_recv')
     errworker = threading.Thread(target=logger_worker,args=(errqueue,errlog))
     errworker.daemon = True
     errworker.start()
     statworker = threading.Thread(target=logger_worker,args=(statqueue,statlog))
     statworker.daemon = True
     statworker.start()
-    recvworker = threading.Thread(target=logger_worker,args=(recvqueue,recvlog))
-    recvworker.daemon = True
-    recvworker.start()
     srv =EpollServer(port,errqueue,statqueue)
     srv.run()
 

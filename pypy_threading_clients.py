@@ -8,7 +8,6 @@
 #
 #
 ####################################################################
-import socket
 import time
 import struct
 import uuid
@@ -31,13 +30,13 @@ from random import randint
 
 def logger_worker(queue,logger):
     while 1:
-        time.sleep(0.005)
-        for n in xrange(10):
+        for n in xrange(20):
             try:
                 msg = queue.get_nowait()
                 logger.log(msg)
             except:
                 break
+        time.sleep(0.005)
 
 class DevicesFunc():
     def __init__(self,host,uid):
@@ -117,6 +116,7 @@ class DevicesFunc():
             onepack = self.recv[:nlen]
             self.recv = self.recv[nlen:]
             self.process_loop(onepack)
+            del onepack
 
 
     def process_loop(self,hbuf):
@@ -138,7 +138,6 @@ class DevicesFunc():
             dstsock = hattr.srcsock
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
-                time.sleep(0.01)
                 self.sbuf = self.send_data_to_app('02%s' % hattr.sequence[2:])
                 statqueue.put("%s,sock %d,recv from app number of hex(%s), buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],hbuf))
             #下面是我方主动发数据
@@ -180,7 +179,9 @@ class DevicesFunc():
                 stat = rdict[STUN_ATTRIBUTE_STATE]
                 self.srcsock = int(stat[:8],16)
             except KeyError:
-                pass
+                errqueue.put('sock %d,login not my sock fileno,retry login' % self.fileno)
+                self.sbuf = self.device_struct_allocate()
+                return self.write_sock()
         elif hattr.method == STUN_METHOD_INFO:
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
@@ -193,7 +194,11 @@ class DevicesFunc():
                     self.retry_t  = threading.Thread(target=self.retransmit_packet)
                     self.retry_t.start()
                 self.add_queue.put(0)
+                del rdict
+                del hattr
                 return self.write_sock()
+        del rdict
+        del hattr
         return False
     
     def retransmit_packet(self):
@@ -201,7 +206,7 @@ class DevicesFunc():
             time.sleep(0.001)
             try:
                 p = self.add_queue.get_nowait()
-                n = time.time() + self.retry
+                n = time.time() + randint(10,self.retry)
             except:
                 pass
             else:
@@ -227,7 +232,6 @@ class DevicesFunc():
         if self.sbuf:
             try:
                 nbyte = self.sock.send(unhexlify(self.sbuf))
-                rsqueue.put('sock %d,send buf %s'% (self.fileno,self.sbuf))
             except IOError:
                 errqueue.put('socket %d close,' % self.file)
             #except TypeError:
@@ -278,7 +282,7 @@ class APPfunc():
         self.pwd = uid
         self.uid= uid
         self.addr = addr
-        self.retry = 60
+        self.retry = 50
         self.start()
 
     def start(self):
@@ -337,6 +341,7 @@ class APPfunc():
             onepack = self.recv[:nlen]
             self.recv = self.recv[nlen:]
             self.process_loop(onepack)
+            del onepack
 
 
     def process_loop(self,rbuf):
@@ -391,6 +396,7 @@ class APPfunc():
         if p is None:
             return False
         rdict = p[0]
+        del p
         if not cmp(hattr.method,STUN_METHOD_BINDING):
             stat = rdict[STUN_ATTRIBUTE_STATE]
             self.srcsock = int(stat[:8],16)
@@ -462,6 +468,8 @@ class APPfunc():
             pass
         else:
             pass
+        del rdict
+        del hattr
         return  self.write_sock()
     
     
@@ -469,7 +477,6 @@ class APPfunc():
         if self.sbuf:
             try:
                 nbyte = self.sock.send(unhexlify(self.sbuf))
-                rsqueue.put('sock %d,send buf %s' %(self.fileno,self.sbuf))
                 #statqueue.put(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
                 #print ''.join(buf)
             except IOError:
@@ -482,7 +489,7 @@ class APPfunc():
             time.sleep(0.001)
             try:
                 p = self.add_queue.get_nowait()
-                n = time.time() + self.retry
+                n = time.time() + randint(10,self.retry)
             except:
                 pass
             else:
@@ -593,9 +600,6 @@ def AppDemo(args):
         exit(1)
     errlog = ErrLog('AppDemo')
     statlog = StatLog('AppDemo')
-    rslog = StatLog('SendRecv')
-    rsworker = threading.Thread(target=logger_worker,args=(rsqueue,rslog))
-    rsworker.start()
     errworker = threading.Thread(target=logger_worker,args=(errqueue,errlog))
     #errworker.daemon = True
     errworker.start()
@@ -633,9 +637,6 @@ def DevDemo(args):
 
     errlog = ErrLog('DevDemo')
     statlog = StatLog('DevDemo')
-    rslog = StatLog('SendRecv')
-    rsworker = threading.Thread(target=logger_worker,args=(rsqueue,rslog))
-    rsworker.start()
 
     errworker = threading.Thread(target=logger_worker,args=(errqueue,errlog))
     errworker.start()
@@ -666,7 +667,6 @@ def DevDemo(args):
 
 errqueue = Queue()
 statqueue = Queue()
-rsqueue = Queue()
 if __name__ == '__main__':
     args = make_argument_parser().parse_args()
     args.func(args)

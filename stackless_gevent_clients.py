@@ -30,7 +30,7 @@ import threading
 
 def logger_worker(queue,logger):
     while 1:
-        for x in xrange(1,20):
+        for x in xrange(20):
             try:
                 msg = queue.get_nowait()
                 logger.log(msg)
@@ -48,19 +48,21 @@ class DevicesFunc():
         self.srcsock = 0xFFFFFFFF
         self.dstsock = 0xFFFFFFFF
         self.mynum = 0
-        self.timer_queue = Queue()
+        self.add_queue = Queue()
+        self.rm_queue = Queue()
+        self.retry_t = None
         self.fileno = self.sock.fileno()
         self.host = host
         self.uid = uid
         self.recv = ''
         self.sbuf = ''
-        self.retry = 60
+        self.retry = 50
         self.start()
 
     def start(self):
         while 1:
             n = time.time()
-            rt = randint(10,30)
+            rt = randint(5,120)
             try:
                 self.sock.connect(self.host)
             except socket.timeout:
@@ -76,7 +78,7 @@ class DevicesFunc():
 
         self.sbuf = self.device_struct_allocate()
         self.write_sock()
-        gevent.sleep(0.2)
+        gevent.sleep(0.1)
         while 1:
             try:
                 data = self.sock.recv(SOCK_BUFSIZE)
@@ -87,8 +89,9 @@ class DevicesFunc():
                 errqueue.put('sock %d,recv not data' % self.fileno)
                 break
             self.recv += hexlify(data)
+            del data
             self.process_handle_first()
-            gevent.sleep(0)
+            gevent.sleep(0.001)
         errqueue.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
         self.sock.close()
 
@@ -115,6 +118,7 @@ class DevicesFunc():
             onepack = self.recv[:nlen]
             self.recv = self.recv[nlen:]
             self.process_loop(onepack)
+            del onepack
 
 
     def process_loop(self,hbuf):
@@ -136,7 +140,6 @@ class DevicesFunc():
             dstsock = hattr.srcsock
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
-                gevent.sleep(0.01)
                 self.sbuf = self.send_data_to_app('02%s' % hattr.sequence[2:])
                 statqueue.put("%s,sock %d,recv from app number of hex(%s), buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],hbuf))
             #下面是我方主动发数据
@@ -147,11 +150,12 @@ class DevicesFunc():
                     errqueue.put('socket %d,packet counter is over 0xFFFFFF once' % self.fileno)
                 elif self.mynum == rnum:
                     self.mynum +=1
-                    statqueue.put("%s,sock %d,recv my confirm num %d is ok,data: %s" % (str(self.sock.getsockname),self.fileno,rnum,hbuf))
+                    statqueue.put("%s,sock %d,recv my confirm num %d is ok,data: %s" % (str(self.sock.getsockname()),self.fileno,rnum,hbuf))
                 else:
                     errqueue.put('sock %d,losing packet,recv  number  %d, my counter %d' % (self.fileno,rnum,self.mynum))
+                    return
                 self.sbuf = self.send_data_to_app('03%06x' % self.mynum)
-                self.timer_queue.put(0)
+                self.add_queue.put(0)
             return  self.write_sock()
         p = parser_stun_package(hbuf[STUN_HEADER_LENGTH:-8])
         if not p:
@@ -166,6 +170,7 @@ class DevicesFunc():
     
         hattr.method = stun_get_type(hattr.method)
         rdict = p[0]
+        del p
         if hattr.method == STUN_METHOD_ALLOCATE:
             #statqueue.put('sock %d, login' % self.fileno)
             """
@@ -176,7 +181,9 @@ class DevicesFunc():
                 stat = rdict[STUN_ATTRIBUTE_STATE]
                 self.srcsock = int(stat[:8],16)
             except KeyError:
-                pass
+                errqueue.put('sock %d,login not my sock fileno,retry login' % self.fileno)
+                self.sbuf = self.device_struct_allocate()
+                return self.write_sock()
         elif hattr.method == STUN_METHOD_INFO:
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
@@ -189,7 +196,11 @@ class DevicesFunc():
                     self.retry_t  = threading.Thread(target=self.retransmit_packet)
                     self.retry_t.start()
                 self.add_queue.put(0)
+                del rdict
+                del hattr
                 return self.write_sock()
+        del rdict
+        del hattr
         return False
     
     def retransmit_packet(self):
@@ -197,12 +208,12 @@ class DevicesFunc():
             gevent.sleep(0.001)
             try:
                 p = self.add_queue.get_nowait()
-                n = time.time() + self.retry
+                n = time.time() + randint(10,self.retry)
             except:
                 pass
             else:
                 while 1:
-                    time.sleep(0.001)
+                    gevent.sleep(0.001)
                     try:
                         rm = self.rm_queue.get_nowait()
                         break
@@ -273,13 +284,13 @@ class APPfunc():
         self.pwd = uid
         self.uid= uid
         self.addr = addr
-        self.retry = 60
+        self.retry = 50
         self.start()
 
     def start(self):
         while 1:
             n = time.time()
-            rt = randint(10,30)
+            rt = randint(5,120)
             try:
                 self.sock.connect(self.addr)
             except socket.timeout:
@@ -295,7 +306,7 @@ class APPfunc():
     
         self.sbuf = self.stun_register_request()
         self.write_sock()
-        gevent.sleep(0.2)
+        gevent.sleep(0.1)
         while 1:
             try:
                 data = self.sock.recv(SOCK_BUFSIZE)
@@ -305,8 +316,9 @@ class APPfunc():
                 errqueue.put('sock %d, recv not data' % self.fileno)
                 break
             self.recv += binascii.b2a_hex(data)
+            del data
             self.process_handle_first()
-            gevent.sleep(0)
+            gevent.sleep(0.001)
         errqueue.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
         self.sock.close()
 
@@ -333,6 +345,7 @@ class APPfunc():
             onepack = self.recv[:nlen]
             self.recv = self.recv[nlen:]
             self.process_loop(onepack)
+            del onepack
 
 
     def process_loop(self,rbuf):
@@ -387,6 +400,7 @@ class APPfunc():
         if p is None:
             return False
         rdict = p[0]
+        del p
         if not cmp(hattr.method,STUN_METHOD_BINDING):
             stat = rdict[STUN_ATTRIBUTE_STATE]
             self.srcsock = int(stat[:8],16)
@@ -429,6 +443,9 @@ class APPfunc():
 #                return False
      
         elif hattr.method == STUN_METHOD_INFO:
+            if not self.retry_t:
+                self.retry_t  = threading.Thread(target=self.retransmit_packet)
+                self.retry_t.start()
             try:
                 self.dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-8:],16)
                 self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
@@ -455,6 +472,8 @@ class APPfunc():
             pass
         else:
             pass
+        del rdict
+        del hattr
         return  self.write_sock()
     
     
@@ -462,25 +481,24 @@ class APPfunc():
         if self.sbuf:
             try:
                 nbyte = self.sock.send(unhexlify(self.sbuf))
-                rsqueue.put('sock %d,send buf %s' %(self.fileno,self.sbuf))
                 #statqueue.put(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
                 #print ''.join(buf)
             except IOError:
                 errqueue.put(','.join(['sock','%d'% self.fileno,'closed']))
-            except TypeError:
-                errqueue.put('send buf is wrong format %s' % self.sbuf)
+            #except TypeError:
+            #    errqueue.put('sock %d,send buf is wrong format %s' % (self.fileno,self.sbuf))
 
     def retransmit_packet(self):
         while 1:
             gevent.sleep(0.001)
             try:
                 p = self.add_queue.get_nowait()
-                n = time.time() + self.retry
+                n = time.time() + randint(10,self.retry)
             except:
                 pass
             else:
                 while 1:
-                    time.sleep(0.001)
+                    gevent.sleep(0.001)
                     try:
                         n = self.rm_queue.get_nowait()
                         break
@@ -605,8 +623,6 @@ def AppDemo(args):
     bind = 1
     ucount = len(ulist)
     gevent.joinall([gevent.spawn(APPfunc,host,uid) for uid in ulist])
-    for uid in ulist:
-        gevent.sleep(0.3)
 
 def DevDemo(args):
     args = make_argument_parser().parse_args()
@@ -632,9 +648,6 @@ def DevDemo(args):
         host = (args.srv_host,3478)
     uulist = read_uuid_file(args.uuidfile)
     gevent.joinall([gevent.spawn(DevicesFunc,host,uid) for uid in uulist])
-    for uid in uulist:
-        #pt = threading.Thread(target=DevicesFunc,args=(host,uid))
-        gevent.sleep(0.3)
     
 
 errqueue = Queue()
