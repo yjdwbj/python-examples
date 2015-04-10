@@ -24,7 +24,8 @@ from sockbasic import *
 from random import randint
 import gevent
 from gevent import monkey,socket
-from gevent.queue import Queue
+#from gevent.queue import Queue
+from multiprocessing import Queue
 monkey.patch_all()
 import threading
 
@@ -94,6 +95,7 @@ class DevicesFunc():
             gevent.sleep(0.001)
         errqueue.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
         self.sock.close()
+        conqueue.put(list(DevicesFunc,self.addr,self.uid))
 
     def process_handle_first(self):
         l = self.recv.count(HEAD_MAGIC) #没有找到JL关键字
@@ -321,6 +323,7 @@ class APPfunc():
             gevent.sleep(0.001)
         errqueue.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
         self.sock.close()
+        conqueue.put(list(APPfunc,self.addr,self.uid))
 
     def process_handle_first(self):
         l = self.recv.count(HEAD_MAGIC) #没有找到JL关键字
@@ -639,6 +642,9 @@ def DevDemo(args):
     statworker = threading.Thread(target=logger_worker,args=(statqueue,statlog))
     #statworker.daemon = True
     statworker.start()
+    
+    conworker = threading.Thread(target=ReConnection)
+    conworker.start()
 
     host = ()
     try:
@@ -647,11 +653,25 @@ def DevDemo(args):
     except:
         host = (args.srv_host,3478)
     uulist = read_uuid_file(args.uuidfile)
+    conqueue.put([DevicesFunc,host,uulist[0]])
+    return 0
     gevent.joinall([gevent.spawn(DevicesFunc,host,uid) for uid in uulist])
     
+def ReConnection():
+    while 1:
+        try:
+            thr = conqueue.get_nowait()
+            print thr
+        except:
+            pass
+        else:
+            gevent.spawn(thr[0],thr[1],thr[2]).join()
+        gevent.sleep(0)
+
 
 errqueue = Queue()
 statqueue = Queue()
+conqueue = Queue()
 if __name__ == '__main__':
     args = make_argument_parser().parse_args()
     args.func(args)

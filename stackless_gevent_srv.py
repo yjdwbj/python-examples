@@ -23,9 +23,8 @@ from sockbasic import *
 import gevent
 from gevent.server import StreamServer,_tcp_listener
 from gevent import monkey,socket,server
-from gevent.queue import Queue
 from gevent.pool import Group
-from multiprocessing import Process
+from multiprocessing import Process,Queue
 #monkey.patch_all()
 import threading
 
@@ -142,10 +141,8 @@ def stun_return_same_package(res):
 
 
 class EpollServer():
-    def __init__(self,port,errqueue,statqueue):
+    def __init__(self,port):
 
-        self.listener = _tcp_listener(('0.0.0.0',3478),16384,1)
-        #self.server = StreamServer(('0.0.0.0',3478),self.handle_new_accept,backlog = 8192)
         #self.serve = gevent.serve(self.srvsocket,self.run,1048576)
         #self.gpool = gevent.GreenPool(1048576)
         #errqueue = errqueue
@@ -171,6 +168,9 @@ class EpollServer():
                 STUN_METHOD_DELETE:self.handle_delete_bind_item, #删除现有的绑定
                 STUN_METHOD_PULL:self.handle_app_pull
                 }
+        #self.server = StreamServer(('0.0.0.0',3478),self.handle_new_accept,backlog = 8192)
+        #self.server.serve_forever()
+        self.listener = _tcp_listener(('0.0.0.0',3478),16384,1)
 
         for i in xrange(1):
             Process(target=self.server_forever).start()
@@ -216,7 +216,7 @@ class EpollServer():
                 del recvbuf
                 self.requests[fileno] += hdata
                 self.process_handle_first(fileno)
-                gevent.sleep(0.001)
+                gevent.sleep(0)
     
 
     def handle_modify_bind_item(self,res):
@@ -813,6 +813,10 @@ class EpollServer():
         ins = account.insert().values(uname=uname,pwd=obj.digest(),is_active=True,reg_time=datetime.now())
         try:
             self.db_write(ins)
+            del account
+            del uname
+            del obj
+            del ins
             return False
         except IntegrityError:
             errqueue.put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
@@ -840,10 +844,9 @@ class EpollServer():
             result =  self.db_write(sss)
         except:
             errqueue.put(','.join([LOG_ERROR_DB,host[0],str(sys._getframe().f_lineno)]))
-        uname = None
-        status_tables = None
-        ipadr = None
-        ipprt = None
+        del uname
+        del ipadr
+        del ipprt
         del sss
     
     
@@ -859,7 +862,8 @@ class EpollServer():
             return result.fetchall()
         except:
             errqueue.put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
-        s = None
+        del s
+        del obj
     
     
     def check_user_in_database(self,uname):
@@ -929,12 +933,12 @@ def logger_worker(queue,logger):
     while 1:
         for x in xrange(30):
             try:
-                msg = queue.get_nowait()
+                msg = queue.get(True,0.01)
                 logger.log(msg)
                 del msg
             except:
                 break
-        gevent.sleep(0.001)
+        gevent.sleep(0)
 
     
 def make_argument_parser():
@@ -953,8 +957,8 @@ def make_argument_parser():
     return parser
 
 __version__ = '0.1.0'
-options = make_argument_parser().parse_args()
-port = options.srv_port if options.srv_port else 3478
+#options = make_argument_parser().parse_args()
+#port = options.srv_port if options.srv_port else 3478
 
 
 
@@ -1001,7 +1005,5 @@ if __name__ == '__main__':
     statworker = threading.Thread(target=logger_worker,args=(statqueue,statlog))
     #statworker.daemon = True
     statworker.start()
-    srv = EpollServer(port,errqueue,statqueue)
+    srv = EpollServer(3478)
     #srv.run()
-
-
