@@ -435,7 +435,7 @@ class EpollReactor(object):
 
 class QueryDB():
     def __init__(self):
-        self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=10240,max_overflow=20)
+        self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=2048,max_overflow=20)
 
     def check_table(self,table):
         return table.exists(self.engine)

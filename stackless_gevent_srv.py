@@ -82,7 +82,6 @@ def stun_connect_address(host,res):
     if res.attrs.has_key(STUN_ATTRIBUTE_DATA): #转发小机的基本信息
         stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify(res.attrs[STUN_ATTRIBUTE_DATA]))
     stun_add_fingerprint(buf)
-    
     return (buf)
 
 def register_success(uname):
@@ -147,8 +146,19 @@ class EpollServer():
         #self.gpool = gevent.GreenPool(1048576)
         #errqueue = errqueue
         #statqueue = statqueue
+        """创建多个engine让它平均到多个进程上，性能问题要进一步调试"""
         self.write_engine = QueryDB().get_engine()
         self.db_write = self.write_engine.connect().execute
+        self.app_engine = QueryDB().get_engine()
+        self.app_write = self.app_engine.connect().execute
+        self.appreg_engine = QueryDB().get_engine()
+        self.appreg_exec = self.app_engine.connect().execute
+        self.applog_engine = QueryDB().get_engine()
+        self.applog_exec = self.app_engine.connect().execute
+        self.appbind_engine = QueryDB().get_engine()
+        self.appbind_exec = self.app_engine.connect().execute
+        self.dev_engine = QueryDB().get_engine()
+        self.dev_write = self.app_engine.connect().execute
         self.read_engine = QueryDB().get_engine()
         self.db_read = self.read_engine.connect().execute
         [setattr(self,x,{}) for x in store]
@@ -171,9 +181,9 @@ class EpollServer():
         #self.server = StreamServer(('0.0.0.0',3478),self.handle_new_accept,backlog = 8192)
         #self.server.serve_forever()
         self.listener = _tcp_listener(('0.0.0.0',3478),16384,1)
-
-        for i in xrange(1):
-            Process(target=self.server_forever).start()
+        #for i in xrange(1):
+        #Process(target=self.server_forever).start()
+        self.server_forever()
 
     def server_forever(self):
         StreamServer(self.listener,self.handle_new_accept).serve_forever()
@@ -197,12 +207,13 @@ class EpollServer():
         self.clients[fileno] = nsock
         self.hosts[fileno] = addr
         self.requests[fileno] =''
+        hstr = str(addr)
         while 1:
             try:
                 recvbuf = nsock.recv(SOCK_BUFSIZE)
                 #recvqueue.put("%s,%d,recv data: %s" % (str(self.hosts[fileno]),fileno,hexlify(recvbuf)))
             except IOError:
-                errqueue.put('sock %d, IOError ,%s' % (fileno,str(self.hosts[fileno])))
+                errqueue.put('sock %d, IOError ,%s' % (fileno,hstr))
                 self.dealwith_peer_hup(fileno)
                 break
             except socket.error:
@@ -214,9 +225,14 @@ class EpollServer():
                     break
                 hdata = hexlify(recvbuf)
                 del recvbuf
-                self.requests[fileno] += hdata
+                try:
+                    self.requests[fileno] += hdata
+                except KeyError:
+                    break
                 self.process_handle_first(fileno)
                 gevent.sleep(0)
+        errqueue.put("%s exit,sock %d" % (hstr,fileno))
+        """退出本线程"""
     
 
     def handle_modify_bind_item(self,res):
@@ -408,7 +424,7 @@ class EpollServer():
             self.responses[res.dstsock] = hbuf
             fileno = res.fileno
             dstsock = res.dstsock
-            statqueue.put('%s , sock %d, foward to %s, sock %d, %s' % (str(res.host),fileno,str(self.hosts[dstsock]),dstsock,hbuf))
+            fwdqueue.put('fwd: [%s,sock %d] ---> [%s,sock %d] buf:%s' % (str(res.host),fileno,str(self.hosts[dstsock]),dstsock,hbuf))
             self.write_to_sock(res.dstsock)
         except KeyError: # 目标不存在
             res.eattr = STUN_ERROR_DEVOFFLINE
@@ -562,13 +578,13 @@ class EpollServer():
             return
 
         try:
-             self.db_write(ins)
+             self.appbind_exec(ins)
         except IntegrityError:
             stmt = table.update().values(reg_time = datetime.now()).where(table.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID])
-            self.db_write(stmt)
+            self.appbind_exec(stmt)
         except ProgrammingError:
             stmt = table.update().values(reg_time = datetime.now()).where(table.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID])
-            self.db_write(stmt)
+            self.appbind_exec(stmt)
 
     def handle_app_bind_device(self,res):
         """
@@ -632,7 +648,7 @@ class EpollServer():
         ss = mtable.update().values(is_online=False).where(mtable.c.devid == devid[:32])
         vendor = None
         try:
-            res =  self.db_write(ss)
+            res =  self.dev_write(ss)
         except IOError:
             errqueue.put(','.join([LOG_ERROR_DB,devid,str(sys._getframe().f_lineno)]))
             return 0
@@ -671,7 +687,7 @@ class EpollServer():
         atable = QueryDB.get_account_status_table()
         ss = atable.update().values(is_login=False).where(atable.c.uname == uname)
         try:
-            res =  self.db_write(ss)
+            res =  self.app_write(ss)
         except :
             errqueue.put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
 
@@ -812,7 +828,7 @@ class EpollServer():
         obj.update(pwd)
         ins = account.insert().values(uname=uname,pwd=obj.digest(),is_active=True,reg_time=datetime.now())
         try:
-            self.db_write(ins)
+            self.appreg_exec(ins)
             del account
             del uname
             del obj
@@ -829,7 +845,7 @@ class EpollServer():
 
     
     def app_user_update_status(self,user,host):
-        """更新用户的状态"""
+        """更新用户的状态,这里有优化表结构与流程的可能性"""
         uname = unhexlify(user)
         status_tables = QueryDB.get_account_status_table()
         ipadr = int(hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
@@ -841,7 +857,7 @@ class EpollServer():
             sss = status_tables.insert().values(uname=uname,is_login=True,chost=[ipadr,ipprt])
 
         try:
-            result =  self.db_write(sss)
+            result =  self.applog_exec(sss)
         except:
             errqueue.put(','.join([LOG_ERROR_DB,host[0],str(sys._getframe().f_lineno)]))
         del uname
@@ -858,7 +874,7 @@ class EpollServer():
         s = sql.select([account]).where(and_(account.c.uname == uname,account.c.pwd == obj.digest(),
             account.c.is_active == True))
         try:
-            result = self.db_read(s)
+            result = self.applog_exec(s)
             return result.fetchall()
         except:
             errqueue.put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
@@ -873,7 +889,7 @@ class EpollServer():
         account = QueryDB.get_account_table()
         s = sql.select([account.c.uname]).where(account.c.uname == uname)
         try:
-            result = self.db_read(s)
+            result = self.appreg_exec(s)
         except:
             errqueue.put(','.join([LOG_ERROR_DB,uname,self.clients[fileno],str(sys._getframe().f_lineno)]))
         return result.fetchall()
@@ -885,7 +901,7 @@ class EpollServer():
         s = sql.select([mirco_devices]).where(mirco_devices.c.devid == uid[:32] )
         try:
             #result = self.execute(s)
-            result = self.db_read(s)
+            result = self.dev_write(s)
             return result.fetchall()
         except:
             errqueue.put(','.join([LOG_ERROR_DB,uuid,str(sys._getframe().f_lineno)]))
@@ -895,8 +911,8 @@ class EpollServer():
     def update_newdevice(self,res):
         '''添加新的小机到数据库'''
         mirco_devices = QueryDB.get_devices_table(res.vendor)
-        if not mirco_devices.exists(self.write_engine):
-            mirco_devices.create(self.write_engine)
+        if not mirco_devices.exists(self.dev_engine):
+            mirco_devices.create(self.dev_engine)
         ipadr = int(hexlify(socket.inet_aton(res.host[0])),16) & 0xFFFFFFFF
         ipprt = res.host[1] & 0xFFFF
         #print "host %d:%d" % (ipadr,ipprt)
@@ -910,14 +926,14 @@ class EpollServer():
             upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
                     last_login_time=datetime.now()).where(mirco_devices.c.devid == res.tuid)
             try:
-                result =  self.db_write(upd)
+                result =  self.dev_write(upd)
             except:
                 errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
         except exc.DataError: 
             ins = mirco_devices.insert().values(devid=res.tuid,is_active=True,
                     is_online=True,chost=[ipadr,ipprt],data=data,last_login_time=datetime.now())
             try:
-                result =  self.db_write(ins)
+                result =  self.dev_write(ins)
             except:
                 errqueue.put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
             #print "insert new devices result fetchall"
@@ -997,13 +1013,16 @@ if __name__ == '__main__':
 
     errqueue = Queue()
     statqueue = Queue()
+    fwdqueue = Queue()
     errlog = ErrLog('gevnet')
     statlog = StatLog('gevent')
+    fwdlog = StatLog('fwd')
     errworker = threading.Thread(target=logger_worker,args=(errqueue,errlog))
     #errworker.daemon = True
     errworker.start()
     statworker = threading.Thread(target=logger_worker,args=(statqueue,statlog))
-    #statworker.daemon = True
     statworker.start()
+    fwdworker= threading.Thread(target=logger_worker,args=(fwdqueue,fwdlog))
+    fwdworker.start()
     srv = EpollServer(3478)
     #srv.run()

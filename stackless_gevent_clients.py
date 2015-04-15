@@ -17,6 +17,7 @@ import unittest
 import argparse
 import errno
 import pickle
+from itertools import *
 from binascii import unhexlify,hexlify
 from datetime import datetime
 import hashlib
@@ -37,7 +38,7 @@ def logger_worker(queue,logger):
                 logger.log(msg)
             except:
                 break
-        gevent.sleep(0.001)
+        gevent.sleep(0)
 
 class DevicesFunc():
     def __init__(self,host,uid):
@@ -67,45 +68,49 @@ class DevicesFunc():
             try:
                 self.sock.connect(self.host)
             except socket.timeout:
-                errqueue.put('sock connect timeout %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
+                qdict.err.put('sock connect timeout %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
                 gevent.sleep(rt)
                 continue
             except socket.error:
-                errqueue.put('sock connect error %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
+                qdict.err.put('sock connect error %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
                 gevent.sleep(rt)
                 continue
             else:
                 break
-
+        
         self.sbuf = self.device_struct_allocate()
-        self.write_sock()
+        if self.write_sock():
+            devreconn.put_nowait(self.uid)
+            return
+
         gevent.sleep(0.1)
         while 1:
             try:
                 data = self.sock.recv(SOCK_BUFSIZE)
             except IOError:
-                errqueue.put('sock %d,recv occur erro' % self.fileno)
+                qdict.err.put('sock %d,recv occur erro' % self.fileno)
                 break
             if not data:
-                errqueue.put('sock %d,recv not data' % self.fileno)
+                qdict.err.put('sock %d,recv not data' % self.fileno)
                 break
             self.recv += hexlify(data)
             del data
-            self.process_handle_first()
+            if self.process_handle_first():
+                break
             gevent.sleep(0.001)
-        errqueue.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
+        qdict.err.put(','.join(['sock','%d'% self.fileno,' closed,occur error, send packets %d ' % self.mynum]))
         self.sock.close()
-        conqueue.put(list(DevicesFunc,self.addr,self.uid))
+        devreconn.put_nowait(self.uid)
 
     def process_handle_first(self):
         l = self.recv.count(HEAD_MAGIC) #没有找到JL关键字
         if not l:
-            errqueue.put('sock %d, recv no HEAD_MAGIC packet %s' % (self.fileno,self.recv))
+            qdict.err.put('sock %d, recv no HEAD_MAGIC packet %s' % (self.fileno,self.recv))
             return
         plen = len(self.recv)
         if l > 1:
-            #errqueue.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
-            statqueue.put("sock %d,recv multi buf,len %d, buf: %s" % (self.fileno,plen,self.recv))
+            #qdict.err.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
+            qdict.stat.put("sock %d,recv multi buf,len %d, buf: %s" % (self.fileno,plen,self.recv))
             #hbuf = hbuf[l:] # 从找到标识头开始处理
             pos = sum([len(v) for v in split_requests_buf(self.recv)])
             self.recv = self.recv[pos:]
@@ -115,58 +120,61 @@ class DevicesFunc():
             self.recv = self.recv[pos:]
             nlen = int(self.recv[8:12],16) *2
             if len(self.recv) < nlen:
-                errqueue.put("sock %d, recv packet not complete, %s" % (self.fileno,self.recv))
+                qdict.err.put("sock %d, recv packet not complete, %s" % (self.fileno,self.recv))
                 return
             onepack = self.recv[:nlen]
             self.recv = self.recv[nlen:]
-            self.process_loop(onepack)
+            ret = self.process_loop(onepack)
             del onepack
+            return ret
 
 
     def process_loop(self,hbuf):
         if check_packet_vaild(hbuf): # 校验包头
-           errqueue.put(','.join(['sock','%d'% self.fileno,'check_packet_vaild',hbuf]))
-           errqueue.put(hbuf)
+           qdict.err.put(','.join(['sock','%d'% self.fileno,'check_packet_vaild',hbuf]))
+           qdict.err.put(hbuf)
            return False
 
 
         hattr = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH])
         if not hattr:
-            errqueue.put('sock %d,recv wrong head' % self.fileno)
+            qdict.err.put('sock %d,recv wrong head' % self.fileno)
             return False
     
         if  stun_get_type(hattr.method) == STUN_METHOD_SEND:
             if hattr.srcsock == 0xFFFFFFFF:
-                errqueue.put('sock %d,recv forward packet not srcsock,buf %s' % (self.fileno,hbuf))
+                qdict.err.put('sock %d,recv forward packet not srcsock,buf %s' % (self.fileno,hbuf))
                 return False
             dstsock = hattr.srcsock
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
                 self.sbuf = self.send_data_to_app('02%s' % hattr.sequence[2:])
-                statqueue.put("%s,sock %d,recv from app number of hex(%s), buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],hbuf))
+                qdict.recv.put("recv: %s,sock %d,recv from app number of hex(%s), buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],hbuf))
             #下面是我方主动发数据
             elif hattr.sequence[:2] == '02':
                 rnum = int(hattr.sequence[2:],16)
                 if self.mynum > 0xFFFFFF:
                     self.mynum = 0
-                    errqueue.put('socket %d,packet counter is over 0xFFFFFF once' % self.fileno)
+                    qdict.err.put('socket %d,packet counter is over 0xFFFFFF once' % self.fileno)
                 elif self.mynum == rnum:
                     self.mynum +=1
-                    statqueue.put("%s,sock %d,recv my confirm num %d is ok,data: %s" % (str(self.sock.getsockname()),self.fileno,rnum,hbuf))
+                    qdict.confirmqueue.put("confirm: %s,sock %d,recv my confirm num %d is ok,data: %s" % (str(self.sock.getsockname()),self.fileno,rnum,hbuf))
                 else:
-                    errqueue.put('sock %d,losing packet,recv  number  %d, my counter %d' % (self.fileno,rnum,self.mynum))
-                    return
+                    qdict.err.put('lost: sock %d,losing packet,recv  number  %d, my counter %d' % (self.fileno,rnum,self.mynum))
+                    return False
                 self.sbuf = self.send_data_to_app('03%06x' % self.mynum)
+                qdict.send.put("send: sock %d,%s ,to app  sock %d,packet number %d,data: %s" % (self.fileno,str(self.sock.getsockname()),\
+                        self.dstsock,rnum,hbuf))
                 self.add_queue.put(0)
             return  self.write_sock()
         p = parser_stun_package(hbuf[STUN_HEADER_LENGTH:-8])
         if not p:
-            statqueue.put(','.join(['sock','%d' % self.fileno,'server packet is wrong,rdict is empty']))
+            qdict.stat.put(','.join(['sock','%d' % self.fileno,'server packet is wrong,rdict is empty']))
             return False # 出错了
     
     
         if not stun_is_success_response_str(hattr.method):
-                errqueue.put(','.join(['sock','%d' % self.fileno,'server error sbuf',\
+                qdict.err.put(','.join(['sock','%d' % self.fileno,'server error sbuf',\
                         'method',hattr.method]))
                 return False
     
@@ -174,23 +182,23 @@ class DevicesFunc():
         rdict = p[0]
         del p
         if hattr.method == STUN_METHOD_ALLOCATE:
-            #statqueue.put('sock %d, login' % self.fileno)
+            #qdict.stat.put('sock %d, login' % self.fileno)
             """
             登录成功
             """
-            statqueue.put('sock %d,uuid %s login' % (self.fileno,self.uid))
+            qdict.stat.put('sock %d,uuid %s login' % (self.fileno,self.uid))
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
                 self.srcsock = int(stat[:8],16)
             except KeyError:
-                errqueue.put('sock %d,login not my sock fileno,retry login' % self.fileno)
+                qdict.err.put('sock %d,login not my sock fileno,retry login' % self.fileno)
                 self.sbuf = self.device_struct_allocate()
                 return self.write_sock()
         elif hattr.method == STUN_METHOD_INFO:
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
             except KeyError:
-                errqueue.put("sock %d,recv not state,%s,rdict %s" % (self.fileno,str(self.sock.getsockname()),hbuf))
+                qdict.err.put("sock %d,recv not state,%s,rdict %s" % (self.fileno,str(self.sock.getsockname()),hbuf))
             else:
                 self.dstsock = int(stat[:8],16)
                 self.sbuf = self.send_data_to_app('03%06x' % self.mynum)
@@ -223,13 +231,15 @@ class DevicesFunc():
                         pass
 
                     if time.time() > n:
-                        self.write_sock()
-                        statqueue.put('sock %d ,retransmit_packet %s' % (self.fileno,self.sbuf))
+                        if self.write_sock():
+                            devreconn.put_nowait(self.uid)
+                            return
+                        qdict.retransmit.put('sock %d ,retransmit_packet %s' % (self.fileno,self.sbuf))
                         self.add_queue.put(0)
                         break
                         """break inside loop"""
                         #except:
-                        #    errqueue.put('sock %d ,retransmit_packet error' % self.fileno)
+                        #    qdict.err.put('sock %d ,retransmit_packet error' % self.fileno)
     
     
     def write_sock(self):
@@ -237,9 +247,12 @@ class DevicesFunc():
             try:
                 nbyte = self.sock.send(unhexlify(self.sbuf))
             except IOError:
-                errqueue.put('socket %d close,' % self.file)
+                qdict.err.put('socket %d has closed' % self.fileno)
+                return True
             except TypeError:
-                errqueue.put('send buf is wrong format %s' % self.sbuf)
+                qdict.err.put('send buf is wrong format %s' % self.sbuf)
+                return True
+        return False
 
     def device_struct_allocate(self):
         buf = []
@@ -258,7 +271,7 @@ class DevicesFunc():
         buf[3] = '%08x' % self.srcsock
         buf[4] = '%08x' % self.dstsock
         buf[-1] = sequence
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('mnbvcxzz'))
+        stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%.05f' % time.time()))
         stun_add_fingerprint(buf)
         return ''.join(buf)
 
@@ -296,44 +309,49 @@ class APPfunc():
             try:
                 self.sock.connect(self.addr)
             except socket.timeout:
-                errqueue.put('sock connect timeout %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
+                qdict.err.put('sock connect timeout %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
                 gevent.sleep(rt)
                 continue
             except socket.error:
-                errqueue.put('sock connect error %d time %f,sleep %s retry' % (self.fileno,time.time() -n,rt))
+                qdict.err.put('sock connect error %d time %f,sleep %s retry' % (self.fileno,time.time() -n,rt))
                 gevent.sleep(rt)
                 continue
             else:
                 break
-    
+        
         self.sbuf = self.stun_register_request()
-        self.write_sock()
+        if self.write_sock():
+            appreconn.put_nowait(self.uid)
+            return
         gevent.sleep(0.1)
         while 1:
             try:
                 data = self.sock.recv(SOCK_BUFSIZE)
             except IOError:
+                qdict.err.put('sock %d, recv occur error' % self.fileno)
                 break
             if not data:
-                errqueue.put('sock %d, recv not data' % self.fileno)
+                qdict.err.put('sock %d, recv not data' % self.fileno)
                 break
             self.recv += binascii.b2a_hex(data)
             del data
-            self.process_handle_first()
+            if self.process_handle_first():
+                break
             gevent.sleep(0.001)
-        errqueue.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
+        qdict.err.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
         self.sock.close()
-        conqueue.put(list(APPfunc,self.addr,self.uid))
+        appreconn.put_nowait(self.uid)
+
 
     def process_handle_first(self):
         l = self.recv.count(HEAD_MAGIC) #没有找到JL关键字
         if not l:
-            errqueue.put('sock %d, recv no HEAD_MAGIC packet %s' % (self.fileno,self.recv))
-            return
+            qdict.err.put('sock %d, recv no HEAD_MAGIC packet %s' % (self.fileno,self.recv))
+            return False
         plen = len(self.recv)
         if l > 1:
-            #errqueue.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
-            statqueue.put("sock %d,recv multi buf,len %d, buf: %s" % (self.fileno,plen,self.recv))
+            #qdict.err.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
+            qdict.stat.put("sock %d,recv multi buf,len %d, buf: %s" % (self.fileno,plen,self.recv))
             #hbuf = hbuf[l:] # 从找到标识头开始处理
             pos = sum([len(v) for v in split_requests_buf(self.recv)])
             self.recv = self.recv[pos:]
@@ -343,55 +361,57 @@ class APPfunc():
             self.recv = self.recv[pos:]
             nlen = int(self.recv[8:12],16) *2
             if len(self.recv) < nlen:
-                errqueue.put("sock %d, recv packet not complete, %s" % (self.fileno,self.recv))
-                return
+                qdict.err.put("sock %d, recv packet not complete, %s" % (self.fileno,self.recv))
+                return False
             onepack = self.recv[:nlen]
             self.recv = self.recv[nlen:]
-            self.process_loop(onepack)
+            ret = self.process_loop(onepack)
             del onepack
+            return ret
 
 
     def process_loop(self,rbuf):
         if check_packet_vaild(rbuf): # 校验包头
-            errqueue.put(','.join(['sock','%d'% self.fileno,'check_packet_vaild',rbuf]))
-            errqueue.put(rbuf)
+            qdict.err.put(','.join(['sock','%d'% self.fileno,'check_packet_vaild',rbuf]))
+            qdict.err.put(rbuf)
             return False
     
         hattr = get_packet_head_class(rbuf[:STUN_HEADER_LENGTH])
         if not hattr:
-            errqueue.put('sock %d,recv wrong head' % self.fileno)
+            qdict.err.put('sock %d,recv wrong head' % self.fileno)
             return False
      
         if stun_get_type(hattr.method) == STUN_METHOD_DATA: # 小机回应
             if hattr.srcsock == 0xFFFFFFFF:
-                errqueue.put('sock %d, recv forward packet not srcsock,buf %s' % (self.fileno,rbuf))
+                qdict.err.put('sock %d, recv forward packet not srcsock,buf %s' % (self.fileno,rbuf))
                 return False
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
-                statqueue.put("%s,sock %d,recv from  dev  number of  hex(%s), buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],rbuf))
+                qdict.recv.put("recv: %s,sock %d,recv from  dev  number of  hex(%s), buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],rbuf))
                 self.sbuf = self.stun_send_data_to_devid('02%s' % hattr.sequence[2:])
             elif hattr.sequence[:2] == '02':
                 n = int(hattr.sequence[2:],16)
                 if n > 0xFFFFFF:
                     self.mynum = 0
-                    errqueue.put('packet counter over 0xFFFFFF once')
+                    qdict.err.put('packet counter over 0xFFFFFF once')
                 elif n == self.mynum: 
                     self.mynum+=1
-                    statqueue.put("%s,sock %d,recv dev confirm num %d ok,data: %s" % (str(self.sock.getsockname()),self.fileno,n,rbuf))
+                    qdict.confirm.put("confirm: %s,sock %d,recv dev confirm num %d ok,data: %s" % (str(self.sock.getsockname()),self.fileno,n,rbuf))
                     self.rm_queue.put(0)
                 else:
-                    errqueue.put('sock %d,lost packet,recv num %d,my counter %d' %(self.fileno,n,self.mynum))
+                    qdict.err.put('lost: sock %d,lost packet,recv num %d,my counter %d' %(self.fileno,n,self.mynum))
                     """收到的包序错了，直接返回"""
-                    return
+                    return False
                 self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
                 self.add_queue.put(0)
-                statqueue.put("sock %d,send packet of %d to dev,data %s" % (self.fileno,n,self.sbuf))
+                qdict.send.put("send: sock %d,send packet of %d to dev,data %s" % (self.fileno,n,self.sbuf))
 
             return self.write_sock()
+
     
         if not stun_is_success_response_str(hattr.method):
             if cmp(hattr.method[-2:],STUN_METHOD_REGISTER[-2:]):
-                errqueue.put(','.join(['sock','%d'% self.fileno,'recv server error',\
+                qdict.err.put(','.join(['sock','%d'% self.fileno,'recv server error',\
                         'method',hattr.method,rbuf]))
                 return False
             else:
@@ -411,7 +431,7 @@ class APPfunc():
             #if len(self.ulist) > 1:
             #    self.sbuf = stun_bind_uuids(''.join(self.ulist))
             #else:
-            statqueue.put('sock %d,uname %s login' % (self.fileno,self.user))
+            qdict.stat.put('sock %d,uname %s login' % (self.fileno,self.user))
             self.sbuf= self.stun_bind_single_uuid()
         elif hattr.method == STUN_METHOD_REGISTER:
             self.sbuf = self.stun_login_request()
@@ -428,12 +448,12 @@ class APPfunc():
                 self.dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-8:],16)
                 if self.dstsock != 0xFFFFFFFF:
                    self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
-                   statqueue.put('sock %d,start send packet to dev %d,buf %s' % (self.fileno,self.dstsock,self.sbuf))
+                   qdict.send.put('sock %d,start send packet to dev %d,buf %s' % (self.fileno,self.dstsock,self.sbuf))
                    self.add_queue.put(0) 
                 else:
                     return False
             except KeyError:
-                errqueue.put('sock %d,recv server bind not RUUID ,buf %s' % (self.fileno,rbuf))
+                qdict.err.put('sock %d,recv server bind not RUUID ,buf %s' % (self.fileno,rbuf))
      
 #            elif rdict.has_key(STUN_ATTRIBUTE_MRUUID):
 #                mlist = split_mruuid(rdict[STUN_ATTRIBUTE_MRUUID])
@@ -452,10 +472,10 @@ class APPfunc():
             try:
                 self.dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-8:],16)
                 self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
-                statqueue.put('sock %d,start send packet to dev %d,buf: %s' % (self.fileno,self.dstsock,self.sbuf))
+                qdict.send.put('sock %d,start send packet to dev %d,buf: %s' % (self.fileno,self.dstsock,self.sbuf))
                 self.add_queue.put(0) 
             except KeyError:
-                errqueue.put('sock %d,recv server info not RUUID ,buf %s' % (self.fileno,rbuf))
+                qdict.err.put('sock %d,recv server info not RUUID ,buf %s' % (self.fileno,rbuf))
      
 #            elif rdict.has_key(STUN_ATTRIBUTE_MRUUID):
 #                mlist = split_mruuid(rdict[STUN_ATTRIBUTE_MRUUID])
@@ -484,12 +504,15 @@ class APPfunc():
         if self.sbuf:
             try:
                 nbyte = self.sock.send(unhexlify(self.sbuf))
-                #statqueue.put(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
+                #qdict.stat.put(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
                 #print ''.join(buf)
             except IOError:
-                errqueue.put(','.join(['sock','%d'% self.fileno,'closed']))
+                qdict.err.put(','.join(['sock','%d'% self.fileno,'closed']))
+                return True
+            
+        return False
             #except TypeError:
-            #    errqueue.put('sock %d,send buf is wrong format %s' % (self.fileno,self.sbuf))
+            #    qdict.err.put('sock %d,send buf is wrong format %s' % (self.fileno,self.sbuf))
 
     def retransmit_packet(self):
         while 1:
@@ -508,13 +531,16 @@ class APPfunc():
                     except:
                         pass
                     if time.time() > n:
-                        self.write_sock()
-                        statqueue.put('sock %d ,retransmit_packet %s' % (self.fileno,self.sbuf))
+                        if self.write_sock():
+                            appreconn.put_nowait(self.uid)
+                            print "retransmit exit",self.fileno
+                            return
+                        qdict.retransmit.put('sock %d ,retransmit_packet %s' % (self.fileno,self.sbuf))
                         self.add_queue.put(0)
                         break
                         """break inside loop"""
                         #except:
-                        #    errqueue.put('sock %d ,retransmit_packet error' % self.fileno)
+                        #    qdict.err.put('sock %d ,retransmit_packet error' % self.fileno)
 
 
     def stun_bind_single_uuid(self):
@@ -555,7 +581,7 @@ class APPfunc():
         buf[3] = '%08x' % self.srcsock
         buf[4] = '%08x' % self.dstsock
         buf[-1] = sequence
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('abcdefgh'))
+        stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%.05f' % time.time()))
         stun_add_fingerprint(buf)
         return ''.join(buf)
 
@@ -601,25 +627,45 @@ def read_uuid_file(fd):
 
 
 
+def loopconnect(obj,host,q):
+    while 1:
+        gevent.sleep(0.01)
+        try:
+            p = q.get_nowait()
+        except:
+            continue
+        else:
+            print "reconnection uid ",q
+            if obj == DevicesFunc:
+                qdict.stat.put('device uid %s reconnection server' % p)
+            else:
+                qdict.stat.put('app uid %s reconnection server' % p)
+            gevent.joinall([gevent.spawn(obj,host,p)])
+
+
+
 def AppDemo(args):
     args = make_argument_parser().parse_args()
     if not args.srv_host or not args.uuidfile:
         print make_argument_parser().parse_args(['-h'])
         exit(1)
-    errlog = ErrLog('AppDemo')
-    statlog = StatLog('AppDemo')
-    errworker = threading.Thread(target=logger_worker,args=(errqueue,errlog))
-    #errworker.daemon = True
+    """
+    name = 'AppDemo'
+    errlog = ErrLog(name)
+    statlog = StatLog(name)
+    errworker = threading.Thread(target=logger_worker,args=(qdict.err,errlog))
     errworker.start()
-    statworker = threading.Thread(target=logger_worker,args=(statqueue,statlog))
-    #statworker.daemon = True
+    statworker = threading.Thread(target=logger_worker,args=(qdict.stat,statlog))
     statworker.start()
+    """
     host = ()
     try:
         d = args.srv_host.index(':')
         host = (args.srv_host[:d],int(args.srv_host[d:]))
     except:
         host = (args.srv_host,3478)
+    appworker = threading.Thread(target=loopconnect,args=(APPfunc,host,appreconn))
+    appworker.start()
     ulist = read_uuid_file(args.uuidfile)
     bind = args.b_count if args.b_count < len(ulist) else len(ulist)
     tbuf = ulist
@@ -632,19 +678,16 @@ def DevDemo(args):
     if not args.srv_host or not args.uuidfile:
         print make_argument_parser().parse_args(['-h'])
         exit(1)
-
-    errlog = ErrLog('DevDemo')
-    statlog = StatLog('DevDemo')
-
-    errworker = threading.Thread(target=logger_worker,args=(errqueue,errlog))
-    #errworker.daemon = True
+    """
+    name = 'DevDemo'
+    errlog = ErrLog(name)
+    statlog = StatLog(name)
+    errworker = threading.Thread(target=logger_worker,args=(qdict.err,errlog))
     errworker.start()
-    statworker = threading.Thread(target=logger_worker,args=(statqueue,statlog))
-    #statworker.daemon = True
+    statworker = threading.Thread(target=logger_worker,args=(qdict.stat,statlog))
     statworker.start()
+    """
     
-    conworker = threading.Thread(target=ReConnection)
-    conworker.start()
 
     host = ()
     try:
@@ -652,28 +695,38 @@ def DevDemo(args):
         host = (args.srv_host[:d],int(args.srv_host[d:]))
     except:
         host = (args.srv_host,3478)
+    devworker = threading.Thread(target=loopconnect,args=(DevicesFunc,host,devreconn))
+    devworker.start()
     uulist = read_uuid_file(args.uuidfile)
-    conqueue.put([DevicesFunc,host,uulist[0]])
-    return 0
     gevent.joinall([gevent.spawn(DevicesFunc,host,uid) for uid in uulist])
     
-def ReConnection():
-    while 1:
-        try:
-            thr = conqueue.get_nowait()
-            print thr
-        except:
-            pass
-        else:
-            gevent.spawn(thr[0],thr[1],thr[2]).join()
-        gevent.sleep(0)
 
-
-errqueue = Queue()
-statqueue = Queue()
-conqueue = Queue()
+class A:
+    pass
+"""
+qdict.err = Queue()
+qdict.recv = Queue()
+qdict.send = Queue()
+qdict.confirm = Queue()
+qdict.retransmit = Queue()
+qdict.stat = Queue()
+"""
+appreconn = Queue()
+devreconn = Queue()
 if __name__ == '__main__':
     args = make_argument_parser().parse_args()
+    name = str(vars(args)['func']).split(' ')[1]
+    """
+    拆分日志到多个文件中
+    """
+    qdict = A()
+    logdict = A()
+
+    tt = ['err','stat','recv','send','confirm','retransmit']
+    [setattr(qdict,k,Queue()) for k in tt]
+    [setattr(logdict,k,StatLog('_'.join([name,k]))) for k in tt]
+    [threading.Thread(target=logger_worker,args=(q,l)).start() for (q,l) in izip(qdict.__dict__.values(),logdict.__dict__.values())]
+
     args.func(args)
     while 1:
         try:
