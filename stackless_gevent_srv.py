@@ -424,7 +424,7 @@ class EpollServer():
             self.responses[res.dstsock] = hbuf
             fileno = res.fileno
             dstsock = res.dstsock
-            fwdqueue.put('fwd: [%s,sock %d] ---> [%s,sock %d] buf:%s' % (str(res.host),fileno,str(self.hosts[dstsock]),dstsock,hbuf))
+            fwdqueue.put(';src:[%s,sock %d]; dst:[%s,sock %d] ; buf:%s' % (str(res.host),fileno,str(self.hosts[dstsock]),dstsock,hbuf))
             self.write_to_sock(res.dstsock)
         except KeyError: # 目标不存在
             res.eattr = STUN_ERROR_DEVOFFLINE
