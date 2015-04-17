@@ -1014,8 +1014,8 @@ if __name__ == '__main__':
     errqueue = Queue()
     statqueue = Queue()
     fwdqueue = Queue()
-    errlog = ErrLog('gevnet')
-    statlog = StatLog('gevent')
+    errlog = ErrLog('err')
+    statlog = StatLog('state')
     fwdlog = StatLog('fwd')
     errworker = threading.Thread(target=logger_worker,args=(errqueue,errlog))
     #errworker.daemon = True
