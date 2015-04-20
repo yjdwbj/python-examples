@@ -112,9 +112,12 @@ class DevicesFunc():
             #qdict.err.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
             qdict.state.put("sock %d,recv multi buf,len %d, buf: %s" % (self.fileno,plen,self.recv))
             #hbuf = hbuf[l:] # 从找到标识头开始处理
-            pos = sum([len(v) for v in split_requests_buf(self.recv)])
+            mulist = split_requests_buf(self.recv)
+            pos = sum([len(v) for v in mulist])
             self.recv = self.recv[pos:]
-            [self.process_loop(n) for n in  split_requests_buf(self.recv)]
+            [self.process_loop(n) for n in  mulist]
+            del mulist[:]
+            del mulist
         else: # 找到一个标识，还不知在什么位置
             pos = self.recv.index(HEAD_MAGIC)
             self.recv = self.recv[pos:]
@@ -141,7 +144,9 @@ class DevicesFunc():
             qdict.err.put('sock %d,recv wrong head' % self.fileno)
             return False
     
-        if  stun_get_type(hattr.method) == STUN_METHOD_SEND:
+        #retmethod = stun_get_type(hattr.method)
+        if  not cmp(stun_get_type(hattr.method),STUN_METHOD_SEND):
+        #if  not cmp(retmethod,STUN_METHOD_SEND) or not cmp(retmethod,STUN_METHOD_DATA):
             if hattr.srcsock == 0xFFFFFFFF:
                 qdict.err.put('sock %d,recv forward packet not srcsock,buf %s' % (self.fileno,hbuf))
                 return False
@@ -356,9 +361,12 @@ class APPfunc():
             #qdict.err.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
             qdict.state.put("sock %d,recv multi buf,len %d, buf: %s" % (self.fileno,plen,self.recv))
             #hbuf = hbuf[l:] # 从找到标识头开始处理
-            pos = sum([len(v) for v in split_requests_buf(self.recv)])
+            mulist = split_requests_buf(self.recv)
+            pos = sum([len(v) for v in mulist])
             self.recv = self.recv[pos:]
-            [self.process_loop(n) for n in  split_requests_buf(self.recv)]
+            [self.process_loop(n) for n in  mulist]
+            del mulist[:]
+            del mulist
         else: # 找到一个标识，还不知在什么位置
             pos = self.recv.index(HEAD_MAGIC)
             self.recv = self.recv[pos:]
@@ -384,13 +392,14 @@ class APPfunc():
             qdict.err.put('sock %d,recv wrong head' % self.fileno)
             return False
      
-        if stun_get_type(hattr.method) == STUN_METHOD_DATA: # 小机回应
+        if not cmp(stun_get_type(hattr.method),STUN_METHOD_DATA): # 小机回应
             if hattr.srcsock == 0xFFFFFFFF:
                 qdict.err.put('sock %d, recv forward packet not srcsock,buf %s' % (self.fileno,rbuf))
                 return False
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
                 qdict.recv.put("recv: %s,sock %d,recv from  dev  number of  hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],rbuf))
+                self.s
                 self.sbuf = self.stun_send_data_to_devid('02%s' % hattr.sequence[2:])
                 qdict.send.put("send: sock %d,send confirm packet to dev,data %s" % (self.fileno,self.sbuf))
             elif hattr.sequence[:2] == '02':
@@ -579,6 +588,7 @@ class APPfunc():
         stun_add_fingerprint(buf)
         #print "login buf is",buf
         return ''.join(buf)
+
     
     def stun_send_data_to_devid(self,sequence):
         buf = []

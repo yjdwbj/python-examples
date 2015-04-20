@@ -327,13 +327,16 @@ class EpollServer():
             #errqueue.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
             statqueue.put("sock %d,recv multi buf,len %d, buf: %s" % (fileno,plen,self.requests[fileno]))
             #hbuf = hbuf[l:] # 从找到标识头开始处理
-            pos = sum([len(v) for v in split_requests_buf(self.requests[fileno])])
+            mulist = split_requests_buf(self.requests[fileno])
+            pos = sum([len(n) for n in mulist])
             self.requests[fileno] = self.requests[fileno][pos:]
-            [self.handle_requests_buf(n,fileno) for n in  split_requests_buf(self.requests[fileno])]
+            [self.handle_requests_buf(n,fileno) for n in mulist]
+            del mulist[:]
+            del mulist
         else: # 找到一个标识，还不知在什么位置
             pos = self.requests[fileno].index(HEAD_MAGIC)
             self.requests[fileno] = self.requests[fileno][pos:]
-            nlen = int(self.requests[fileno][8:12],16) *2
+            nlen = int(self.requests[fileno][8:12],16) *2 #包头指法的长度
             if len(self.requests[fileno]) < nlen:
                 return
             onepack = self.requests[fileno][:nlen]
@@ -682,6 +685,7 @@ class EpollServer():
                 self.appbinds[n][uuid]=0xFFFFFFFF
             del uuid
             del alist[:]
+            del alist
     
     def app_user_logout(self,uname):
         atable = QueryDB.get_account_status_table()

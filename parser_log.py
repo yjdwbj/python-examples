@@ -44,28 +44,17 @@ def split_fwdfiles(fname):
         for l in f:
             tl = l.split(';')
             t = tl[1][7:21]
-            mtype = tl[3].split('buf:')[1][28:34]
-            """
-            t = l.split('|')[1][7:21]
-            mtype = l.split('buf:')[1][28:32]
-            """
+            mtype = tl[3].split('buf:')[1][28:32]
             ht = hdict[t]
-            if mtype == '000603': 
+            if not cmp('0006',mtype):
                 """ app send to dev"""
                 getattr(getattr(fwdwriteobj,ht),'app').write(l)
-            elif mtype == '000602':
-                getattr(getattr(fwdwriteobj,ht),'dev').write(l)
-                """ dev confirm to app"""
-            elif mtype == '000703':
+            elif not cmp(mtype,'0007'):
                 """ dev send to app """
                 getattr(getattr(fwdwriteobj,ht),'dev').write(l)
-            elif mtype == '000702':
-                """ app confirm to dev """
-                getattr(getattr(fwdwriteobj,ht),'app').write(l)
-            #fwdict[hdict[t]].write(l)
 
 
-def mmap_findsomething(mm,buf):
+def mmap_findsomething(mm,crc32):
     if mm is None:
         return None
     mm.seek(0)
@@ -73,106 +62,33 @@ def mmap_findsomething(mm,buf):
         ml = mm.readline()
         if ml == '':
             break
-        try:
-            ml.index(buf)
-        except ValueError:
-            continue
-        else:
+        if not cmp(ml[-8:],crc32):
             return ml
     return None
 
 mmlist = ['send','recv','retransmit','confirm','lost']
 
-def get_mmap(fname):
+def get_mmap(fname,lst):
     fd = open(fname,'r')
+    lst.append(fd)
     return mmap.mmap(fd.fileno(),0,access=mmap.ACCESS_READ)
 
 def read_fwdlog(fname):
     """检测第一行"""
-    td = open(fname,'r')
-    l = td.readline()
-    td.close()
-    feild = l.split(';')
-    srch = hdict[feild[1][7:21]]
-    dsth = hdict[feild[2][8:22]]
-    #srch = hdict[l.split('src:')[1].strip('[(\'')[:14]]
-    #dsth = hdict[l.split('dst:')[1].strip('[(\'')[:14]]
     """创建几个需要常读取的内存文件"""
-    devmm = A()
-    objhost = getattr(clientsdir,srch)
-    devobj = objhost.dev
-    [setattr(devmm,"%smmap" % n,get_mmap(getattr(devobj,n))) for n in mmlist] 
-    appmm = A()
-    objhost = getattr(clientsdir,srch)
-    appobj = objhost.app
-    [setattr(appmm,"%smmap" % n,get_mmap(getattr(appobj,n))) for n in mmlist] 
-    
-    
-    
-    srcmmap2 = None
-    dstmmap1 = None
-    dstmmap2 = None
-    dstmmap3 = None
+
+    bname = os.path.split(fname)[-1]
+    tdir = bname.split('_')[0]
     fdlist = []
-    time.sleep(1)
-    
-    if fname.find('app'):
-        """ APP 的转发日志"""
-        objsrc = getattr(clientsdir,srch)
-        if os.stat(objsrc.app.send).st_size > 0:
-            fd = open(objsrc.app.send,'r')
-            print  "app file for src send mmap file",fd.name
-            fdlist.append(fd)
-            srcmmap1 = mmap.mmap(fd.fileno(),0,access=mmap.ACCESS_READ)
-        if os.stat(objsrc.app.retransmit).st_size >0:
-            fd = open(objsrc.app.retransmit,'r')
-            fdlist.append(fd)
-            srcmmap2 = mmap.mmap(fd.fileno(),0,access=mmap.ACCESS_READ)
-
-        objdst = getattr(clientsdir,dsth)
-        if os.stat(objdst.dev.recv).st_size >0:
-            fd = open(objdst.dev.recv,'r')
-            print  "app file for dst recv  mmap file",fd.name
-            fdlist.append(fd)
-            dstmmap1 = mmap.mmap(fd.fileno(),0,access=mmap.ACCESS_READ)
-
-        if os.stat(objdst.dev.confirm).st_size >0:
-            fd = open(objdst.dev.confirm,'r')
-            fdlist.append(fd)
-            dstmmap2 = mmap.mmap(fd.fileno(),0,access=mmap.ACCESS_READ)
-
-        if os.stat(objdst.dev.lost).st_size >0:
-            fd = open(objdst.dev.lost,'r')
-            fdlist.append(fd)
-            dstmmap3 = mmap.mmap(fd.fileno(),0,access=mmap.ACCESS_READ)
-
-    elif fname.find('dev'):
-        objsrc = getattr(clientsdir,srch)
-        if os.stat(objsrc.dev.send).st_size > 0:
-            fd = open(objsrc.dev.send,'r')
-            print  "dev file for src mmap file",fd.name
-            fdlist.append(fd)
-            srcmmap1 = mmap.mmap(fd.fileno(),0,access=mmap.ACCESS_READ)
-        if os.stat(objsrc.dev.retransmit).st_size >0:
-            fd = open(objsrc.dev.retransmit,'r')
-            fdlist.append(fd)
-            srcmmap2 = mmap.mmap(fd.fileno(),0,access=mmap.ACCESS_READ)
-
-        objdst = getattr(clientsdir,dsth)
-        if os.stat(objdst.app.recv).st_size >0:
-            fd = open(objdst.app.recv,'r')
-            print  "dev file for dst recv  mmap file",fd.name
-            fdlist.append(fd)
-            dstmmap1 = mmap.mmap(fd.fileno(),0,access=mmap.ACCESS_READ)
-        if os.stat(objdst.app.confirm).st_size >0:
-            fd = open(objdst.app.confirm,'r')
-            fdlist.append(fd)
-            dstmmap2 = mmap.mmap(fd.fileno(),0,access=mmap.ACCESS_READ)
-
-        if os.stat(objdst.app.lost).st_size >0:
-            fd = open(objdst.app.lost,'r')
-            fdlist.append(fd)
-            dstmmap3 = mmap.mmap(fd.fileno(),0,access=mmap.ACCESS_READ)
+    """ 这里通过查找上层目录，再找它的二级目录。只能处理t1.app --> t1.dev, 不能处理t1.app --> t3.dev"""
+    devmm = A()
+    objhost = getattr(clientsdir,tdir)
+    devobj = objhost.dev
+    [setattr(devmm,"%s" % n,get_mmap(getattr(devobj,n),fdlist)) for n in mmlist] 
+    appmm = A()
+    #objhost = getattr(clientsdir,tdir)
+    appobj = objhost.app
+    [setattr(appmm,"%s" % n,get_mmap(getattr(appobj,n),fdlist)) for n in mmlist] 
 
     
     base = os.path.splitext(os.path.split(fname)[1])[0]
@@ -182,7 +98,11 @@ def read_fwdlog(fname):
     fwdok = 0
     refresh = time.time()+30
     with open(fname) as f:
-        for l in f:
+        fdmm = mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ)
+        while 1:
+            l = fdmm.readline()
+            if l == '':
+                break
             if time.time() > refresh:
                 refresh = time.time()+50
                 fwdcount = fwdok + fwderr
@@ -197,36 +117,56 @@ def read_fwdlog(fname):
             src = feild[1][7:21]
             dst = feild[2][8:22]
             buf = feild[3][5:]
-            p = buf[32:34]
+            crc32 = buf[-8:]
+            p = buf[28:32]
+            isconfirm = buf[32:34]
 
             srch = hdict[src]
             dsth = hdict[dst]
+            dfind = None
+            sfind = None
+            if not cmp(p,'0007'):
+                sfind = mmap_findsomething(devmm.send,crc32)
+                if not sfind:
+                    sfind = mmap_findsomething(devmm.retransmit,crc32)
+
+                if not cmp(isconfirm,'02'):
+                    dfind = mmap_findsomething(appmm.confirm,crc32)
+                    if not dfind:
+                        dfind = mmap_findsomething(appmm.lost,crc32)
+                else:
+                    dfind = mmap_findsomething(appmm.recv,crc32)
+                    if not dfind:
+                        dfind = mmap_findsomething(appmm.lost,crc32)
+
+            #elif not cmp(p,'000702'):
+            elif not cmp(p,'0006'):
+                sfind = mmap_findsomething(appmm.send,crc32)
+                if not sfind:
+                    sfind = mmap_findsomething(appmm.retransmit,crc32)
+
+                if not cmp(isconfirm,'02'):
+                    dfind = mmap_findsomething(devmm.confirm,crc32)
+                    if not dfind:
+                        dfind = mmap_findsomething(devmm.lost,crc32)
+                else:
+                    dfind = mmap_findsomething(devmm.recv,crc32)
+                    if not dfind:
+                        dfind = mmap_findsomething(devmm.lost,crc32)
 
                     
-            dfind = None
-            if p == '03':
-                """找源地址"""
-                sfind = mmap_findsomething(srcmmap1,buf)
-                if sfind is None:
-                    sfind = mmap_findsomething(srcmmap2,buf)
-                dfind = mmap_findsomething(dstmmap1,buf)
-            else:
-                dfind = mmap_findsomething(dstmmap2,buf)
-                if dfind is None and dstmmap3:
-                    dfind = mmap_findsomething(dstmmap3,buf)
                 
-            if dfind is None:
+            if not dfind:
                 fwderr +=1
                 fwderrfd.write("%s, %s" % (l,'dst None\n'))
                 """出错了，对方没有收到"""
+            elif not sfind:
+                fwderr +=1
+                fwderrfd.write("%s, %s" % (l,'src None\n'))
             else:
                 fwdok +=1
             #print "forward counter %d, forward success %d,forward error %d, error rate %.2f" % (fwdcount,fwdok,fwderr,float(fwderr)/fwdcount)
-    srcmmap1.close()
-    srcmmap2.close()
-    dstmmap1.close()
-    dstmmap2.close()
-    dstmmap3.close()
+        fdmm.close()
     [fd.close() for fd in fdlist]
     fwdcount = fwdok + fwderr
     fwderrfd.write("%s,forward counter %d, forward success %d,forward error %d, error rate %.2f"\
