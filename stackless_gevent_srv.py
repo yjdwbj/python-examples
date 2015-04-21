@@ -82,6 +82,7 @@ def stun_connect_address(host,res):
     if res.attrs.has_key(STUN_ATTRIBUTE_DATA): #转发小机的基本信息
         stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify(res.attrs[STUN_ATTRIBUTE_DATA]))
     stun_add_fingerprint(buf)
+    del mip
     return (buf)
 
 def register_success(uname):

@@ -73,6 +73,23 @@ def get_mmap(fname,lst):
     lst.append(fd)
     return mmap.mmap(fd.fileno(),0,access=mmap.ACCESS_READ)
 
+def get_filetolist(fname):
+    biglist = []
+    with open(fname,'r') as f:
+        for l in f:
+            biglist.append(l[-8:]) # 只取一个crc32的值做比对
+    return biglist
+
+
+def FindMatchInBigList(blist,crc32):
+    try:
+        n = blist.index(crc32) 
+    except ValueError:
+        return 0
+    else:
+        blist.pop(n) #清除找到的行，减少list体积
+        return 1
+
 def read_fwdlog(fname):
     """检测第一行"""
     """创建几个需要常读取的内存文件"""
@@ -81,6 +98,7 @@ def read_fwdlog(fname):
     tdir = bname.split('_')[0]
     fdlist = []
     """ 这里通过查找上层目录，再找它的二级目录。只能处理t1.app --> t1.dev, 不能处理t1.app --> t3.dev"""
+    """
     devmm = A()
     objhost = getattr(clientsdir,tdir)
     devobj = objhost.dev
@@ -89,14 +107,25 @@ def read_fwdlog(fname):
     #objhost = getattr(clientsdir,tdir)
     appobj = objhost.app
     [setattr(appmm,"%s" % n,get_mmap(getattr(appobj,n),fdlist)) for n in mmlist] 
+    """
+    devlist = A()
+    objhost = getattr(clientsdir,tdir)
+    devobj = objhost.dev 
+    [setattr(devlist,'%s' % n,get_filetolist(getattr(devobj,n))) for n in mmlist]
+
+    applist = A()
+    appobj = objhost.app
+    [setattr(applist,'%s' % n,get_filetolist(getattr(appobj,n))) for n in mmlist]
 
     
     base = os.path.splitext(os.path.split(fname)[1])[0]
-    fwderrfd = open('%s_fwderr.log' % base,'w')
+    fwderrfd = open('%s_fwdout.log' % base,'w')
 
     fwderr = 0
     fwdok = 0
     refresh = time.time()+30
+    startime = time.time()
+    fwderrfd.write('start find match at time %.5f\n' % startime)
     with open(fname) as f:
         fdmm = mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ)
         while 1:
@@ -109,22 +138,26 @@ def read_fwdlog(fname):
                 try:
                     print "%s,forward counter %d, forward success %d,forward error %d, error rate %.2f" % \
                             (fname,fwdcount,fwdok,fwderr,float(fwderr)/fwdcount)
+                    fwderrfd.write("%.5f;%s,forward counter %d, forward success %d,forward error %d, error rate %.2f\n"\
+                            % (time.time(),fname,fwdcount,fwdok,fwderr,float(fwderr)/fwdcount))
+                    fwderrfd.flush()
                 except ZeroDivisionError:
                     pass
             
             """下面的切片要根据实际文件调整"""
             feild = l.split(';')
-            src = feild[1][7:21]
-            dst = feild[2][8:22]
+            #src = feild[1][7:21]
+            #dst = feild[2][8:22]
             buf = feild[3][5:]
             crc32 = buf[-8:]
             p = buf[28:32]
             isconfirm = buf[32:34]
 
-            srch = hdict[src]
-            dsth = hdict[dst]
+            #srch = hdict[src]
+            #dsth = hdict[dst]
             dfind = None
             sfind = None
+            """
             if not cmp(p,'0007'):
                 sfind = mmap_findsomething(devmm.send,crc32)
                 if not sfind:
@@ -153,6 +186,36 @@ def read_fwdlog(fname):
                     dfind = mmap_findsomething(devmm.recv,crc32)
                     if not dfind:
                         dfind = mmap_findsomething(devmm.lost,crc32)
+            """
+            if not cmp(p,'0007'):
+                sfind = FindMatchInBigList(devlist.send,crc32)
+                if not sfind:
+                    sfind = FindMatchInBigList(devlist.retransmit,crc32)
+
+                if not cmp(isconfirm,'02'):
+                    dfind = FindMatchInBigList(applist.confirm,crc32)
+                    if not dfind:
+                        dfind = FindMatchInBigList(applist.lost,crc32)
+                        
+                else:
+                    dfind = FindMatchInBigList(applist.recv,crc32)
+                    if not dfind:
+                        dfind = FindMatchInBigList(applist.lost,crc32)
+
+            elif not cmp(p,'0006'):
+                sfind = FindMatchInBigList(applist.send,crc32)
+                if not sfind:
+                    sfind = FindMatchInBigList(applist.retransmit,crc32)
+
+                if not cmp(isconfirm,'02'):
+                    dfind = FindMatchInBigList(devlist.confirm,crc32)
+                    if not dfind:
+                        dfind = FindMatchInBigList(devlist.lost,crc32)
+
+                else:
+                    dfind = FindMatchInBigList(devlist.recv,crc32)
+                    if not dfind:
+                        dfind = FindMatchInBigList(devlist.lost,crc32)
 
                     
                 
@@ -169,20 +232,10 @@ def read_fwdlog(fname):
         fdmm.close()
     [fd.close() for fd in fdlist]
     fwdcount = fwdok + fwderr
-    fwderrfd.write("%s,forward counter %d, forward success %d,forward error %d, error rate %.2f"\
-            % (fname,fwdcount,fwdok,fwderr,float(fwderr)/fwdcount))
+    #fwderrfd.write('end find match at time %.5f\n' % time.time())
+    fwderrfd.write("using time  %.5f;%s,forward counter %d, forward success %d,forward error %d, error rate %.2f\n"\
+            % (time.time()- startime,fname,fwdcount,fwdok,fwderr,float(fwderr)/fwdcount))
     fwderrfd.close()
-
-def process_find_peer(tpair):
-    m0 = tpair[0]
-    m1 = tpair[1]
-    buf = tpair[2]
-    fstr = None
-    if m0:
-        fstr = mmap_findsomething(m0,buf)
-    if fstr is None and m1:
-        fstr = mmap_findsomething(m1,buf)
-    return fstr
 
 
 
@@ -271,7 +324,6 @@ if __name__ == "__main__":
 
     # read t4 and t5
     #[read_fwdlog(n) for n in fwdlist]
-    print "forward counter %d, forward success %d,forward error %d" % (fwdcount,fwdok,fwderr)
 
 
 

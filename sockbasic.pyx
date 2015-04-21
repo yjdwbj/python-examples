@@ -241,7 +241,12 @@ def split_jl_head(hbuf,fileno):
     return [(''.join([HEAD_MAGIC,n]),fileno) for n in hbuf.split(HEAD_MAGIC) if n]
 
 def split_requests_buf(hbuf):
-    return [''.join([HEAD_MAGIC,n]) for n in hbuf.split(HEAD_MAGIC) if n]
+    nset = set([''.join([HEAD_MAGIC,n]) for n in hbuf.split(HEAD_MAGIC) if n])
+    nlist = list(nset)
+    chl = int(nlist[-1][8:12],16)
+    if len(nlist[-1]) != (chl * 2):
+        return nlist[:-1]
+    return nlist
 
 
 def read_attributes_from_buf(response):

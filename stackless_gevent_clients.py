@@ -210,6 +210,7 @@ class DevicesFunc():
             else:
                 self.dstsock = int(stat[:8],16)
                 self.sbuf = self.send_data_to_app('03%06x' % self.mynum)
+                qdict.send.put("send: sock %d,start send packet to app;data: %s" % (self.fileno,self.sbuf))
                 if not self.retry_t:
                     self.retry_t  = threading.Thread(target=self.retransmit_packet)
                     self.retry_t.start()
@@ -226,7 +227,7 @@ class DevicesFunc():
             gevent.sleep(0.001)
             try:
                 p = self.add_queue.get_nowait()
-                n = time.time() + randint(10,self.retry)
+                n = time.time() + randint(30,self.retry)
             except:
                 pass
             else:
@@ -243,8 +244,7 @@ class DevicesFunc():
                             devreconn.put_nowait(self.uid)
                             return
                         qdict.retransmit.put('sock %d ,retransmit_packet ;data:%s' % (self.fileno,self.sbuf))
-                        self.add_queue.put(0)
-                        break
+                        n = time.time() + randint(30,self.retry)
                         """break inside loop"""
                         #except:
                         #    qdict.err.put('sock %d ,retransmit_packet error' % self.fileno)
@@ -399,7 +399,6 @@ class APPfunc():
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
                 qdict.recv.put("recv: %s,sock %d,recv from  dev  number of  hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],rbuf))
-                self.s
                 self.sbuf = self.stun_send_data_to_devid('02%s' % hattr.sequence[2:])
                 qdict.send.put("send: sock %d,send confirm packet to dev,data %s" % (self.fileno,self.sbuf))
             elif hattr.sequence[:2] == '02':
@@ -533,7 +532,7 @@ class APPfunc():
             gevent.sleep(0.001)
             try:
                 p = self.add_queue.get_nowait()
-                n = time.time() + randint(10,self.retry)
+                n = time.time() + randint(30,self.retry)
             except:
                 pass
             else:
@@ -550,8 +549,7 @@ class APPfunc():
                             print "retransmit exit",self.fileno
                             return
                         qdict.retransmit.put('sock %d ,retransmit_packet ;data: %s' % (self.fileno,self.sbuf))
-                        self.add_queue.put(0)
-                        break
+                        n = time.time() + randint(30,self.retry)
                         """break inside loop"""
                         #except:
                         #    qdict.err.put('sock %d ,retransmit_packet error' % self.fileno)
