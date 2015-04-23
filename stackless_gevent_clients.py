@@ -21,27 +21,36 @@ from itertools import *
 from binascii import unhexlify,hexlify
 from datetime import datetime
 import hashlib
+import threading
 from sockbasic import *
 from random import randint
 import gevent
 from gevent import monkey,socket
+from gevent.pool import Pool
+from gevent.queue import Queue,Empty
+
 #from gevent.queue import Queue
-from multiprocessing import Queue
+#from multiprocessing import Queue
+#from multiprocessing.queues import Empty
 monkey.patch_all()
-import threading
 
 def logger_worker(queue,logger):
+    n = time.time() + 120
     while 1:
+        if time.time() > n:
+            break
         for x in xrange(20):
             try:
                 msg = queue.get_nowait()
                 logger.log(msg)
-            except:
+                n = time.time() + 120
+            except Empty:
                 break
         gevent.sleep(0)
 
 class DevicesFunc():
-    def __init__(self,host,uid):
+    global host
+    def __init__(self,uid):
         self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
@@ -62,6 +71,7 @@ class DevicesFunc():
         self.start()
 
     def start(self):
+        print self.host
         while 1:
             n = time.time()
             rt = randint(5,120)
@@ -97,7 +107,7 @@ class DevicesFunc():
             del data
             if self.process_handle_first():
                 break
-            gevent.sleep(0.001)
+            gevent.sleep(0.1)
         qdict.err.put(','.join(['sock','%d'% self.fileno,' closed,occur error, send packets %d ' % self.mynum]))
         self.sock.close()
         devreconn.put_nowait(self.uid)
@@ -219,29 +229,31 @@ class DevicesFunc():
                 del hattr
                 return self.write_sock()
         del rdict
+        for m in STUN_HEADER_KEY:
+            hattr.__dict__.pop(m,None)
         del hattr
         return False
     
     def retransmit_packet(self):
         while 1:
-            gevent.sleep(0.001)
+            gevent.sleep(0.01)
             try:
                 p = self.add_queue.get_nowait()
                 n = time.time() + randint(30,self.retry)
-            except:
+            except Empty:
                 pass
             else:
                 while 1:
-                    gevent.sleep(0.001)
+                    gevent.sleep(0.01)
                     try:
                         rm = self.rm_queue.get_nowait()
                         break
-                    except:
+                    except Empty:
                         pass
 
                     if time.time() > n:
                         if self.write_sock():
-                            devreconn.put_nowait(self.uid)
+                            #devreconn.put_nowait(self.uid)
                             return
                         qdict.retransmit.put('sock %d ,retransmit_packet ;data:%s' % (self.fileno,self.sbuf))
                         n = time.time() + randint(30,self.retry)
@@ -288,7 +300,8 @@ class DevicesFunc():
 
 
 class APPfunc():
-    def __init__(self,addr,uid):
+    global host
+    def __init__(self,uid):
         self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
@@ -306,7 +319,7 @@ class APPfunc():
         self.user = uid
         self.pwd = uid
         self.uid= uid
-        self.addr = addr
+        self.addr = host
         self.retry = 50
         self.start()
 
@@ -345,7 +358,7 @@ class APPfunc():
             del data
             if self.process_handle_first():
                 break
-            gevent.sleep(0.001)
+            gevent.sleep(0.1)
         qdict.err.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
         self.sock.close()
         appreconn.put_nowait(self.uid)
@@ -509,6 +522,8 @@ class APPfunc():
         else:
             pass
         del rdict
+        for m in STUN_HEADER_KEY:
+            hattr.__dict__.pop(m,None)
         del hattr
         return  self.write_sock()
     
@@ -529,27 +544,27 @@ class APPfunc():
 
     def retransmit_packet(self):
         while 1:
-            gevent.sleep(0.001)
+            gevent.sleep(0.01)
             try:
                 p = self.add_queue.get_nowait()
-                n = time.time() + randint(30,self.retry)
-            except:
+                n = time.time() + self.retry
+            except Empty:
                 pass
             else:
                 while 1:
-                    gevent.sleep(0.001)
+                    gevent.sleep(0.01)
                     try:
                         n = self.rm_queue.get_nowait()
-                        break
-                    except:
+                    except Empty:
                         pass
+                    else:
+                        break
                     if time.time() > n:
                         if self.write_sock():
-                            appreconn.put_nowait(self.uid)
-                            print "retransmit exit",self.fileno
+                            #appreconn.put_nowait(self.uid)
                             return
                         qdict.retransmit.put('sock %d ,retransmit_packet ;data: %s' % (self.fileno,self.sbuf))
-                        n = time.time() + randint(30,self.retry)
+                        n = time.time() + self.retry
                         """break inside loop"""
                         #except:
                         #    qdict.err.put('sock %d ,retransmit_packet error' % self.fileno)
@@ -583,6 +598,7 @@ class APPfunc():
         #filed = "%08x" % UCLIENT_SESSION_LIFETIME
         filed = "%08x" % 30
         stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
+        del filed
         stun_add_fingerprint(buf)
         #print "login buf is",buf
         return ''.join(buf)
@@ -640,7 +656,7 @@ def read_uuid_file(fd):
 
 
 
-def loopconnect(obj,host,q):
+def loopconnect(obj,q):
     while 1:
         gevent.sleep(0.01)
         try:
@@ -648,16 +664,16 @@ def loopconnect(obj,host,q):
         except:
             continue
         else:
-            print "reconnection uid ",q
             if obj == DevicesFunc:
                 qdict.err.put('device uid %s reconnection server' % p)
             else:
                 qdict.err.put('app uid %s reconnection server' % p)
-            gevent.joinall([gevent.spawn(obj,host,p)])
+            gevent.joinall([gevent.spawn(obj,p)])
 
 
 
 def AppDemo(args):
+    global host
     args = make_argument_parser().parse_args()
     if not args.srv_host or not args.uuidfile:
         print make_argument_parser().parse_args(['-h'])
@@ -671,20 +687,25 @@ def AppDemo(args):
     statworker = threading.Thread(target=logger_worker,args=(qdict.stat,statlog))
     statworker.start()
     """
-    host = ()
-    try:
-        d = args.srv_host.index(':')
-        host = (args.srv_host[:d],int(args.srv_host[d:]))
-    except:
+    l = args.srv_host.split(':')
+    if len(l) == 1 or l[-1] == '':
         host = (args.srv_host,3478)
-    appworker = threading.Thread(target=loopconnect,args=(APPfunc,host,appreconn))
+    else:
+        host = (args.srv_host[:d],int(args.srv_host[d:]))
+    appworker = threading.Thread(target=loopconnect,args=(APPfunc,appreconn))
     appworker.start()
     ulist = read_uuid_file(args.uuidfile)
     bind = args.b_count if args.b_count < len(ulist) else len(ulist)
     tbuf = ulist
     bind = 1
     ucount = len(ulist)
-    gevent.joinall([gevent.spawn(APPfunc,host,uid) for uid in ulist])
+    pool = Pool(len(ulist))
+    for uid in ulist:
+        pool.spawn(APPfunc,uid)
+        gevent.sleep(0.1)
+    pool.join()
+    #pool.map(APPfunc,ulist)
+    #gevent.joinall([gevent.spawn(APPfunc,host,uid) for uid in ulist])
 
 def DevDemo(args):
     args = make_argument_parser().parse_args()
@@ -702,16 +723,24 @@ def DevDemo(args):
     """
     
 
-    host = ()
-    try:
-        d = args.srv_host.index(':')
-        host = (args.srv_host[:d],int(args.srv_host[d:]))
-    except:
+    global host
+    l = args.srv_host.split(':')
+    if len(l) == 1 or l[-1] == '':
         host = (args.srv_host,3478)
-    devworker = threading.Thread(target=loopconnect,args=(DevicesFunc,host,devreconn))
+        print 'sss',host
+    else:
+        print 'dd',host
+        host = (args.srv_host[:d],int(args.srv_host[d:]))
+    print host
+    devworker = threading.Thread(target=loopconnect,args=(DevicesFunc,devreconn))
     devworker.start()
     uulist = read_uuid_file(args.uuidfile)
-    gevent.joinall([gevent.spawn(DevicesFunc,host,uid) for uid in uulist])
+    pool = Pool(len(uulist))
+    for uid in uulist:
+        pool.spawn(DevicesFunc,uid)
+        gevent.sleep(0.1)
+    pool.join()
+    #gevent.joinall([gevent.spawn(DevicesFunc,host,uid) for uid in uulist])
     
 
 class A:
@@ -726,6 +755,7 @@ qdict.stat = Queue()
 """
 appreconn = Queue()
 devreconn = Queue()
+global host
 if __name__ == '__main__':
     args = make_argument_parser().parse_args()
     name = str(vars(args)['func']).split(' ')[1]
@@ -738,15 +768,11 @@ if __name__ == '__main__':
     tt = ['err','state','recv','send','confirm','retransmit','lost']
     [setattr(qdict,k,Queue()) for k in tt]
     [setattr(logdict,k,StatLog('_'.join([name,k]))) for k in tt]
-    [threading.Thread(target=logger_worker,args=(q,l)).start() for (q,l) in izip(qdict.__dict__.values(),logdict.__dict__.values())]
-
+    tlist = [threading.Thread(target=logger_worker,args=(q,l)) for (q,l) in izip(qdict.__dict__.values(),logdict.__dict__.values())]
+    [n.start() for n in tlist]
     args.func(args)
-    while 1:
-        try:
-            pass
-        except (SystemExit,KeyboardInterrupt):
-            print "Server exit"
-            break
+    [n.join() for n in tlist]
+
 
 
 

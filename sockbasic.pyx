@@ -379,6 +379,7 @@ def stun_struct_refresh_request():
     stun_init_command_str(STUN_METHOD_REFRESH,buf)
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
     stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
+    del filed
     stun_add_fingerprint(buf)
     return buf
 
