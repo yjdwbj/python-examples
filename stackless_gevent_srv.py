@@ -416,7 +416,7 @@ class EpollServer():
         res.__dict__.pop('host',None)
         res.__dict__.pop('reqlst',None)
         res.__dict__.pop('attrs',None)
-        for n in STUN_HEADER_KEY:
+        for n in STUN_HEAD_KEY:
             res.__dict__.pop(n,None)
         del res
 

@@ -93,7 +93,6 @@ class DevicesFunc():
             devreconn.put_nowait(self.uid)
             return
 
-        gevent.sleep(0.1)
         while 1:
             try:
                 data = self.sock.recv(SOCK_BUFSIZE)
@@ -229,7 +228,7 @@ class DevicesFunc():
                 del hattr
                 return self.write_sock()
         del rdict
-        for m in STUN_HEADER_KEY:
+        for m in STUN_HEAD_KEY:
             hattr.__dict__.pop(m,None)
         del hattr
         return False
@@ -344,7 +343,6 @@ class APPfunc():
         if self.write_sock():
             appreconn.put_nowait(self.uid)
             return
-        gevent.sleep(0.1)
         while 1:
             try:
                 data = self.sock.recv(SOCK_BUFSIZE)
@@ -522,7 +520,7 @@ class APPfunc():
         else:
             pass
         del rdict
-        for m in STUN_HEADER_KEY:
+        for m in STUN_HEAD_KEY:
             hattr.__dict__.pop(m,None)
         del hattr
         return  self.write_sock()
