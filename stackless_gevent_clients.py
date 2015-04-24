@@ -71,19 +71,18 @@ class DevicesFunc():
         self.start()
 
     def start(self):
-        print self.host
         while 1:
             n = time.time()
             rt = randint(5,120)
             try:
                 self.sock.connect(self.host)
             except socket.timeout:
-                qdict.err.put('sock connect timeout %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
-                gevent.sleep(rt)
+                #qdict.err.put('sock connect timeout %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
+                #gevent.sleep(rt)
                 continue
             except socket.error:
-                qdict.err.put('sock connect error %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
-                gevent.sleep(rt)
+                #qdict.err.put('sock connect error %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
+                #gevent.sleep(rt)
                 continue
             else:
                 break
@@ -106,7 +105,7 @@ class DevicesFunc():
             del data
             if self.process_handle_first():
                 break
-            gevent.sleep(0.1)
+            gevent.sleep(0)
         qdict.err.put(','.join(['sock','%d'% self.fileno,' closed,occur error, send packets %d ' % self.mynum]))
         self.sock.close()
         devreconn.put_nowait(self.uid)
@@ -127,6 +126,7 @@ class DevicesFunc():
             [self.process_loop(n) for n in  mulist]
             del mulist[:]
             del mulist
+            gevent.sleep(0.1)
         else: # 找到一个标识，还不知在什么位置
             pos = self.recv.index(HEAD_MAGIC)
             self.recv = self.recv[pos:]
@@ -183,7 +183,10 @@ class DevicesFunc():
                 qdict.send.put("send: sock %d,%s ,to app  sock %d,packet number %d;data: %s" % (self.fileno,str(self.sock.getsockname()),\
                         self.dstsock,rnum,self.sbuf))
                 self.add_queue.put(0)
+            for m in STUN_HEAD_KEY:
+                hattr.__dict__.pop(m,None)
             return  self.write_sock()
+
         p = parser_stun_package(hbuf[STUN_HEADER_LENGTH:-8])
         if not p:
             qdict.state.put(','.join(['sock','%d' % self.fileno,'server packet is wrong,rdict is empty']))
@@ -210,6 +213,10 @@ class DevicesFunc():
             except KeyError:
                 qdict.err.put('sock %d,login not my sock fileno,retry login' % self.fileno)
                 self.sbuf = self.device_struct_allocate()
+                rdict.clear()
+                del rdict
+                for m in STUN_HEAD_KEY:
+                    hattr.__dict__.pop(m,None)
                 return self.write_sock()
         elif hattr.method == STUN_METHOD_INFO:
             try:
@@ -224,9 +231,12 @@ class DevicesFunc():
                     self.retry_t  = threading.Thread(target=self.retransmit_packet)
                     self.retry_t.start()
                 self.add_queue.put(0)
+                rdict.clear()
                 del rdict
-                del hattr
+                for m in STUN_HEAD_KEY:
+                    hattr.__dict__.pop(m,None)
                 return self.write_sock()
+        rdict.clear()
         del rdict
         for m in STUN_HEAD_KEY:
             hattr.__dict__.pop(m,None)
@@ -325,16 +335,16 @@ class APPfunc():
     def start(self):
         while 1:
             n = time.time()
-            rt = randint(5,120)
+            #rt = randint(5,120)
             try:
                 self.sock.connect(self.addr)
             except socket.timeout:
-                qdict.err.put('sock connect timeout %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
-                gevent.sleep(rt)
+                #qdict.err.put('sock connect timeout %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
+                #gevent.sleep(rt)
                 continue
             except socket.error:
-                qdict.err.put('sock connect error %d time %f,sleep %s retry' % (self.fileno,time.time() -n,rt))
-                gevent.sleep(rt)
+                #qdict.err.put('sock connect error %d time %f,sleep %s retry' % (self.fileno,time.time() -n,rt))
+                #gevent.sleep(rt)
                 continue
             else:
                 break
@@ -356,7 +366,7 @@ class APPfunc():
             del data
             if self.process_handle_first():
                 break
-            gevent.sleep(0.1)
+            gevent.sleep(0)
         qdict.err.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
         self.sock.close()
         appreconn.put_nowait(self.uid)
@@ -378,6 +388,7 @@ class APPfunc():
             [self.process_loop(n) for n in  mulist]
             del mulist[:]
             del mulist
+            gevent.sleep(0.1)
         else: # 找到一个标识，还不知在什么位置
             pos = self.recv.index(HEAD_MAGIC)
             self.recv = self.recv[pos:]
@@ -429,7 +440,9 @@ class APPfunc():
                 self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
                 self.add_queue.put(0)
                 qdict.send.put("send: sock %d,send packet of %d to dev;data %s" % (self.fileno,n,self.sbuf))
-
+            for m in STUN_HEAD_KEY:
+                hattr.__dict__.pop(m,None)
+            del hattr
             return self.write_sock()
 
     
@@ -460,6 +473,10 @@ class APPfunc():
         elif hattr.method == STUN_METHOD_REGISTER:
             self.sbuf = self.stun_login_request()
         elif hattr.method  == STUN_METHOD_REFRESH:
+            del rdict
+            for m in STUN_HEAD_KEY:
+                hattr.__dict__.pop(m,None)
+            del hattr
             return False
         elif hattr.method == STUN_METHOD_CHANNEL_BIND:
             # 绑定小机命令o
@@ -479,15 +496,6 @@ class APPfunc():
             except KeyError:
                 qdict.err.put('sock %d,recv server bind not RUUID ,buf %s' % (self.fileno,rbuf))
      
-#            elif rdict.has_key(STUN_ATTRIBUTE_MRUUID):
-#                mlist = split_mruuid(rdict[STUN_ATTRIBUTE_MRUUID])
-#                for n in mlist:
-#                    gevent.sleep(0.2)
-#                    dstsock = int(n[-8:],16)
-#                    if dstsock != 0xFFFFFFFF:
-#                        pass
-#                        #send_forward_buf(sock,srcsock,dstsock)
-#                return False
      
         elif hattr.method == STUN_METHOD_INFO:
             if not self.retry_t:
@@ -501,15 +509,6 @@ class APPfunc():
             except KeyError:
                 qdict.err.put('sock %d,recv server info not RUUID ,buf %s' % (self.fileno,rbuf))
      
-#            elif rdict.has_key(STUN_ATTRIBUTE_MRUUID):
-#                mlist = split_mruuid(rdict[STUN_ATTRIBUTE_MRUUID])
-#                for n in mlist:
-#                    gevent.sleep(0.2)
-#                    dstsock = int(n[-8:],16)
-#                    if dstsock != 0xFFFFFFFF:
-#                        pass
-#                        #send_forward_buf(sock,srcsock,dstsock)
-#                return False
      
         elif hattr.method == STUN_METHOD_PULL:
             pass
@@ -519,6 +518,7 @@ class APPfunc():
             pass
         else:
             pass
+        rdict.clear()
         del rdict
         for m in STUN_HEAD_KEY:
             hattr.__dict__.pop(m,None)
@@ -700,7 +700,7 @@ def AppDemo(args):
     pool = Pool(len(ulist))
     for uid in ulist:
         pool.spawn(APPfunc,uid)
-        gevent.sleep(0.1)
+        gevent.sleep(0)
     pool.join()
     #pool.map(APPfunc,ulist)
     #gevent.joinall([gevent.spawn(APPfunc,host,uid) for uid in ulist])
@@ -725,18 +725,15 @@ def DevDemo(args):
     l = args.srv_host.split(':')
     if len(l) == 1 or l[-1] == '':
         host = (args.srv_host,3478)
-        print 'sss',host
     else:
-        print 'dd',host
         host = (args.srv_host[:d],int(args.srv_host[d:]))
-    print host
     devworker = threading.Thread(target=loopconnect,args=(DevicesFunc,devreconn))
     devworker.start()
     uulist = read_uuid_file(args.uuidfile)
     pool = Pool(len(uulist))
     for uid in uulist:
         pool.spawn(DevicesFunc,uid)
-        gevent.sleep(0.1)
+        gevent.sleep(0)
     pool.join()
     #gevent.joinall([gevent.spawn(DevicesFunc,host,uid) for uid in uulist])
     

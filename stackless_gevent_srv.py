@@ -19,6 +19,7 @@ import errno
 from binascii import unhexlify,hexlify
 from datetime import datetime
 import hashlib
+import gc
 from sockbasic import *
 import threading
 import gevent
@@ -142,6 +143,9 @@ def stun_return_same_package(res):
     return (buf)
 
 
+
+
+
 class EpollServer():
     def __init__(self,port):
 
@@ -150,8 +154,6 @@ class EpollServer():
         #errqueue = errqueue
         #statqueue = statqueue
         """创建多个engine让它平均到多个进程上，性能问题要进一步调试"""
-        self.write_engine = QueryDB().get_engine()
-        self.db_write = self.write_engine.connect().execute
         self.app_engine = QueryDB().get_engine()
         self.app_write = self.app_engine.connect().execute
         self.appreg_engine = QueryDB().get_engine()
@@ -162,8 +164,8 @@ class EpollServer():
         self.appbind_exec = self.app_engine.connect().execute
         self.dev_engine = QueryDB().get_engine()
         self.dev_write = self.app_engine.connect().execute
-        self.read_engine = QueryDB().get_engine()
-        self.db_read = self.read_engine.connect().execute
+        self.fwdcounter = 0
+        self.maxbuffer = ''
         [setattr(self,x,{}) for x in store]
 
         self.prefunc= {
@@ -183,10 +185,26 @@ class EpollServer():
                 }
         #self.server = StreamServer(('0.0.0.0',3478),self.handle_new_accept,backlog = 8192)
         #self.server.serve_forever()
-        self.listener = _tcp_listener(('0.0.0.0',3478),16384,1)
+        self.listener = _tcp_listener(('0.0.0.0',3478),32768,1)
         #for i in xrange(1):
         #    Process(target=self.server_forever).start()
+        self.startime = time.time()
+        threading.Thread(target=self.report_status).start()
         self.server_forever()
+
+    def report_status(self):
+        ltime = time.time()
+        lcounter = self.fwdcounter
+        while 1:
+            rate = 0
+            try:
+                rate = float(self.fwdcounter-lcounter)/ (time.time() - ltime)
+            except ZeroDivisionError:
+                pass
+            fwdqueue.put("time %.5f,fwd counter %d, app online %d, dev online %d, fwd rate avg 30 seconds %.5f,max buffer size %s" \
+                    % (time.time(),self.fwdcounter,len(self.appsock),len(self.devsock),rate,self.maxbuffer))
+            ltime = time.time()
+            gevent.sleep(30)
 
     def server_forever(self):
         StreamServer(self.listener,self.handle_new_accept).serve_forever()
@@ -234,7 +252,7 @@ class EpollServer():
                 except KeyError:
                     break
                 self.process_handle_first(fileno)
-                gevent.sleep(0.1)
+                gevent.sleep(0) #让出CPU
         errqueue.put("%s exit,sock %d" % (hstr,fileno))
         """退出本线程"""
     
@@ -244,7 +262,7 @@ class EpollServer():
             btable = QueryDB.get_account_bind_table(self.users[res.fileno])
             stmt = btable.update().values(pwd=res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]).\
                     where(btable.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID])
-            self.db_write(stmt)
+            self.app_write(stmt)
             return stun_return_same_package(res)
         except ProgrammingError:
             #print "table not exits"
@@ -272,7 +290,7 @@ class EpollServer():
     def delete_binds_in_db(self,uname,uids):
         try:
             btable = QueryDB.get_account_bind_table(uname)
-            self.db_write(btable.delete().where(btable.c.uuid == uids ))
+            self.app_write(btable.delete().where(btable.c.uuid == uids ))
         except KeyError:
             pass
 
@@ -285,7 +303,7 @@ class EpollServer():
         try:
             btable = QueryDB.get_account_bind_table(uname)
             s = sql.select([btable])
-            fall = self.db_read(s).fetchall()
+            fall = self.app_write(s).fetchall()
             data = ''.join([ ''.join([r[0],r[1]]) for r in fall])
             if not data:
                 res.eattr = STUN_ERROR_OBJ_NOT_EXIST
@@ -302,9 +320,9 @@ class EpollServer():
     def delete_fileno(self,fileno):
         try:
             self.clients[fileno].close()
-            self.clients.pop(fileno)
         except KeyError:
             pass
+        self.clients.pop(fileno,None)
 
 
 
@@ -335,6 +353,7 @@ class EpollServer():
         if l > 1:
             #errqueue.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
             statqueue.put("sock %d,recv multi buf,len %d, buf: %s" % (fileno,plen,self.requests[fileno]))
+            self.maxbuffer = str(plen)
             #hbuf = hbuf[l:] # 从找到标识头开始处理
             mulist = split_requests_buf(self.requests[fileno])
             pos = sum([len(n) for n in mulist])
@@ -342,6 +361,7 @@ class EpollServer():
             [self.handle_requests_buf(n,fileno) for n in mulist]
             del mulist[:]
             del mulist
+            gevent.sleep(0.1)
         else: # 找到一个标识，还不知在什么位置
             pos = self.requests[fileno].index(HEAD_MAGIC)
             self.requests[fileno] = self.requests[fileno][pos:]
@@ -365,19 +385,26 @@ class EpollServer():
             res.host= self.hosts[fileno]
         except KeyError:
             errqueue.put('sock %d, not has hostinfo' % (fileno))
+            for n in STUN_HEAD_KEY:
+                res.__dict__.pop(n,None)
             return 
 
         res.fileno=fileno
-
         #通过认证的socket 直接转发了
         try:
             aforward = self.appsock[fileno]
-            if res.method == STUN_METHOD_REFRESH:
+        except KeyError: 
+            pass
+        else:
+            if res.method == STUN_METHOD_REFRESH: # 刷新就可以步过了
+                for n in STUN_HEAD_KEY:
+                    res.__dict__.pop(n,None)
+                    res.__dict__.pop('fileno',None)
                 return
             elif res.method == STUN_METHOD_SEND: 
                 if check_dst_and_src(res):
                     self.responses[fileno] = stun_error_response(res)
-                    self.write_to_sock(fileno,self.EV_OUT)
+                    self.write_to_sock(fileno)
                 else:
                     """
                      直接转发了
@@ -385,32 +412,61 @@ class EpollServer():
                     self.handle_forward_packet(hbuf,res,self.devsock)
             else:
                 self.handle_postauth_process(res,hbuf)
+            """
+            如果是app转发就在这里返回
+            """
+            res.__dict__.pop('eattr',None)
+            res.__dict__.pop('fileno',None)
+            res.__dict__.pop('host',None)
+            res.__dict__.pop('reqlst',None)
+            res.__dict__.pop('attrs',None)
+            for n in STUN_HEAD_KEY:
+                res.__dict__.pop(n,None)
+                res.__dict__.pop('fileno',None)
             del res
             return # 一切正常返回
-        except KeyError:
-            pass
 
+
+        """是否是dev发出来的包"""
         try:
             dforward = self.devsock[fileno]
+        except KeyError:
+            pass
+        else:
             if res.method == STUN_METHOD_REFRESH:
+                for n in STUN_HEAD_KEY:
+                    res.__dict__.pop(n,None)
+                    res.__dict__.pop('fileno',None)
                 return
             elif res.method == STUN_METHOD_DATA:
                 if check_dst_and_src(res):
                     self.responses[fileno] = stun_error_response(res)
                     self.write_to_sock(fileno)
                 else:
+                    """
+                     直接转发了
+                    """
                     self.handle_forward_packet(hbuf,res,self.appsock)
             else:
                 self.handle_postauth_process(res,hbuf)
+            """
+            如果是dev转发就在这里返回
+            """
+            res.__dict__.pop('eattr',None)
+            res.__dict__.pop('fileno',None)
+            res.__dict__.pop('host',None)
+            res.__dict__.pop('reqlst',None)
+            res.__dict__.pop('attrs',None)
+            for n in STUN_HEAD_KEY:
+                res.__dict__.pop(n,None)
             del res
             return # 一切正常返回
-        except KeyError:
-            pass
 
         """
         处理要认证的客务端
         """
         self.handle_client_request_preauth(res,hbuf)
+
         res.__dict__.pop('eattr',None)
         res.__dict__.pop('fileno',None)
         res.__dict__.pop('host',None)
@@ -419,6 +475,8 @@ class EpollServer():
         for n in STUN_HEAD_KEY:
             res.__dict__.pop(n,None)
         del res
+        gc.set_threshold(0,1,1)
+        gc.collect()
 
     def handle_postauth_process(self,res,hbuf):
         """
@@ -448,7 +506,8 @@ class EpollServer():
             self.responses[res.dstsock] = hbuf
             fileno = res.fileno
             dstsock = res.dstsock
-            fwdqueue.put(';src:[%s,sock %d]; dst:[%s,sock %d] ; buf:%s' % (str(res.host),fileno,str(self.hosts[dstsock]),dstsock,hbuf))
+            #fwdqueue.put(';src:[%s,sock %d]; dst:[%s,sock %d] ; buf:%s' % (str(res.host),fileno,str(self.hosts[dstsock]),dstsock,hbuf))
+            self.fwdcounter +=1
             self.write_to_sock(res.dstsock)
         except KeyError: # 目标不存在
             res.eattr = STUN_ERROR_DEVOFFLINE
@@ -588,7 +647,7 @@ class EpollServer():
         """
         table  = QueryDB.get_account_bind_table(self.users[res.fileno])
         try:
-            table.create(self.write_engine)
+            table.create(self.app_engine)
         except ProgrammingError:
             pass
         #添加新绑定的小机用户表下面
@@ -697,7 +756,7 @@ class EpollServer():
         except KeyError:
             pass
         else:
-            statqueue.put('dev %s logout info app,self fileno %d' % (uuid,fileno))
+            #statqueue.put('dev %s logout info app,self fileno %d' % (uuid,fileno))
         #print "devid",devid,"has logout"
             binds = [k for k in self.appbinds.keys() if self.appbinds[k].has_key(uuid)]
             [self.notify_peer_is_logout((n,fileno)) for n in binds if self.appsock.has_key(n)]
@@ -723,9 +782,9 @@ class EpollServer():
         try:
             name = self.appsock[fileno].name
             del self.appsock[fileno]
-            statqueue.put('app %s logout info dev,self fileno %d' % (name,fileno))
+            #statqueue.put('app %s logout info dev,self fileno %d' % (name,fileno))
             self.app_user_logout(name)
-            name = None
+            del name
         except KeyError:
             pass
         else:
@@ -801,7 +860,7 @@ class EpollServer():
             self.appbinds[fileno][ustr]= dstsock
             b = '%08x' % fileno
             self.responses[dstsock] = notify_peer(''.join([b,STUN_ONLINE]))
-            statqueue.put("info dev %d , %s, data : %s" % (dstsock,str(self.hosts[dstsock]),list(self.responses[dstsock])))
+            #statqueue.put("info dev %d , %s, data : %s" % (dstsock,str(self.hosts[dstsock]),list(self.responses[dstsock])))
             try:
                 self.write_to_sock(dstsock)
             except IOError:
@@ -809,7 +868,7 @@ class EpollServer():
                 self.dealwith_peer_hup(dstsock)
         except KeyError:
             self.appbinds[fileno][ustr]=0xFFFFFFFF
-        ustr = None
+        del ustr
         fileno = None
     
     
@@ -832,7 +891,7 @@ class EpollServer():
 
     def noify_app_uuid_just_login(self,appsock,uuidstr,devsock):
         self.responses[appsock] = notify_app_bind_islogin(''.join([uuidstr,'%08x' % devsock]))
-        statqueue.put("info app  %d , %s , data : %s" % (appsock,str(self.hosts[appsock]),list(self.responses[appsock])))
+        #statqueue.put("info app  %d , %s , data : %s" % (appsock,str(self.hosts[appsock]),list(self.responses[appsock])))
         self.write_to_sock(appsock)
     
     def device_login_notify_app(self,uuidstr,devsock):

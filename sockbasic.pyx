@@ -6,6 +6,7 @@ import time
 import logging
 from logging import handlers
 from multiprocessing  import Pool,Queue
+from multiprocessing.queues import Empty
 from select import epoll,EPOLLET,EPOLLIN,EPOLLOUT,EPOLLHUP,EPOLLERR
 
 from binascii import hexlify,unhexlify
@@ -15,6 +16,7 @@ from sqlalchemy.exc import *
 from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,MetaData,DateTime,Boolean,SmallInteger,VARCHAR
 from sqlalchemy import sql,and_
 from sqlalchemy.dialects import postgresql as pgsql
+from sqlalchemy.pool import QueuePool
 
 
 STUN_METHOD_BINDING='0001'   # APP登录命令
@@ -166,7 +168,7 @@ def stun_attr_append_str(buf,attr,add_value):
 
 def stun_add_fingerprint(buf):
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
-    buf.append('%08x' % 0)
+    buf.append('00000000')
     buf[2] = '%04x' % (int(buf[2],16)+4)
     crc_str = ''.join(buf[:-1])
     crcval = get_crc32(crc_str)
@@ -178,10 +180,10 @@ def stun_init_command_str(msg_type,buf):
     buf.append("4a4c") # 魔数字
     buf.append("0001") # 版本号
     buf.append("%04x" % 20) # 长度
-    buf.append("%08x" % 0xFFFFFFFF) # SRC
-    buf.append("%08x" % 0xFFFFFFFF) # DST
+    buf.append("FFFFFFFF") # SRC
+    buf.append("FFFFFFFF") # DST
     buf.append(msg_type) # CMD
-    buf.append("%08x" % 0)  # 序列号
+    buf.append("00000000")  # 序列号
 
 def check_packet_crc32(buf): # 检查包的CRC
     #crc = struct.unpack('!HHI',binascii.unhexlify(buf[-16:]))
@@ -309,6 +311,7 @@ def parser_buf_to_list(buf):
             tbuf=l[3]
         else:
             tbuf=[]
+    del tbuf
     return mlist
         
 def parser_stun_package(buf):
@@ -385,13 +388,14 @@ def stun_struct_refresh_request():
 
 def logger_worker(queue,logger):
     while 1:
-        for n in xrange(1,0):
+        for n in xrange(60):
             try:
                 msg = queue.get_nowait()
-                logger.log(msg)
-            except:
+            except Empty:
                 pass
-        time.sleep(0.005)
+            else:
+                logger.log(msg)
+        time.sleep(0.1)
 
 
 
@@ -441,7 +445,8 @@ class EpollReactor(object):
 
 class QueryDB():
     def __init__(self):
-        self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=2048,max_overflow=20)
+        self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=8192,max_overflow=4096,\
+                poolclass=QueuePool)
 
     def check_table(self,table):
         return table.exists(self.engine)
