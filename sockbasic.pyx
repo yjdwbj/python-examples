@@ -445,8 +445,9 @@ class EpollReactor(object):
 
 class QueryDB():
     def __init__(self):
-        self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=8192,max_overflow=4096,\
-                poolclass=QueuePool)
+        #self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=8192,max_overflow=4096,\
+        #        poolclass=QueuePool)
+        self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath')
 
     def check_table(self,table):
         return table.exists(self.engine)
@@ -463,6 +464,20 @@ class QueryDB():
 
     def create_table(self,sql_txt):
         self.engine.connect().execute(sql_txt)
+    @staticmethod
+    def select(sql_txt):
+        engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath')
+        conn = engine.connect()
+        
+        try:
+            result = conn.execute(sql_txt)
+        except ProgrammingError:
+            raise ProgrammingError
+        else:
+            conn.close()
+            return result
+
+
 
     @staticmethod
     def get_account_bind_table(name):

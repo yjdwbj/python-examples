@@ -162,9 +162,9 @@ class DevicesFunc():
             dstsock = hattr.srcsock
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
-                qdict.recv.put("recv: %s,sock %d,recv from app number of hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],hbuf))
+                #qdict.recv.put("recv: %s,sock %d,recv from app number of hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],hbuf))
                 self.sbuf = self.send_data_to_app('02%s' % hattr.sequence[2:])
-                qdict.send.put("send: sock %d,send confirm packet to app;data: %s" % (self.fileno,self.sbuf))
+                #qdict.send.put("send: sock %d,send confirm packet to app;data: %s" % (self.fileno,self.sbuf))
             #下面是我方主动发数据
             elif hattr.sequence[:2] == '02':
                 rnum = int(hattr.sequence[2:],16)
@@ -173,15 +173,15 @@ class DevicesFunc():
                     qdict.err.put('socket %d,packet counter is over 0xFFFFFF once' % self.fileno)
                 elif self.mynum == rnum:
                     self.mynum +=1
-                    qdict.confirm.put("confirm: %s,sock %d,recv my confirm num %d is ok;data: %s" % (str(self.sock.getsockname()),self.fileno,rnum,hbuf))
+                    #qdict.confirm.put("confirm: %s,sock %d,recv my confirm num %d is ok;data: %s" % (str(self.sock.getsockname()),self.fileno,rnum,hbuf))
                     self.rm_queue.put(0)
                 else:
-                    qdict.lost.put('lost: sock %d,losing packet,recv  number  %d, my counter %d;data %s' % (self.fileno,rnum,self.mynum,hbuf))
+                    #qdict.lost.put('lost: sock %d,losing packet,recv  number  %d, my counter %d;data %s' % (self.fileno,rnum,self.mynum,hbuf))
                     self.rm_queue.put(0)
                     #return False
                 self.sbuf = self.send_data_to_app('03%06x' % self.mynum)
-                qdict.send.put("send: sock %d,%s ,to app  sock %d,packet number %d;data: %s" % (self.fileno,str(self.sock.getsockname()),\
-                        self.dstsock,rnum,self.sbuf))
+                #qdict.send.put("send: sock %d,%s ,to app  sock %d,packet number %d;data: %s" % (self.fileno,str(self.sock.getsockname()),\
+                        #self.dstsock,rnum,self.sbuf))
                 self.add_queue.put(0)
             for m in STUN_HEAD_KEY:
                 hattr.__dict__.pop(m,None)
@@ -226,7 +226,7 @@ class DevicesFunc():
             else:
                 self.dstsock = int(stat[:8],16)
                 self.sbuf = self.send_data_to_app('03%06x' % self.mynum)
-                qdict.send.put("send: sock %d,start send packet to app;data: %s" % (self.fileno,self.sbuf))
+                #qdict.send.put("send: sock %d,start send packet to app;data: %s" % (self.fileno,self.sbuf))
                 if not self.retry_t:
                     self.retry_t  = threading.Thread(target=self.retransmit_packet)
                     self.retry_t.start()
@@ -264,7 +264,7 @@ class DevicesFunc():
                         if self.write_sock():
                             #devreconn.put_nowait(self.uid)
                             return
-                        qdict.retransmit.put('sock %d ,retransmit_packet ;data:%s' % (self.fileno,self.sbuf))
+                        #qdict.retransmit.put('sock %d ,retransmit_packet ;data:%s' % (self.fileno,self.sbuf))
                         n = time.time() + randint(30,self.retry)
                         """break inside loop"""
                         #except:
@@ -420,9 +420,9 @@ class APPfunc():
                 return False
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
-                qdict.recv.put("recv: %s,sock %d,recv from  dev  number of  hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],rbuf))
+                #qdict.recv.put("recv: %s,sock %d,recv from  dev  number of  hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],rbuf))
                 self.sbuf = self.stun_send_data_to_devid('02%s' % hattr.sequence[2:])
-                qdict.send.put("send: sock %d,send confirm packet to dev,data %s" % (self.fileno,self.sbuf))
+                #qdict.send.put("send: sock %d,send confirm packet to dev,data %s" % (self.fileno,self.sbuf))
             elif hattr.sequence[:2] == '02':
                 n = int(hattr.sequence[2:],16)
                 if n > 0xFFFFFF:
@@ -430,16 +430,16 @@ class APPfunc():
                     qdict.err.put('packet counter over 0xFFFFFF once')
                 elif n == self.mynum: 
                     self.mynum+=1
-                    qdict.confirm.put("confirm: %s,sock %d,recv dev confirm num %d ok;data: %s" % (str(self.sock.getsockname()),self.fileno,n,rbuf))
+                    #qdict.confirm.put("confirm: %s,sock %d,recv dev confirm num %d ok;data: %s" % (str(self.sock.getsockname()),self.fileno,n,rbuf))
                     self.rm_queue.put(0)
                 else:
-                    qdict.lost.put('lost: sock %d,lost packet,recv num %d,my counter %d; data: %s' %(self.fileno,n,self.mynum,rbuf))
+                    #qdict.lost.put('lost: sock %d,lost packet,recv num %d,my counter %d; data: %s' %(self.fileno,n,self.mynum,rbuf))
                     """收到的包序错了，直接返回"""
                     self.rm_queue.put(0)
                     #return False
                 self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
                 self.add_queue.put(0)
-                qdict.send.put("send: sock %d,send packet of %d to dev;data %s" % (self.fileno,n,self.sbuf))
+                #qdict.send.put("send: sock %d,send packet of %d to dev;data %s" % (self.fileno,n,self.sbuf))
             for m in STUN_HEAD_KEY:
                 hattr.__dict__.pop(m,None)
             del hattr
@@ -489,7 +489,7 @@ class APPfunc():
                 self.dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-8:],16)
                 if self.dstsock != 0xFFFFFFFF:
                    self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
-                   qdict.send.put('sock %d,start send packet to dev %d;buf %s' % (self.fileno,self.dstsock,self.sbuf))
+                   #qdict.send.put('sock %d,start send packet to dev %d;buf %s' % (self.fileno,self.dstsock,self.sbuf))
                    self.add_queue.put(0) 
                 else:
                     return False
@@ -504,7 +504,7 @@ class APPfunc():
             try:
                 self.dstsock = int(rdict[STUN_ATTRIBUTE_RUUID][-8:],16)
                 self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
-                qdict.send.put('sock %d,start send packet to dev %d;buf: %s' % (self.fileno,self.dstsock,self.sbuf))
+                #qdict.send.put('sock %d,start send packet to dev %d;buf: %s' % (self.fileno,self.dstsock,self.sbuf))
                 self.add_queue.put(0) 
             except KeyError:
                 qdict.err.put('sock %d,recv server info not RUUID ,buf %s' % (self.fileno,rbuf))
@@ -561,7 +561,7 @@ class APPfunc():
                         if self.write_sock():
                             #appreconn.put_nowait(self.uid)
                             return
-                        qdict.retransmit.put('sock %d ,retransmit_packet ;data: %s' % (self.fileno,self.sbuf))
+                        #qdict.retransmit.put('sock %d ,retransmit_packet ;data: %s' % (self.fileno,self.sbuf))
                         n = time.time() + self.retry
                         """break inside loop"""
                         #except:
