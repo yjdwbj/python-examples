@@ -21,29 +21,32 @@ from itertools import *
 from binascii import unhexlify,hexlify
 from datetime import datetime
 import hashlib
-import threading
 from sockbasic import *
 from random import randint
 import gevent
 from gevent import monkey,socket
 from gevent.pool import Pool
 from gevent.queue import Queue,Empty
+import multiprocessing
 
-#from gevent.queue import Queue
 #from multiprocessing import Queue
 #from multiprocessing.queues import Empty
-monkey.patch_all()
+monkey.patch_socket(dns=False,aggressive=False)
+monkey.patch_time()
+monkey.patch_os()
+monkey.patch_thread()
+import threading
 
 def logger_worker(queue,logger):
-    n = time.time() + 120
+    #n = time.time() + 120
     while 1:
-        if time.time() > n:
-            break
-        for x in xrange(20):
+        #if time.time() > n:
+        #    break
+        for x in xrange(300):
             try:
                 msg = queue.get_nowait()
                 logger.log(msg)
-                n = time.time() + 120
+                #n = time.time() + 120
             except Empty:
                 break
         gevent.sleep(0)
@@ -53,6 +56,9 @@ class DevicesFunc():
     def __init__(self,uid):
         self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
+        self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
+        self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
+        self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
@@ -92,15 +98,27 @@ class DevicesFunc():
             devreconn.put_nowait(self.uid)
             return
 
+        n = 5
         while 1:
             try:
                 data = self.sock.recv(SOCK_BUFSIZE)
             except IOError:
-                qdict.err.put('sock %d,recv occur erro' % self.fileno)
-                break
+                if n:
+                    n -=1
+                    gevent.sleep(0.1)
+                    continue
+                else:
+                    qdict.err.put('sock %d,recv occur erro' % self.fileno)
+                    break
             if not data:
                 qdict.err.put('sock %d,recv not data' % self.fileno)
-                break
+                if n:
+                    n -=1
+                    gevent.sleep(0.1)
+                    continue
+                else:
+                    break
+            n = 5 # 重度读取5次
             self.recv += hexlify(data)
             del data
             if self.process_handle_first():
@@ -126,7 +144,7 @@ class DevicesFunc():
             [self.process_loop(n) for n in  mulist]
             del mulist[:]
             del mulist
-            gevent.sleep(0.1)
+            #gevent.sleep(0.1)
         else: # 找到一个标识，还不知在什么位置
             pos = self.recv.index(HEAD_MAGIC)
             self.recv = self.recv[pos:]
@@ -189,6 +207,7 @@ class DevicesFunc():
 
         p = parser_stun_package(hbuf[STUN_HEADER_LENGTH:-8])
         if not p:
+            print "devfunc parser_stun_package is None",rbuf
             qdict.state.put(','.join(['sock','%d' % self.fileno,'server packet is wrong,rdict is empty']))
             return False # 出错了
     
@@ -206,7 +225,7 @@ class DevicesFunc():
             """
             登录成功
             """
-            qdict.state.put('sock %d,uuid %s login' % (self.fileno,self.uid))
+            #qdict.state.put('sock %d,uuid %s login' % (self.fileno,self.uid))
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
                 self.srcsock = int(stat[:8],16)
@@ -275,6 +294,7 @@ class DevicesFunc():
         if self.sbuf:
             try:
                 nbyte = self.sock.send(unhexlify(self.sbuf))
+                #gevent.sleep(0.01)
             except IOError:
                 qdict.err.put('socket %d has closed' % self.fileno)
                 return True
@@ -300,6 +320,7 @@ class DevicesFunc():
         buf[3] = '%08x' % self.srcsock
         buf[4] = '%08x' % self.dstsock
         buf[-1] = sequence
+        #stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%d' % time.time()))
         stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%.05f' % time.time()))
         stun_add_fingerprint(buf)
         return ''.join(buf)
@@ -313,6 +334,9 @@ class APPfunc():
     def __init__(self,uid):
         self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
+        self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
+        self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
+        self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,60)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPINTVL,120)
@@ -353,21 +377,33 @@ class APPfunc():
         if self.write_sock():
             appreconn.put_nowait(self.uid)
             return
+        n = 5
         while 1:
             try:
                 data = self.sock.recv(SOCK_BUFSIZE)
             except IOError:
-                qdict.err.put('sock %d, recv occur error' % self.fileno)
-                break
+                if n:
+                    n -=1
+                    gevent.sleep(0.1)
+                    continue
+                else:
+                    qdict.err.put('sock %d, recv IOerror' % self.fileno)
+                    break
             if not data:
                 qdict.err.put('sock %d, recv not data' % self.fileno)
-                break
+                if n:
+                    n -=1
+                    gevent.sleep(0.1)
+                    continue
+                else:
+                    break
+            n = 5 # 重度读取5次
             self.recv += binascii.b2a_hex(data)
             del data
             if self.process_handle_first():
                 break
             gevent.sleep(0)
-        qdict.err.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
+        #qdict.err.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
         self.sock.close()
         appreconn.put_nowait(self.uid)
 
@@ -388,7 +424,7 @@ class APPfunc():
             [self.process_loop(n) for n in  mulist]
             del mulist[:]
             del mulist
-            gevent.sleep(0.1)
+            #gevent.sleep(0.1)
         else: # 找到一个标识，还不知在什么位置
             pos = self.recv.index(HEAD_MAGIC)
             self.recv = self.recv[pos:]
@@ -458,6 +494,7 @@ class APPfunc():
         hattr.method = stun_get_type(hattr.method)
         p  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-8]) # 去头去尾
         if p is None:
+            print "appfunc parser_stun_package is None",rbuf
             return False
         rdict = p[0]
         del p
@@ -530,6 +567,7 @@ class APPfunc():
         if self.sbuf:
             try:
                 nbyte = self.sock.send(unhexlify(self.sbuf))
+                #gevent.sleep(0.01)
                 #qdict.state.put(','.join(['sock','%d'%sock.fileno(),'send: %d' % nbyte]))
                 #print ''.join(buf)
             except IOError:
@@ -608,6 +646,7 @@ class APPfunc():
         buf[3] = '%08x' % self.srcsock
         buf[4] = '%08x' % self.dstsock
         buf[-1] = sequence
+        #stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%d' % time.time()))
         stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%.05f' % time.time()))
         stun_add_fingerprint(buf)
         return ''.join(buf)
@@ -668,7 +707,15 @@ def loopconnect(obj,q):
                 qdict.err.put('app uid %s reconnection server' % p)
             gevent.joinall([gevent.spawn(obj,p)])
 
+def chunks(l,n):
+    for i in xrange(0,len(l),n):
+        yield l[i:i+n]
 
+def subprocess(func,l):
+    pool = Pool(len(l))
+    for uid in l:
+        pool.spawn(func,uid)
+    pool.join()
 
 def AppDemo(args):
     global host
@@ -676,15 +723,7 @@ def AppDemo(args):
     if not args.srv_host or not args.uuidfile:
         print make_argument_parser().parse_args(['-h'])
         exit(1)
-    """
-    name = 'AppDemo'
-    errlog = ErrLog(name)
-    statlog = StatLog(name)
-    errworker = threading.Thread(target=logger_worker,args=(qdict.err,errlog))
-    errworker.start()
-    statworker = threading.Thread(target=logger_worker,args=(qdict.stat,statlog))
-    statworker.start()
-    """
+
     l = args.srv_host.split(':')
     if len(l) == 1 or l[-1] == '':
         host = (args.srv_host,3478)
@@ -696,12 +735,18 @@ def AppDemo(args):
     bind = args.b_count if args.b_count < len(ulist) else len(ulist)
     tbuf = ulist
     bind = 1
-    ucount = len(ulist)
-    pool = Pool(len(ulist))
-    for uid in ulist:
-        pool.spawn(APPfunc,uid)
-        gevent.sleep(0)
-    pool.join()
+    usize = len(ulist)
+    """
+    psize  = multiprocessing.cpu_count()
+    if psize > 2:
+        subsize = usize / psize
+        sublist = chunks(ulist,subsize)
+        for sl in sublist:
+            multiprocessing.Process(target=subprocess,args=(APPfunc,sl)).start()
+    else:
+        subprocess(APPfunc,ulist)
+    """
+    subprocess(APPfunc,ulist)
     #pool.map(APPfunc,ulist)
     #gevent.joinall([gevent.spawn(APPfunc,host,uid) for uid in ulist])
 
@@ -710,16 +755,6 @@ def DevDemo(args):
     if not args.srv_host or not args.uuidfile:
         print make_argument_parser().parse_args(['-h'])
         exit(1)
-    """
-    name = 'DevDemo'
-    errlog = ErrLog(name)
-    statlog = StatLog(name)
-    errworker = threading.Thread(target=logger_worker,args=(qdict.err,errlog))
-    errworker.start()
-    statworker = threading.Thread(target=logger_worker,args=(qdict.stat,statlog))
-    statworker.start()
-    """
-    
 
     global host
     l = args.srv_host.split(':')
@@ -729,25 +764,25 @@ def DevDemo(args):
         host = (args.srv_host[:d],int(args.srv_host[d:]))
     devworker = threading.Thread(target=loopconnect,args=(DevicesFunc,devreconn))
     devworker.start()
-    uulist = read_uuid_file(args.uuidfile)
-    pool = Pool(len(uulist))
-    for uid in uulist:
-        pool.spawn(DevicesFunc,uid)
-        gevent.sleep(0)
-    pool.join()
+    ulist = read_uuid_file(args.uuidfile)
+    usize = len(ulist)
+    """
+    psize  = multiprocessing.cpu_count()
+    if psize > 2:
+        subsize = usize / psize
+        sublist = chunks(ulist,subsize)
+        for sl in sublist:
+            multiprocessing.Process(target=subprocess,args=(DevicesFunc,sl)).start()
+    else:
+        subprocess(DevicesFunc,ulist)
+    """
+    subprocess(DevicesFunc,ulist)
     #gevent.joinall([gevent.spawn(DevicesFunc,host,uid) for uid in uulist])
     
 
 class A:
     pass
-"""
-qdict.err = Queue()
-qdict.recv = Queue()
-qdict.send = Queue()
-qdict.confirm = Queue()
-qdict.retransmit = Queue()
-qdict.stat = Queue()
-"""
+
 appreconn = Queue()
 devreconn = Queue()
 global host
@@ -760,7 +795,8 @@ if __name__ == '__main__':
     qdict = A()
     logdict = A()
 
-    tt = ['err','state','recv','send','confirm','retransmit','lost']
+    #tt = ['err','state','recv','send','confirm','retransmit','lost']
+    tt = ['err','state']
     [setattr(qdict,k,Queue()) for k in tt]
     [setattr(logdict,k,StatLog('_'.join([name,k]))) for k in tt]
     tlist = [threading.Thread(target=logger_worker,args=(q,l)) for (q,l) in izip(qdict.__dict__.values(),logdict.__dict__.values())]

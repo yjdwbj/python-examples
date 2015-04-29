@@ -179,7 +179,7 @@ def stun_add_fingerprint(buf):
 def stun_init_command_str(msg_type,buf):
     buf.append("4a4c") # 魔数字
     buf.append("0001") # 版本号
-    buf.append("%04x" % 20) # 长度
+    buf.append("0014") # 长度
     buf.append("FFFFFFFF") # SRC
     buf.append("FFFFFFFF") # DST
     buf.append(msg_type) # CMD
@@ -276,15 +276,12 @@ def read_attributes_from_buf(response):
     elif attr_name == STUN_ATTRIBUTE_MESSAGE_ERROR_CODE:
         fmt = vfunc(response[4:8])
     elif attr_name == STUN_ATTRIBUTE_MUUID:
-        #n = int(response[4:8],16)
         fmt = vfunc(response[4:8])
         if fmt[-1] % UUID_SIZE:
-            #print 'uuid size is wrong',fmt[-1]
             return None # 不是UUID_SIZE的倍数，错误的格式
     elif attr_name == STUN_ATTRIBUTE_MRUUID:
         fmt = vfunc(response[4:8])
         if fmt[-1] % (UUID_SIZE+4):
-            #print 'uuid size is wrong',fmt[-1]
             return None # 不是UUID_SIZE的倍数，错误的格式
     else:
         #print 'unkown attr_name',attr_name
@@ -321,7 +318,7 @@ def parser_stun_package(buf):
         k = [v[0] for v in lst]
         v = [ v[2][:int(v[1],16)*2] for v in lst]
     except TypeError:
-        print "TypeError,buf",buf
+        #print "TypeError,buf",buf
         del k
         del v
         del lst

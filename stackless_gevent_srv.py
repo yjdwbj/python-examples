@@ -170,7 +170,7 @@ class EpollServer():
                 }
         #self.server = StreamServer(('0.0.0.0',3478),self.handle_new_accept,backlog = 8192)
         #self.server.serve_forever()
-        self.listener = _tcp_listener(('0.0.0.0',3478),8192,1)
+        self.listener = _tcp_listener(('0.0.0.0',3478),32768,1)
         #self.server = StreamServer(('0.0.0.0',3478),self.handle_new_accept,backlog=100000)
         #self.server.start()
         #for i in xrange(1):
@@ -243,30 +243,36 @@ class EpollServer():
         self.requests[fileno] =''
         hstr = str(addr)
         #recvqueue.put('new accept %s, sock %d' % (str(addr),fileno))
+        n = 5
         while 1:
             try:
                 recvbuf = nsock.recv(SOCK_BUFSIZE)
-                #recvqueue.put("%s,%d,recv data: %s" % (str(self.hosts[fileno]),fileno,hexlify(recvbuf)))
             except IOError:
                 self.errqueue[current_process().name].put('sock %d, IOError ,%s' % (fileno,hstr))
-                self.dealwith_peer_hup(fileno)
                 break
             except socket.error:
-                self.dealwith_peer_hup(fileno)
+                self.errqueue[current_process().name].put("%s socket.error,sock %d" % (hstr,fileno))
                 break
             else:
                 if not recvbuf:
-                    self.dealwith_peer_hup(fileno)
-                    break
+                    if n:
+                        n -= 1
+                        gevent.sleep(0.02)
+                        continue
+                    else:
+                        self.errqueue[current_process().name].put("%s no data,sock %d" % (hstr,fileno))
+                        break
+                n = 5 # 重试读取5次
                 hdata = hexlify(recvbuf)
                 del recvbuf
                 try:
                     self.requests[fileno] += hdata
                 except KeyError:
+                    self.errqueue[current_process().name].put("%s requests KeyError,sock %d" % (hstr,fileno))
                     break
                 self.process_handle_first(fileno)
-                #gevent.sleep(0) #让出CPU
-        self.errqueue[current_process().name].put("%s exit,sock %d" % (hstr,fileno))
+            gevent.sleep(0) #让出CPU
+        self.dealwith_peer_hup(fileno)
         """退出本线程"""
     
 
@@ -377,7 +383,7 @@ class EpollServer():
             [self.handle_requests_buf(n,fileno) for n in mulist]
             del mulist[:]
             del mulist
-            gevent.sleep(0.1)
+            #gevent.sleep(0.1)
         else: # 找到一个标识，还不知在什么位置
             pos = self.requests[fileno].index(HEAD_MAGIC)
             self.requests[fileno] = self.requests[fileno][pos:]
@@ -501,6 +507,7 @@ class EpollServer():
         hexpos = STUN_HEADER_LENGTH
         trip =  parser_stun_package(hbuf[hexpos:-8])
         if trip is None:
+            print "postfunc parser_stun_package is None buf: ",hbuf,res.__dict__,res.host
             res.eattr = STUN_ERROR_UNKNOWN_ATTR
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_ATTR,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             self.responses[res.fileno] = stun_error_response(res)
@@ -562,6 +569,7 @@ class EpollServer():
         trip = parser_stun_package(hbuf[hexpos:-8])
         if trip is None:
             #print "preauth hbuf is wrong",hbuf,self.hosts[res.fileno]
+            print "preauth parser_stun_package is None buf: ",hbuf,res.__dict__
             res.eattr = STUN_ERROR_UNKNOWN_ATTR
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_ATTR,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return
@@ -587,18 +595,23 @@ class EpollServer():
         try:
             pwd = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
             user = unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])
+            """disable select db """
+            """
             result = self.app_user_login(user,pwd)
             if not result:
                 res.eattr = STUN_ERROR_AUTH
                 return  stun_error_response(res)
+                """
         except KeyError:
            res.eattr = STUN_ERROR_AUTH
            return  stun_error_response(res)# APP端必须带用认证信息才能发起连接.
     
         self.appsock[res.fileno] = tcs = ComState()
-        tcs.name = result[0][0]
-        self.app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME],res.host)
-        self.statqueue[current_process().name].put('user %s login,socket is %d,host %s:%d' % (tcs.name,res.fileno,res.host[0],res.host[1]))
+        #tcs.name = result[0][0]
+        tcs.name = user
+        """disable select db """
+        #self.app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME],res.host)
+        #self.statqueue[current_process().name].put('user %s login,socket is %d,host %s:%d' % (tcs.name,res.fileno,res.host[0],res.host[1]))
         self.users[res.fileno] = user
         return app_user_auth_success(res)
 
@@ -628,17 +641,20 @@ class EpollServer():
     
         res.vendor = huid[32:40]
         res.tuid = huid[:32]
-        self.update_newdevice(res)
+        """disable select db """
+        #self.update_newdevice(res)
         #self.actives[res.fileno] = huid
         self.devsock[res.fileno] = tcs = ComState()
         self.devuuid[huid] = res.fileno
         tcs.uuid = huid
         #print "login devid is",tcs.uuid
-        self.statqueue[current_process().name].put('device login uuid is %s,socket is %d, host %s:%d' % (huid,res.fileno,res.host[0],res.host[1]))
+        #self.statqueue[current_process().name].put('device login uuid is %s,socket is %d, host %s:%d' % (huid,res.fileno,res.host[0],res.host[1]))
         del huid
         return device_login_sucess(res)
 
     def handle_chkuser_request(self,res):
+        """disable select db """
+        return check_user_sucess(res)
         f = check_user_in_database(res.attrs[STUN_ATTRIBUTE_USERNAME])
         if f != 0:
             #self.errqueue[current_process().name].put("User Exist %s" % res.attrs[STUN_ATTRIBUTE_USERNAME])
@@ -648,6 +664,8 @@ class EpollServer():
             return check_user_sucess(res)
 
     def handle_register_request(self,res):
+        """disable select db """
+        return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME])
         if self.app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]):
             # 用户名已经存了。
             #self.errqueue[current_process().name].put("User has Exist! %s" % res.attrs[STUN_ATTRIBUTE_USERNAME])
@@ -701,7 +719,8 @@ class EpollServer():
                 self.errqueue[current_process().name].put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(str(sys._getframe().f_lineno))]))
                 return stun_error_response(res)
             self.bind_each_uuid((res.attrs[STUN_ATTRIBUTE_UUID],res.fileno))
-            self.handle_add_bind_to_user(res)
+            """disable select db """
+            #self.handle_add_bind_to_user(res)
 #        elif res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
 #            mlist =  split_muuid(res.attrs[STUN_ATTRIBUTE_MUUID])
 #            p = mcore_handle(check_jluuid,mlist)
@@ -760,6 +779,7 @@ class EpollServer():
     
     def dealwith_peer_hup(self,fileno):
         self.delete_fileno(fileno)
+        """disable select db"""
         self.dealwith_sock_close_update_db(fileno)
         self.dealwith_sock_close_update_binds(fileno)
         self.remove_fileno_resources(fileno)
@@ -801,12 +821,15 @@ class EpollServer():
             name = self.appsock[fileno].name
             del self.appsock[fileno]
             #self.statqueue[current_process().name].put('app %s logout info dev,self fileno %d' % (name,fileno))
-            self.app_user_logout(name)
+            """disable select db """
+            #self.app_user_logout(name)
             del name
         except KeyError:
             pass
         else:
             return
+        """disable select db """
+        return
 
         try:
             self.mirco_devices_logout(self.devsock[fileno].uuid)
