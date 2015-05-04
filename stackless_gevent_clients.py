@@ -35,6 +35,8 @@ monkey.patch_socket(dns=False,aggressive=False)
 monkey.patch_time()
 monkey.patch_os()
 monkey.patch_thread()
+monkey.patch_ssl()
+#monkey.patch_all(socket=True,dns=False,time=True,select=False,thread=True,os=True,ssl=False,httplib=False,subprocess=False,aggressive=True)
 import threading
 
 def logger_worker(queue,logger):
@@ -56,7 +58,7 @@ class DevicesFunc():
     def __init__(self,uid):
         self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
-        self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
+        #self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
@@ -136,7 +138,7 @@ class DevicesFunc():
         plen = len(self.recv)
         if l > 1:
             #qdict.err.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
-            qdict.state.put("sock %d,recv multi buf,len %d, buf: %s" % (self.fileno,plen,self.recv))
+            #qdict.state.put("sock %d,recv multi buf,len %d, buf: %s" % (self.fileno,plen,self.recv))
             #hbuf = hbuf[l:] # 从找到标识头开始处理
             mulist = split_requests_buf(self.recv)
             pos = sum([len(v) for v in mulist])
@@ -334,7 +336,7 @@ class APPfunc():
     def __init__(self,uid):
         self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
-        self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
+        #self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_QUICKACK,1)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         self.sock.setsockopt(socket.SOL_TCP,socket.TCP_KEEPCNT,10)
@@ -416,7 +418,7 @@ class APPfunc():
         plen = len(self.recv)
         if l > 1:
             #qdict.err.put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
-            qdict.state.put("sock %d,recv multi buf,len %d, buf: %s" % (self.fileno,plen,self.recv))
+            #qdict.state.put("sock %d,recv multi buf,len %d, buf: %s" % (self.fileno,plen,self.recv))
             #hbuf = hbuf[l:] # 从找到标识头开始处理
             mulist = split_requests_buf(self.recv)
             pos = sum([len(v) for v in mulist])
@@ -505,7 +507,7 @@ class APPfunc():
             #if len(self.ulist) > 1:
             #    self.sbuf = stun_bind_uuids(''.join(self.ulist))
             #else:
-            qdict.state.put('sock %d,uname %s login' % (self.fileno,self.user))
+            #qdict.state.put('sock %d,uname %s login' % (self.fileno,self.user))
             self.sbuf= self.stun_bind_single_uuid()
         elif hattr.method == STUN_METHOD_REGISTER:
             self.sbuf = self.stun_login_request()

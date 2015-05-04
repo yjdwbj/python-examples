@@ -374,7 +374,7 @@ class EpollServer():
         plen = len(self.requests[fileno])
         if l > 1:
             #self.errqueue[current_process().name].put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
-            self.statqueue[current_process().name].put("sock %d,recv multi buf,len %d, buf: %s" % (fileno,plen,self.requests[fileno]))
+            #self.statqueue[current_process().name].put("sock %d,recv multi buf,len %d, buf: %s" % (fileno,plen,self.requests[fileno]))
             self.maxbuffer = str(plen)
             #hbuf = hbuf[l:] # 从找到标识头开始处理
             mulist = split_requests_buf(self.requests[fileno])
@@ -747,7 +747,7 @@ class EpollServer():
         fileno = pair[0]
         dstsock = pair[1]
         self.responses[fileno] =  notify_peer(''.join(['%08x' % dstsock,STUN_OFFLINE]))
-        self.statqueue[current_process().name].put('socket %d logout send info to socket %d' % (dstsock,fileno))
+        #self.statqueue[current_process().name].put('socket %d logout send info to socket %d' % (dstsock,fileno))
         try:
             self.write_to_sock(fileno)
         except IOError:
@@ -759,7 +759,7 @@ class EpollServer():
     def clean_timeout_sock(self,fileno): # 清除超时的连接
         if self.timer.has_key(fileno):
             if self.timer[fileno] < time.time():
-                self.statqueue[current_process().name].put("Client %d life time is end,close it" % fileno )
+                #self.statqueue[current_process().name].put("Client %d life time is end,close it" % fileno )
                 self.dealwith_peer_hup(fileno)
     
     def mirco_devices_logout(self,devid):

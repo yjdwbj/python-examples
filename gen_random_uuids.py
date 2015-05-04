@@ -1,5 +1,5 @@
-#!/opt/pypy-2.5.0-src/pypy-c
-#coding=utf-8
+#!/opt/stackless-279/bin/python
+#-*- coding=utf-8 -*-
 import binascii
 import random
 import struct
@@ -71,6 +71,6 @@ if __name__ == '__main__':
       uid = gen_random_jluuid(vendor)
       pickle.dump(uid,uuidfd)
     
-    print u'文件保存到:',''.join([os.path.abspath('.'),os.path.sep ,fname,'.bin'])
+    #print u'文件保存到:',''.join([os.path.abspath('.'),os.path.sep ,fname,'.bin'])
     uuidfd.close()
 
