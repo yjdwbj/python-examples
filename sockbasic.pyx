@@ -120,12 +120,15 @@ def get_packet_head_dict(buf):
     return dict(zip(STUN_HEAD_KEY,get_packet_head_list(buf)))
 
 def get_packet_head_class(buf): # 把包头解析成可以识的类属性
-    if len(buf) != STUN_HEADER_LENGTH:
+    #if len(buf) != STUN_HEADER_LENGTH:
+    #    return None
+    hlist = filter(None,get_packet_head_list(buf))
+    if len(hlist) != len(STUN_HEAD_CUTS):
         return None
-    d = dict(zip(STUN_HEAD_KEY,get_packet_head_list(buf)))
+    d = dict(zip(STUN_HEAD_KEY,hlist))
     cc = DictClass()
     for k in d.keys():
-        if k == 'srcsock' or k == 'dstsock':
+        if not cmp(k,'srcsock') or not cmp(k,'dstsock'):
             setattr(cc,k,int(d.get(k),16))
         else:
             setattr(cc,k,d.get(k))

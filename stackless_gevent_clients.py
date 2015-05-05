@@ -183,7 +183,7 @@ class DevicesFunc():
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
                 #qdict.recv.put("recv: %s,sock %d,recv from app number of hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],hbuf))
-                self.sbuf = self.send_data_to_app('02%s' % hattr.sequence[2:])
+                self.sbuf = self.send_data_to_app('02%s' % hattr.sequence[2:8])
                 #qdict.send.put("send: sock %d,send confirm packet to app;data: %s" % (self.fileno,self.sbuf))
             #下面是我方主动发数据
             elif hattr.sequence[:2] == '02':
@@ -459,7 +459,7 @@ class APPfunc():
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
                 #qdict.recv.put("recv: %s,sock %d,recv from  dev  number of  hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],rbuf))
-                self.sbuf = self.stun_send_data_to_devid('02%s' % hattr.sequence[2:])
+                self.sbuf = self.stun_send_data_to_devid('02%s' % hattr.sequence[2:8])
                 #qdict.send.put("send: sock %d,send confirm packet to dev,data %s" % (self.fileno,self.sbuf))
             elif hattr.sequence[:2] == '02':
                 n = int(hattr.sequence[2:],16)
