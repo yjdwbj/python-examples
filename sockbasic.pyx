@@ -38,6 +38,7 @@ STUN_METHOD_CHECK_USER='000e'
 STUN_METHOD_REGISTER='000f' # App 注册用户命令
 
 
+
 # RFC 6062 #
 STUN_ATTRIBUTE_MAPPED_ADDRESS='0001'
 STUN_ATTRIBUTE_CHANGE_REQUEST='0003'
@@ -96,8 +97,24 @@ STUN_OFFLINE='00000000'
 LOG_SIZE=536870912
 LOG_COUNT=128
 
-STUN_HEAD_CUTS=[4,8,12,20,28,32,40] # 固定长度的包头
-STUN_HEAD_KEY=['magic','version','length','srcsock','dstsock','method','sequence'] # 包头的格式的名称
+STUN_HEAD_CUTS=(4,8,12,20,28,32,40) # 固定长度的包头
+STUN_HEAD_KEY=('magic','version','length','srcsock','dstsock','method','sequence') # 包头的格式的名称
+mthlist=(STUN_METHOD_BINDING,\
+        STUN_METHOD_ALLOCATE,\
+        STUN_METHOD_REFRESH,\
+        STUN_METHOD_SEND,\
+        STUN_METHOD_DATA,\
+        STUN_METHOD_INFO,\
+        STUN_METHOD_CHANNEL_BIND,\
+        STUN_METHOD_MODIFY,\
+        STUN_METHOD_DELETE,\
+        STUN_METHOD_PULL,\
+        STUN_METHOD_CONNECT,\
+        STUN_METHOD_CONNECTION_BIND,\
+        STUN_METHOD_CONNECTION_ATTEMPT,\
+        STUN_METHOD_CHECK_USER,\
+        STUN_METHOD_REGISTER)
+
 __author__ = 'liuchunyang'
 
 class DictClass:
@@ -112,7 +129,8 @@ def stun_is_success_response_str(mth):
     return ((n & 0x1100) == 0x1000)
 
 def get_packet_head_list(buf):
-    return [buf[i:j] for i,j in zip([0]+STUN_HEAD_CUTS ,STUN_HEAD_CUTS+[None])]
+    tlist = list(STUN_HEAD_CUTS)
+    return [buf[i:j] for i,j in zip([0]+tlist,tlist+[None])]
 
 def get_packet_head_dict(buf):
     if len(buf) != STUN_HEADER_LENGTH:
@@ -123,16 +141,24 @@ def get_packet_head_class(buf): # 把包头解析成可以识的类属性
     #if len(buf) != STUN_HEADER_LENGTH:
     #    return None
     hlist = filter(None,get_packet_head_list(buf))
-    if len(hlist) != len(STUN_HEAD_CUTS):
+    if len(hlist) != len(STUN_HEAD_KEY):
         return None
     d = dict(zip(STUN_HEAD_KEY,hlist))
     cc = DictClass()
+    s= ('srcsock','dstsock')
     for k in d.keys():
-        if not cmp(k,'srcsock') or not cmp(k,'dstsock'):
+        if k in s:
             setattr(cc,k,int(d.get(k),16))
         else:
             setattr(cc,k,d.get(k))
-    return cc
+
+    if stun_get_type(cc.method) not in mthlist: #命令类形不能识别
+        return None
+    t = ('02','03')
+    if cc.sequence[:2] in t:
+        return cc
+    else:
+        return None
 
 def stun_make_success_response(method):
     #print "success response %04x" % ((stun_make_type(method) & 0xFEEF) | 0x0100)

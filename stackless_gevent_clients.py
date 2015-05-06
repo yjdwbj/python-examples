@@ -100,7 +100,6 @@ class DevicesFunc():
             devreconn.put_nowait(self.uid)
             return
 
-        n = 5
         while 1:
             try:
                 data = self.sock.recv(SOCK_BUFSIZE)
@@ -113,14 +112,8 @@ class DevicesFunc():
                     qdict.err.put('sock %d,recv occur erro' % self.fileno)
                     break
             if not data:
-                qdict.err.put('sock %d,recv not data' % self.fileno)
-                if n:
-                    n -=1
-                    gevent.sleep(0.1)
-                    continue
-                else:
-                    break
-            n = 5 # 重度读取5次
+                qdict.err.put('sock %d,recv not data ' % self.fileno)
+                break
             self.recv += hexlify(data)
             del data
             if self.process_handle_first():
@@ -170,7 +163,7 @@ class DevicesFunc():
 
         hattr = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH])
         if not hattr:
-            qdict.err.put('sock %d,recv wrong head' % self.fileno)
+            qdict.err.put('sock %d,recv wrong head,buf: %s' % (self.fileno,hbuf[:STUN_HEADER_LENGTH]))
             return False
     
         #retmethod = stun_get_type(hattr.method)
@@ -216,7 +209,7 @@ class DevicesFunc():
     
         if not stun_is_success_response_str(hattr.method):
                 qdict.err.put(','.join(['sock','%d' % self.fileno,'server error sbuf',\
-                        'method',hattr.method]))
+                        'method,',hattr.method,hbuf]))
                 return False
     
         hattr.method = stun_get_type(hattr.method)
@@ -325,6 +318,9 @@ class DevicesFunc():
         #stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%d' % time.time()))
         stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%.05f' % time.time()))
         stun_add_fingerprint(buf)
+        tlist = filter(None,buf)
+        if len(tlist) != 11:
+            print "some msg lost",buf
         return ''.join(buf)
 
 
@@ -379,7 +375,6 @@ class APPfunc():
         if self.write_sock():
             appreconn.put_nowait(self.uid)
             return
-        n = 5
         while 1:
             try:
                 data = self.sock.recv(SOCK_BUFSIZE)
@@ -393,13 +388,7 @@ class APPfunc():
                     break
             if not data:
                 qdict.err.put('sock %d, recv not data' % self.fileno)
-                if n:
-                    n -=1
-                    gevent.sleep(0.1)
-                    continue
-                else:
-                    break
-            n = 5 # 重度读取5次
+                break
             self.recv += binascii.b2a_hex(data)
             del data
             if self.process_handle_first():
@@ -449,7 +438,7 @@ class APPfunc():
     
         hattr = get_packet_head_class(rbuf[:STUN_HEADER_LENGTH])
         if not hattr:
-            qdict.err.put('sock %d,recv wrong head' % self.fileno)
+            qdict.err.put('sock %d,recv wrong head , %s' % (self.fileno,rbuf))
             return False
      
         if not cmp(stun_get_type(hattr.method),STUN_METHOD_DATA): # 小机回应
@@ -700,14 +689,14 @@ def loopconnect(obj,q):
         gevent.sleep(0.01)
         try:
             p = q.get_nowait()
-        except:
+        except Empty:
             continue
         else:
             if obj == DevicesFunc:
                 qdict.err.put('device uid %s reconnection server' % p)
             else:
                 qdict.err.put('app uid %s reconnection server' % p)
-            gevent.joinall([gevent.spawn(obj,p)])
+            gevent.spawn(obj,p)
 
 def chunks(l,n):
     for i in xrange(0,len(l),n):
