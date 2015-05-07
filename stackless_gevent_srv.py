@@ -63,84 +63,76 @@ def clean_dict(p):
         pass
 
 def notify_peer(state_info):
-    buf = []
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_INFO),buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_STATE,state_info)
-    stun_add_fingerprint(buf)
-    return buf
+    od = stun_init_command_head(stun_make_success_response(STUN_METHOD_INFO))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,state_info)
+    stun_add_fingerprint(od)
+    return get_list_from_od(od)
 
 def notify_app_bind_islogin(bindinfo):
-    buf = []
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_INFO),buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_RUUID,bindinfo)
-    stun_add_fingerprint(buf)
-    return buf
-
-def stun_connect_address(host,res):
-    buf = []
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_CONNECT),buf,)
-    mip = "0001%04x%08x" % (host[1]^ (STUN_MAGIC_COOKIE >> 16),
-            STUN_MAGIC_COOKIE ^ (int(hexlify(socket.inet_aton(host[0])),16)))
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS,mip)
-    if res.attrs.has_key(STUN_ATTRIBUTE_DATA): #转发小机的基本信息
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify(res.attrs[STUN_ATTRIBUTE_DATA]))
-    stun_add_fingerprint(buf)
-    del mip
-    return (buf)
+    od = stun_init_command_head(stun_make_success_response(STUN_METHOD_INFO))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_RUUID,bindinfo)
+    stun_add_fingerprint(od)
+    return get_list_from_od(od)
 
 def register_success(uname):
     buf = []
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,uname)
-    stun_add_fingerprint(buf)
-    return buf
+    #stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf)
+    od = stun_init_command_head(stun_make_success_response(STUN_METHOD_REGISTER))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,uname)
+    stun_add_fingerprint(od)
+    return get_list_from_od(od)
 
 
 def check_user_sucess(res):
-    buf = []
-    stun_init_command_str(stun_make_success_response(res.method),buf,)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,hexlify(res.attrs[STUN_ATTRIBUTE_USERNAME]))
-    stun_add_fingerprint(buf)
-    return (buf)
+    #stun_init_command_str(stun_make_success_response(res.method),buf,)
+    od = stun_init_command_head(stun_make_success_response(res.method))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,hexlify(res.attrs[STUN_ATTRIBUTE_USERNAME]))
+    stun_add_fingerprint(od)
+    return get_list_from_od(od)
 
 def app_user_auth_success(res):
-    buf = []
-    stun_init_command_str(stun_make_success_response(res.method),buf)
+    #stun_init_command_str(stun_make_success_response(res.method),buf)
+    od= stun_init_command_head(stun_make_success_response(res.method))
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,res.attrs[STUN_ATTRIBUTE_USERNAME])
-    stun_add_fingerprint(buf)
-    return (buf)
+    stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,res.attrs[STUN_ATTRIBUTE_USERNAME])
+    stun_add_fingerprint(od)
+    return get_list_from_od(od)
 
 def device_login_sucess(res): # 客服端向服务器绑定自己的IP
     buf = []
-    stun_init_command_str(stun_make_success_response(res.method),buf)
+    #stun_init_command_str(stun_make_success_response(res.method),buf)
+    od = stun_init_command_head(stun_make_success_response(res.method))
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
-    stun_add_fingerprint(buf)
-    return (buf)
+    stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
+    stun_add_fingerprint(od)
+    lst = get_list_from_od(od)
+    return lst
 
 def app_user_pull_table(res,data):
     buf = []
-    stun_init_command_str(stun_make_success_response(res.method),buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,data)
-    stun_add_fingerprint(buf)
-    return buf
+    #stun_init_command_str(stun_make_success_response(res.method),buf)
+    od = stun_init_command_head(stun_make_success_response(res.method))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,data)
+    stun_add_fingerprint(od)
+    return get_list_from_od(od)
 
 def refresh_sucess(ntime): # 刷新成功
     buf = []
-    stun_init_command_str(stun_make_success_response(STUN_METHOD_REFRESH),buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,ntime)
-    stun_add_fingerprint(buf)
-    return (buf)
+    #stun_init_command_str(stun_make_success_response(STUN_METHOD_REFRESH),buf)
+    od = stun_init_command_head(stun_make_success_response(STUN_METHOD_REFRESH))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,ntime)
+    stun_add_fingerprint(od)
+    return get_list_from_od(od)
 
 def stun_return_same_package(res):
     buf =[]
-    stun_init_command_str(stun_make_success_response(res.method),buf)
-    t = sum([(buf.extend(v),len(v[-1])+8)[1] for v in res.reqlst])
-    buf[2] = "%04x" % (t/2 +20)
-    stun_add_fingerprint(buf)
-    return (buf)
+    #stun_init_command_str(stun_make_success_response(res.method),buf)
+    od = stun_init_command_head(stun_make_success_response(res.method))
+    t = sum([(od['lst'].extend(v),len(v[-1])+8)[1] for v in res.reqlst])
+    od['length']="%04x" % (t/2 +20)
+    stun_add_fingerprint(od)
+    return get_list_from_od(od)
 
 
 
@@ -401,6 +393,7 @@ class EpollServer():
             return 
         res = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH])
         if not res:
+            self.errqueue[current_process().name].put('get jl head error',hbuf)
             return
         res.eattr = STUN_ERROR_NONE
         try:
@@ -411,6 +404,9 @@ class EpollServer():
                 res.__dict__.pop(n,None)
             return 
 
+        print hbuf
+        print res
+        print res.__dict__
         res.fileno=fileno
         #通过认证的socket 直接转发了
         try:
@@ -421,7 +417,7 @@ class EpollServer():
             if res.method == STUN_METHOD_REFRESH: # 刷新就可以步过了
                 for n in STUN_HEAD_KEY:
                     res.__dict__.pop(n,None)
-                    res.__dict__.pop('fileno',None)
+                res.__dict__.pop('fileno',None)
                 return
             elif res.method == STUN_METHOD_SEND: 
                 if check_dst_and_src(res):
@@ -444,7 +440,7 @@ class EpollServer():
             res.__dict__.pop('attrs',None)
             for n in STUN_HEAD_KEY:
                 res.__dict__.pop(n,None)
-                res.__dict__.pop('fileno',None)
+            res.__dict__.pop('fileno',None)
             del res
             return # 一切正常返回
 
@@ -458,7 +454,7 @@ class EpollServer():
             if res.method == STUN_METHOD_REFRESH:
                 for n in STUN_HEAD_KEY:
                     res.__dict__.pop(n,None)
-                    res.__dict__.pop('fileno',None)
+                res.__dict__.pop('fileno',None)
                 return
             elif res.method == STUN_METHOD_DATA:
                 if check_dst_and_src(res):
@@ -547,7 +543,6 @@ class EpollServer():
             self.write_to_sock(res.fileno)
 
     def handle_client_request_preauth(self,res,hbuf): # pair[0] == hbuf, pair[1] == fileno
-
         if check_packet_crc32(hbuf):
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_PACKET,'sock %d,buf %s' % (res.fileno,hbuf),str(sys._getframe().f_lineno)]))
             self.delete_fileno(res.fileno)
@@ -919,15 +914,17 @@ class EpollServer():
         绑定成功，回复APP
         """
         buf = []
-        stun_init_command_str(stun_make_success_response(res.method),buf)
+        #stun_init_command_str(stun_make_success_response(res.method),buf)
+        od = stun_init_command_head(stun_make_success_response(res.method))
         if res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
             joint = [''.join([k,'%08x' % self.appbinds[res.fileno][k]]) for k in self.appbinds[res.fileno].keys()]
-            stun_attr_append_str(buf,STUN_ATTRIBUTE_MRUUID,''.join(joint))
+            stun_attr_append_str(od,STUN_ATTRIBUTE_MRUUID,''.join(joint))
         else:
             jluid = res.attrs[STUN_ATTRIBUTE_UUID]
-            stun_attr_append_str(buf,STUN_ATTRIBUTE_RUUID,\
+            stun_attr_append_str(od,STUN_ATTRIBUTE_RUUID,\
                      ''.join([jluid,'%08x' %self.appbinds[res.fileno][jluid]]))
-        stun_add_fingerprint(buf)
+        stun_add_fingerprint(od)
+        return (get_list_from_od(od))
         return (buf)
 
     def noify_app_uuid_just_login(self,appsock,uuidstr,devsock):

@@ -5,6 +5,8 @@ import uuid
 import time
 import logging
 from logging import handlers
+from itertools import *
+from collections import OrderedDict
 from multiprocessing  import Pool,Queue
 from multiprocessing.queues import Empty
 from select import epoll,EPOLLET,EPOLLIN,EPOLLOUT,EPOLLHUP,EPOLLERR
@@ -132,14 +134,7 @@ def get_packet_head_list(buf):
     tlist = list(STUN_HEAD_CUTS)
     return [buf[i:j] for i,j in zip([0]+tlist,tlist+[None])]
 
-def get_packet_head_dict(buf):
-    if len(buf) != STUN_HEADER_LENGTH:
-        return None
-    return dict(zip(STUN_HEAD_KEY,get_packet_head_list(buf)))
-
 def get_packet_head_class(buf): # 把包头解析成可以识的类属性
-    #if len(buf) != STUN_HEADER_LENGTH:
-    #    return None
     hlist = filter(None,get_packet_head_list(buf))
     if len(hlist) != len(STUN_HEAD_KEY):
         return None
@@ -155,10 +150,17 @@ def get_packet_head_class(buf): # 把包头解析成可以识的类属性
     if stun_get_type(cc.method) not in mthlist: #命令类形不能识别
         return None
     t = ('02','03')
-    if cc.sequence[:2] in t:
-        return cc
+    m = (STUN_METHOD_SEND,STUN_METHOD_DATA)
+    if cc.method in m:
+        if cc.sequence[:2] in t:
+            return cc
+        else:
+            return None
     else:
-        return None
+        if cmp(cc.sequence,'00000000'):
+            return None
+        else:
+            return cc
 
 def stun_make_success_response(method):
     #print "success response %04x" % ((stun_make_type(method) & 0xFEEF) | 0x0100)
@@ -179,31 +181,66 @@ def stun_get_type(method):
     t = (tt & 0x00FF)| ((tt & 0x0E00) >> 1)|((tt & 0xEE00)>>2)
     return '%04x' % t
 
-def stun_attr_append_str(buf,attr,add_value):
+def stun_attr_append_str(od,attr,add_value):
     #buf[1] = "%04x" % (len(''.join(buf)) / 2 - STUN_HEADER_LENGTH)
     # 属性名，属性长度，属性值
-    buf.append(attr)
+    #buf.append(attr)
+    od['lst'].append(attr) 
     alen = len(add_value) / 2
-    buf.append("%04x" % alen)
-    buf.append(add_value)
+    od['lst'].append("%04x" % alen)
+    tb = add_value
     # 4Byte 对齐
     rem4 = (alen & 0x0003)& 0xf
     if rem4:
         rem4 = alen+4-rem4
     while (rem4 -alen) > 0:
-        buf[-1] += '00'
+        tb += '00'
         rem4 -= 1
-    buf[2] ="%04x" % (len(''.join(buf)) / 2 )
+    od['lst'].append(tb)
+    #buf[2] ="%04x" % (len(''.join(buf)) / 2 )
 
-def stun_add_fingerprint(buf):
+def get_list_from_od(od):
+    lst = chain(od.values()[:-1],od['lst'])
+    for n in STUN_HEAD_KEY:
+        od.pop(n,None)
+    od.pop('lst',None)
+    del od
+    return lst
+
+def stun_add_fingerprint(od):
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
-    buf.append('00000000')
-    buf[2] = '%04x' % (int(buf[2],16)+4)
-    crc_str = ''.join(buf[:-1])
+    #buf.append('00000000')
+    #buf[2] = '%04x' % (int(buf[2],16)+4)
+    od['length'] = '%04x' %  (len(''.join(chain(od.values()[:-1],od['lst'])))+4) # 4Byte crc32
+    crc_str = ''.join(chain(od.values()[:-1],od['lst']))
     crcval = get_crc32(crc_str)
+    del crc_str
     crcstr = "%08x" % ((crcval  ^ CRCMASK) & 0xFFFFFFFF)
-    buf[-1] = crcstr.replace('-','')
+    #buf[-1] = crcstr.replace('-','')
+    od['lst'].append(crcstr.replace('-',''))
 
+
+def stun_init_command_head(msg_type):
+    d = OrderedDict()
+    d['magic'] = '4a4c'
+    d['version'] = '0001'
+    d['length']='0014'
+    d['srcsock']='FFFFFFFF'
+    d['dstsock']='FFFFFFFF'
+    d['method'] = msg_type
+    d['sequence'] = '00000000'
+    d['lst'] = []
+#    setattr(d,'magic','4a4c')
+#    setattr(d,'version','0001')
+#    setattr(d,'length','0014')
+#    setattr(d,'srcsock','FFFFFFFF')
+#    setattr(d,'dstsock','FFFFFFFF')
+#    setattr(d,'method',msg_type)
+#    setattr(d,'sequence','00000000')
+#    setattr(d,'lst',[])
+#    #setattr(d,'crc32','0')
+    return d
+    
 
 def stun_init_command_str(msg_type,buf):
     buf.append("4a4c") # 魔数字
@@ -228,10 +265,11 @@ def check_packet_vaild(buf):
 
 def stun_error_response(res):
     buf = []
-    stun_init_command_str(stun_make_error_response(res.method),buf)
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,res.eattr)
-    stun_add_fingerprint(buf)
-    return buf
+    #stun_init_command_str(stun_make_error_response(res.method),buf)
+    od = stun_init_command_head(stun_make_error_response(res.method))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,res.eattr)
+    stun_add_fingerprint(od)
+    return get_list_from_od(od)
 
 def get_jluuid_crc32(uhex):
     ucrc = get_crc32(uhex)
@@ -274,7 +312,8 @@ def split_jl_head(hbuf,fileno):
 def split_requests_buf(hbuf):
     nset = set([''.join([HEAD_MAGIC,n]) for n in hbuf.split(HEAD_MAGIC) if n])
     nlist = list(nset)
-    chl = int(nlist[-1][8:12],16)
+    del nset
+    chl = int(nlist[-1][8:12],16) # 检查最后一个是否是完整的。
     if len(nlist[-1]) != (chl * 2):
         return nlist[:-1]
     return nlist
@@ -405,12 +444,13 @@ def gen_random_jluuid(vendor):
 
 def stun_struct_refresh_request():
     buf = []
-    stun_init_command_str(STUN_METHOD_REFRESH,buf)
+    #stun_init_command_str(STUN_METHOD_REFRESH,buf)
+    od = stun_init_command_head(STUN_METHOD_REFRESH)
     filed = "%08x" % UCLIENT_SESSION_LIFETIME
-    stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
+    stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,filed)
     del filed
-    stun_add_fingerprint(buf)
-    return buf
+    stun_add_fingerprint(od)
+    return get_list_from_od(od)
 
 def logger_worker(queue,logger):
     while 1:

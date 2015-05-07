@@ -73,19 +73,24 @@ class TestEpollSrv(unittest.TestCase):
         buf="4a4c0001057b00000662000702006bd300130010313433303732303435392e31353930348a9dfa64"
         buf="4a4c0001191000070200071a00130010313433303832343439352e34363634377785f98d"
         buf="4a4c0001004cffffffffffffffff100f0000000000060030613038336336346261663032343565356135396564653935626565656164313230303030303030303431306330363838dcc0c407"
-        buf="4a4c00018a0c00070200032600130010313433303931303839352e353039343784e9049a"
+        buf="4a4c0001004cffffffffffffffff100f0000000000060030663532336565646562626662343633613964356165613832333162343965656330303030303030303363626664653665120b3135"
 
-        lst = get_packet_head_list(buf[:STUN_HEADER_LENGTH])
-        print lst
-        tlist = filter(None,lst)
-        print tlist
+        buf="4a4c00010ec100070200043a00130010313433303937373638312e3236323237c7b6b352"
+        buf="4a4c00010024000090e6000002171008000000008003000800000217000000004caaf00d"
+        buf="4a4c000100dcFFFFFFFFFFFFFFFF000f000000000006003039326132346535616563393234643365616136363764323438636565383230663030303030303030326366363335356500080020fc7bfe99034e16830ca83dedc082fd35e980e4bbd4ba5dc8a2186ce2ec2beaeb1080b4a6"
         attr = get_packet_head_class(buf[:STUN_HEADER_LENGTH])
-        print attr.__dict__
-        f= parser_stun_package(buf)
-        if f:
-            print f.__dict__
-        else:
-            print f
+        if attr:
+            print attr.__dict__
+
+        a = parser_stun_package(buf[STUN_HEADER_LENGTH:-8])
+        if a:
+            print a[0]
+            print a[1]
+
+        icmd = stun_init_command_head(STUN_METHOD_ALLOCATE)
+        print icmd.values()
+        for k,v in icmd.items():
+            print v
 
 
 

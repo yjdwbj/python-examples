@@ -18,6 +18,7 @@ import argparse
 import errno
 import pickle
 from itertools import *
+from collections import OrderedDict
 from binascii import unhexlify,hexlify
 from datetime import datetime
 import hashlib
@@ -299,29 +300,40 @@ class DevicesFunc():
         return False
 
     def device_struct_allocate(self):
-        buf = []
-        stun_init_command_str(STUN_METHOD_ALLOCATE,buf)
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,self.uid)
+        #buf = []
+        #stun_init_command_str(STUN_METHOD_ALLOCATE,buf)
+        od = stun_init_command_head(STUN_METHOD_ALLOCATE)
+        stun_attr_append_str(od,STUN_ATTRIBUTE_UUID,self.uid)
         filed = "%08x" % UCLIENT_SESSION_LIFETIME
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('testdata'))
-        stun_add_fingerprint(buf)
-        return ''.join(buf)
+        stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,filed)
+        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify('testdata'))
+        stun_add_fingerprint(od)
+        return ''.join(get_list_from_od(od))
     
     
     def send_data_to_app(self,sequence):
-        buf = []
-        stun_init_command_str(STUN_METHOD_DATA,buf)
-        buf[3] = '%08x' % self.srcsock
-        buf[4] = '%08x' % self.dstsock
-        buf[-1] = sequence
+        #stun_init_command_str(STUN_METHOD_DATA,buf)
+        od = stun_init_command_head(STUN_METHOD_DATA)
+        #buf[3] = '%08x' % self.srcsock
+        #buf[4] = '%08x' % self.dstsock
+        #buf[-1] = sequence
+        od['srcsock']= '%08x' % self.srcsock
+        od['dstsock']='%08x' % self.dstsock
+        od['sequence']=sequence
         #stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%d' % time.time()))
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%.05f' % time.time()))
-        stun_add_fingerprint(buf)
-        tlist = filter(None,buf)
+        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify('%.05f' % time.time()))
+        stun_add_fingerprint(od)
+        lst = ''.join(get_list_from_od(od))
+        tlist = filter(None,lst)
         if len(tlist) != 11:
-            print "some msg lost",buf
-        return ''.join(buf)
+            print "some msg lost",lst
+        b = ''.join(lst)
+        del lst[:]
+        del lst
+        n = int(b[8:12],16)
+        if n != len(b) * 2:
+            print "len is wrong some msg lost",b
+        return b
 
 
 
@@ -390,6 +402,7 @@ class APPfunc():
                 qdict.err.put('sock %d, recv not data' % self.fileno)
                 break
             self.recv += binascii.b2a_hex(data)
+            print "app recv",self.recv
             del data
             if self.process_handle_first():
                 break
@@ -535,7 +548,12 @@ class APPfunc():
                 #qdict.send.put('sock %d,start send packet to dev %d;buf: %s' % (self.fileno,self.dstsock,self.sbuf))
                 self.add_queue.put(0) 
             except KeyError:
-                qdict.err.put('sock %d,recv server info not RUUID ,buf %s' % (self.fileno,rbuf))
+                self.dstsock = int(rdict[STUN_ATTRIBUTE_STATE][:8],16)  # 这里是对应的sock的下线了
+                qdict.err.put('sock %d,recv server info not RUUID,may be dev logout ,buf %s' % (self.fileno,rbuf))
+                if self.dstsock:
+                    self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
+                else:
+                    return False
      
      
         elif hattr.method == STUN_METHOD_PULL:
@@ -555,6 +573,7 @@ class APPfunc():
     
     
     def write_sock(self):
+        print "send",self.sbuf
         if self.sbuf:
             try:
                 nbyte = self.sock.send(unhexlify(self.sbuf))
@@ -598,49 +617,56 @@ class APPfunc():
 
 
     def stun_bind_single_uuid(self):
-        buf = []
-        stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_UUID,self.uid.lower())
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,self.uid.lower())
-        stun_add_fingerprint(buf)
-        return ''.join(buf)
+        #buf = []
+        #stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
+        od = stun_init_command_head(STUN_METHOD_CHANNEL_BIND)
+        stun_attr_append_str(od,STUN_ATTRIBUTE_UUID,self.uid.lower())
+        stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,self.uid.lower())
+        stun_add_fingerprint(od)
+        return ''.join(get_list_from_od(od))
     
     def stun_register_request(self):
-        buf = []
-        stun_init_command_str(STUN_METHOD_REGISTER,buf)
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,hexlify(self.user))
+        #buf = []
+        #stun_init_command_str(STUN_METHOD_REGISTER,buf)
+        od = stun_init_command_head(STUN_METHOD_REGISTER)
+        stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,hexlify(self.user))
         nmac = hashlib.sha256()
         nmac.update(self.pwd)
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,nmac.hexdigest())
-        stun_add_fingerprint(buf)
-        return ''.join(buf)
+        stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,nmac.hexdigest())
+        stun_add_fingerprint(od)
+        return ''.join(get_list_from_od(od))
     
     def stun_login_request(self):
-        buf = []
-        stun_init_command_str(STUN_METHOD_BINDING,buf)
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_USERNAME,hexlify(self.user))
+        #buf = []
+        #stun_init_command_str(STUN_METHOD_BINDING,buf)
+        od = stun_init_command_head(STUN_METHOD_BINDING)
+        print od
+        stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,hexlify(self.user))
         obj = hashlib.sha256()
         obj.update(self.pwd)
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,obj.hexdigest())
+        stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,obj.hexdigest())
         #filed = "%08x" % UCLIENT_SESSION_LIFETIME
         filed = "%08x" % 30
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,filed)
+        stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,filed)
         del filed
-        stun_add_fingerprint(buf)
-        #print "login buf is",buf
-        return ''.join(buf)
+        stun_add_fingerprint(od)
+        return ''.join(get_list_from_od(od))
 
     
     def stun_send_data_to_devid(self,sequence):
-        buf = []
-        stun_init_command_str(STUN_METHOD_SEND,buf)
-        buf[3] = '%08x' % self.srcsock
-        buf[4] = '%08x' % self.dstsock
-        buf[-1] = sequence
+        #buf = []
+        #stun_init_command_str(STUN_METHOD_SEND,buf)
+        od = stun_init_command_head(STUN_METHOD_SEND)
+        od['srcsock']='%08x' % self.srcsock
+        od['dstsock']='%08x' % self.dstsock
+        #buf[3] = '%08x' % self.srcsock
+        #buf[4] = '%08x' % self.dstsock
+        od['sequence']= sequence
+        #buf[-1] = sequence
         #stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%d' % time.time()))
-        stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%.05f' % time.time()))
-        stun_add_fingerprint(buf)
-        return ''.join(buf)
+        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify('%.05f' % time.time()))
+        stun_add_fingerprint(od)
+        return ''.join(get_list_from_od(od))
 
     
 def make_argument_parser():
