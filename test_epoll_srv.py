@@ -77,20 +77,19 @@ class TestEpollSrv(unittest.TestCase):
 
         buf="4a4c00010ec100070200043a00130010313433303937373638312e3236323237c7b6b352"
         buf="4a4c00010024000090e6000002171008000000008003000800000217000000004caaf00d"
-        buf="4a4c000100dcFFFFFFFFFFFFFFFF000f000000000006003039326132346535616563393234643365616136363764323438636565383230663030303030303030326366363335356500080020fc7bfe99034e16830ca83dedc082fd35e980e4bbd4ba5dc8a2186ce2ec2beaeb1080b4a6"
+        buf="4a4c0001002400000f0d00000fdd1008000000008003000800000fdd00000000e4ece645"
+        buf="4a4c0001002c00001b1100001a1400070200000800130010313433313035333530382e3736303930746e20e9"
+        buf="4a4c000104d1000003d600060300035d00130010313433313037353437322e33303631317da21cad"
         attr = get_packet_head_class(buf[:STUN_HEADER_LENGTH])
         if attr:
             print attr.__dict__
 
         a = parser_stun_package(buf[STUN_HEADER_LENGTH:-8])
+        print a
         if a:
             print a[0]
             print a[1]
 
-        icmd = stun_init_command_head(STUN_METHOD_ALLOCATE)
-        print icmd.values()
-        for k,v in icmd.items():
-            print v
 
 
 

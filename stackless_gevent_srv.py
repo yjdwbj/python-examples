@@ -21,6 +21,8 @@ from datetime import datetime
 import hashlib
 import gc
 from sockbasic import *
+#from sockbasic import MySQLEngine as QueryDB
+from sockbasic import PostgresSQLEngine as QueryDB
 import threading
 import gevent
 from gevent.server import StreamServer,_tcp_listener
@@ -144,6 +146,8 @@ class EpollServer():
         """创建多个engine让它平均到多个进程上，性能问题要进一步调试"""
         self.maxbuffer = ''
         [setattr(self,x,{}) for x in store]
+        """取得厂商数量，避免每次去查询"""
+        
 
         self.prefunc= {
               STUN_METHOD_ALLOCATE:self.handle_allocate_request, # 小机登录方法
@@ -270,7 +274,7 @@ class EpollServer():
 
     def handle_modify_bind_item(self,res):
         btable = QueryDB.get_account_bind_table(self.users[res.fileno])
-        stmt = btable.update().values(pwd=res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]).\
+        stmt = btable.update().values(pwd=unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])).\
                 where(btable.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID])
         try:
             QueryDB.select(stmt)
@@ -393,7 +397,11 @@ class EpollServer():
             return 
         res = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH])
         if not res:
-            self.errqueue[current_process().name].put('get jl head error',hbuf)
+            if fileno in self.appsock:
+                self.errqueue[current_process().name].put('get jl head error,appsock ,sock %d,%s,buf %s' % (fileno,self.hosts[fileno],hbuf))
+            else:
+                self.errqueue[current_process().name].put('get jl head error,devsock,sock %d,%s,buf %s' % (fileno,self.hosts[fileno],hbuf))
+
             return
         res.eattr = STUN_ERROR_NONE
         try:
@@ -404,9 +412,6 @@ class EpollServer():
                 res.__dict__.pop(n,None)
             return 
 
-        print hbuf
-        print res
-        print res.__dict__
         res.fileno=fileno
         #通过认证的socket 直接转发了
         try:
@@ -533,13 +538,13 @@ class EpollServer():
             #self.epoll.modify(fileno,select.EPOLLOUT)
             #self.responses[fileno] = ''.join(stun_error_response(res))
             #tbuf = stun_error_response(res)
-            tbuf =  notify_peer(''.join(['%08x' % res.dstsock,STUN_OFFLINE]))
-            tbuf[3]='%08x' % res.srcsock
-            tbuf[4]='%08x' % res.dstsock
-            tbuf.pop()
-            tbuf[2] = '%04x' % (int(tbuf[2],16)-4)
-            stun_add_fingerprint(tbuf)
-            self.responses[res.fileno] = tbuf
+            state_info = ''.join(['%08x' % res.dstsock,STUN_OFFLINE])
+            od = stun_init_command_head(stun_make_success_response(STUN_METHOD_INFO))
+            stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,state_info)
+            od['srcsock'] = '%08x' % res.srcsock
+            od['dstsock'] = '%08x' % res.dstsock
+            stun_add_fingerprint(od)
+            self.responses[res.fileno] = get_list_from_od(od)
             self.write_to_sock(res.fileno)
 
     def handle_client_request_preauth(self,res,hbuf): # pair[0] == hbuf, pair[1] == fileno
@@ -590,13 +595,10 @@ class EpollServer():
         try:
             pwd = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
             user = unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])
-            """disable select db """
-            """
             result = self.app_user_login(user,pwd)
             if not result:
                 res.eattr = STUN_ERROR_AUTH
                 return  stun_error_response(res)
-                """
         except KeyError:
            res.eattr = STUN_ERROR_AUTH
            return  stun_error_response(res)# APP端必须带用认证信息才能发起连接.
@@ -605,7 +607,7 @@ class EpollServer():
         #tcs.name = result[0][0]
         tcs.name = user
         """disable select db """
-        #self.app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME],res.host)
+        self.app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME],res.host)
         #self.statqueue[current_process().name].put('user %s login,socket is %d,host %s:%d' % (tcs.name,res.fileno,res.host[0],res.host[1]))
         self.users[res.fileno] = user
         return app_user_auth_success(res)
@@ -636,9 +638,9 @@ class EpollServer():
     
         res.vendor = huid[32:40]
         res.tuid = huid[:32]
-        """disable select db """
-        #self.update_newdevice(res)
-        #self.actives[res.fileno] = huid
+
+        self.update_newdevice(res)
+
         self.devsock[res.fileno] = tcs = ComState()
         self.devuuid[huid] = res.fileno
         tcs.uuid = huid
@@ -649,7 +651,6 @@ class EpollServer():
 
     def handle_chkuser_request(self,res):
         """disable select db """
-        return check_user_sucess(res)
         f = check_user_in_database(res.attrs[STUN_ATTRIBUTE_USERNAME])
         if f != 0:
             #self.errqueue[current_process().name].put("User Exist %s" % res.attrs[STUN_ATTRIBUTE_USERNAME])
@@ -660,47 +661,42 @@ class EpollServer():
 
     def handle_register_request(self,res):
         """disable select db """
-        return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME])
         if self.app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]):
             # 用户名已经存了。
             #self.errqueue[current_process().name].put("User has Exist! %s" % res.attrs[STUN_ATTRIBUTE_USERNAME])
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
     
-        self.statqueue[current_process().name].put('register success %s' % res.attrs[STUN_ATTRIBUTE_USERNAME])
+        #self.statqueue[current_process().name].put('register success %s' % res.attrs[STUN_ATTRIBUTE_USERNAME])
         return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME])
 
     def handle_add_bind_to_user(self,res):
         """
-        绑定小机到用户表里
+        绑定小机到用户表里,
         """
-        table  = QueryDB.get_account_bind_table(self.users[res.fileno])
-        conn = QueryDB().get_dbconn()
-        try:
-            table.create(QueryDB().get_engine())
-        except ProgrammingError:
-            pass
+        btable  = QueryDB.get_account_bind_table(self.users[res.fileno])
         #添加新绑定的小机用户表下面
+        ins = ''
         try:
-            ins = table.insert().values(uuid=res.attrs[STUN_ATTRIBUTE_UUID],\
-                    pwd=res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY],reg_time=datetime.now())
+            ins = btable.insert().values(devid=res.attrs[STUN_ATTRIBUTE_UUID],\
+                    pwd=unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]),reg_time=time.strftime("%Y-%m-%d %H:%M:%S"))
         except KeyError:
             self.errqueue[current_process().name].put(','.join(['sock %d' % res.fileno,'no uuid attr to bind']))
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
             return 
         except TypeError:
-            p = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
+            #p = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
             return
 
         try:
-            conn.execute(ins)
+            QueryDB.select(ins)
         except IntegrityError:
-            stmt = table.update().values(reg_time = datetime.now()).where(table.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID])
-            conn.execute(stmt)
+            stmt = btable.update().values(reg_time = time.strftime("%Y-%m-%d %H:%M:%S")).where(btable.c.devid == res.attrs[STUN_ATTRIBUTE_UUID])
+            QueryDB.select(stmt)
         except ProgrammingError:
-            stmt = table.update().values(reg_time = datetime.now()).where(table.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID])
-            conn.execute(stmt)
-        conn.close()
+            stmt = btable.update().values(reg_time = time.strftime("%Y-%m-%d %H:%M:%S")).where(btable.c.devid == res.attrs[STUN_ATTRIBUTE_UUID])
+            QueryDB.select(stmt)
+        #conn.close()
 
     def handle_app_bind_device(self,res):
         """
@@ -715,7 +711,7 @@ class EpollServer():
                 return stun_error_response(res)
             self.bind_each_uuid((res.attrs[STUN_ATTRIBUTE_UUID],res.fileno))
             """disable select db """
-            #self.handle_add_bind_to_user(res)
+            self.handle_add_bind_to_user(res)
 #        elif res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
 #            mlist =  split_muuid(res.attrs[STUN_ATTRIBUTE_MUUID])
 #            p = mcore_handle(check_jluuid,mlist)
@@ -763,7 +759,7 @@ class EpollServer():
         mtable = QueryDB.get_devices_table(vendor)
         #ss = mtable.update().values(is_online=False).where(mtable.c.devid == hexlify(suid[0]))
         ss = mtable.update().values(is_online=False).where(mtable.c.devid == devid[:32])
-        vendor = None
+        del vendor
         try:
             QueryDB.select(ss)
         except IOError:
@@ -817,14 +813,14 @@ class EpollServer():
             del self.appsock[fileno]
             #self.statqueue[current_process().name].put('app %s logout info dev,self fileno %d' % (name,fileno))
             """disable select db """
-            #self.app_user_logout(name)
+            self.app_user_logout(name)
             del name
         except KeyError:
             pass
         else:
             return
         """disable select db """
-        return
+        #return
 
         try:
             self.mirco_devices_logout(self.devsock[fileno].uuid)
@@ -925,7 +921,6 @@ class EpollServer():
                      ''.join([jluid,'%08x' %self.appbinds[res.fileno][jluid]]))
         stun_add_fingerprint(od)
         return (get_list_from_od(od))
-        return (buf)
 
     def noify_app_uuid_just_login(self,appsock,uuidstr,devsock):
         self.responses[appsock] = notify_app_bind_islogin(''.join([uuidstr,'%08x' % devsock]))
@@ -951,7 +946,7 @@ class EpollServer():
         obj = hashlib.sha256()
         obj.update(uname)
         obj.update(pwd)
-        ins = account.insert().values(uname=uname,pwd=obj.digest(),is_active=True,reg_time=datetime.now())
+        ins = account.insert().values(uname=uname,pwd=obj.digest(),is_active=True,reg_time=time.strftime("%Y-%m-%d %H:%M:%S"))
         try:
             QueryDB.select(ins)
         except IntegrityError:
@@ -974,21 +969,17 @@ class EpollServer():
         """更新用户的状态,这里有优化表结构与流程的可能性"""
         uname = unhexlify(user)
         status_tables = QueryDB.get_account_status_table()
-        ipadr = int(hexlify(socket.inet_aton(host[0])),16) & 0xFFFFFFFF
-        ipprt = host[1] & 0xFFFF
         sss = ''
         try:
-            sss = status_tables.update().values(last_login_time = datetime.now(),chost=[ipadr,ipprt]).where(status_tables.c.uname == user)
+            sss = status_tables.update().values(last_login_time = time.strftime("%Y-%m-%d %H:%M:%S"),chost="%s:%d" %(host[0],host[1])).where(status_tables.c.uname == user)
         except DataError:
-            sss = status_tables.insert().values(uname=uname,is_login=True,chost=[ipadr,ipprt])
+            sss = status_tables.insert().values(uname=uname,is_login=True,chost="%s:%d" % (host[0],host[1]))
 
         try:
             QueryDB.select(sss)
         except DataError:
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,host[0],str(sys._getframe().f_lineno)]))
         del uname
-        del ipadr
-        del ipprt
         del sss
     
     
@@ -999,13 +990,15 @@ class EpollServer():
         obj.update(pwd)
         s = sql.select([account]).where(and_(account.c.uname == uname,account.c.pwd == obj.digest(),
             account.c.is_active == True))
+        del obj
         try:
             result = QueryDB.select(s)
-            return result.fetchall()
+            del s
         except:
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
-        del s
-        del obj
+        else:
+            return result
+        return None
     
     
     def check_user_in_database(self,uname):
@@ -1038,31 +1031,37 @@ class EpollServer():
     
     def update_newdevice(self,res):
         '''添加新的小机到数据库'''
-        eng = QueryDB().get_engine()
-        mirco_devices = QueryDB.get_devices_table(res.vendor)
-        if not mirco_devices.exists(eng):
-            mirco_devices.create(eng)
-        ipadr = int(hexlify(socket.inet_aton(res.host[0])),16) & 0xFFFFFFFF
-        ipprt = res.host[1] & 0xFFFF
         #print "host %d:%d" % (ipadr,ipprt)
         data = ''
         try:
             data = res.attrs[STUN_ATTRIBUTE_DATA]
         except KeyError:
             pass
-        upd = mirco_devices.update().values(is_online=True,chost = [ipadr,ipprt],data=data,
-                last_login_time=datetime.now()).where(mirco_devices.c.devid == res.tuid)
 
+        """这里只存放了标准的16B的UUID，不是24B的UUID"""
+        mirco_devices = QueryDB.get_devices_table(res.vendor)
+
+        ins = mirco_devices.insert().values(devid=res.tuid,is_active=True,
+                is_online=True,chost="%s:%d" % (res.host[0],res.host[1]),data=data,last_login_time=time.strftime("%Y-%m-%d %H:%M:%S"))
         try:
-            result = QueryDB.select(upd)
-        except IOError:
-            self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
-        except DataError: 
-            ins = mirco_devices.insert().values(devid=res.tuid,is_active=True,
-                    is_online=True,chost=[ipadr,ipprt],data=data,last_login_time=datetime.now())
-            try:
+            result = QueryDB.select(ins)
+            #self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
+        except ProgrammingError as e:
+            p = "\"%s\" does not exist" % res.vendor
+            if p in str(e):
+                eng = QueryDB().get_engine()
+                mirco_devices.create(eng)
                 result = QueryDB.select(ins)
-            except:
+            #self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
+            else:
+                print e
+
+        except DataError: 
+            upd = mirco_devices.update().values(is_online=True,chost ="%s:%d" % (res.host[0],res.host[1]),data=data,
+                    last_login_time=time.strftime("%Y-%m-%d %H:%M:%S")).where(mirco_devices.c.devid == res.tuid)
+            try:
+                result = QueryDB.select(upd)
+            except ProgrammingError:
                 self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
             #print "insert new devices result fetchall"
         ipadr = None
@@ -1109,35 +1108,6 @@ __version__ = '0.1.0'
 
 store = ['clients','hosts','responses','appbinds','appsock','devsock','devuuid','users','requests']
 if __name__ == '__main__':
-    atable = QueryDB.get_account_table()
-    engine = QueryDB().get_engine()
-    if not atable.exists(engine):
-        engine.connect().execute("""
-        CREATE TABLE "account"
-    (
-      uname character varying(255) NOT NULL,
-      pwd BYTEA,
-      is_active boolean NOT NULL DEFAULT true,
-      reg_time timestamp with time zone DEFAULT now(),
-      CONSTRAINT uname_pkey PRIMARY KEY(uname),
-      CONSTRAINT uname_ukey UNIQUE(uname)
-    )
-    """)
-    
-    stable = QueryDB.get_account_status_table()
-    if not stable.exists(engine):
-        engine.connect().execute('''
-    CREATE TABLE account_status
-    (
-      uname character varying(255) NOT NULL ,
-      is_login boolean NOT NULL DEFAULT false,
-      last_login_time timestamp with time zone DEFAULT now(),
-      chost bigint[] NOT NULL DEFAULT '{0,0}'::bigint[],
-      CONSTRAINT account_status_uname_fkey FOREIGN KEY (uname)
-          REFERENCES account (uname) MATCH SIMPLE
-          ON UPDATE NO ACTION ON DELETE NO ACTION
-    )
-    ''')
-
+    QueryDB.check_boot_tables()
     srv = EpollServer(3478)
     #srv.run()

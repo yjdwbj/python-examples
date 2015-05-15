@@ -13,11 +13,13 @@ from select import epoll,EPOLLET,EPOLLIN,EPOLLOUT,EPOLLHUP,EPOLLERR
 
 from binascii import hexlify,unhexlify
 from datetime import datetime
+import MySQLdb
 from sqlalchemy import *
 from sqlalchemy.exc import *
 from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,MetaData,DateTime,Boolean,SmallInteger,VARCHAR
 from sqlalchemy import sql,and_
 from sqlalchemy.dialects import postgresql as pgsql
+from sqlalchemy.dialects import mysql
 from sqlalchemy.pool import QueuePool
 
 
@@ -137,15 +139,25 @@ def get_packet_head_list(buf):
 def get_packet_head_class(buf): # 把包头解析成可以识的类属性
     hlist = filter(None,get_packet_head_list(buf))
     if len(hlist) != len(STUN_HEAD_KEY):
+        del hlist[:]
+        del hlist
         return None
+
     d = dict(zip(STUN_HEAD_KEY,hlist))
+    del hlist[:]
+    del hlist
+    
     cc = DictClass()
     s= ('srcsock','dstsock')
     for k in d.keys():
         if k in s:
-            setattr(cc,k,int(d.get(k),16))
+            setattr(cc,k,int(d.get(k),16)) # 设置源地址，目地
         else:
             setattr(cc,k,d.get(k))
+
+    for n in STUN_HEAD_KEY:
+        d.pop(n,None)
+    del d
 
     if stun_get_type(cc.method) not in mthlist: #命令类形不能识别
         return None
@@ -200,7 +212,7 @@ def stun_attr_append_str(od,attr,add_value):
     #buf[2] ="%04x" % (len(''.join(buf)) / 2 )
 
 def get_list_from_od(od):
-    lst = chain(od.values()[:-1],od['lst'])
+    lst = list(chain(od.values()[:-1],od['lst']))
     for n in STUN_HEAD_KEY:
         od.pop(n,None)
     od.pop('lst',None)
@@ -211,7 +223,7 @@ def stun_add_fingerprint(od):
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
     #buf.append('00000000')
     #buf[2] = '%04x' % (int(buf[2],16)+4)
-    od['length'] = '%04x' %  (len(''.join(chain(od.values()[:-1],od['lst'])))+4) # 4Byte crc32
+    od['length'] = '%04x' %  (len(''.join(chain(od.values()[:-1],od['lst'])))/2+4) # 4Byte crc32
     crc_str = ''.join(chain(od.values()[:-1],od['lst']))
     crcval = get_crc32(crc_str)
     del crc_str
@@ -508,12 +520,9 @@ class EpollReactor(object):
     def modify(self,fd,mode):
         self._poller.modify(fd,mode)
 
-
-class QueryDB():
+class MySQLEngine():
     def __init__(self):
-        #self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=8192,max_overflow=4096,\
-        #        poolclass=QueuePool)
-        self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath')
+        self.engine = create_engine('mysql+mysqldb://lcy:lcy123@rdskc8ij3fyg5xklrhxj7public.mysql.rds.aliyuncs.com/nath')
 
     def check_table(self,table):
         return table.exists(self.engine)
@@ -530,9 +539,11 @@ class QueryDB():
 
     def create_table(self,sql_txt):
         self.engine.connect().execute(sql_txt)
+
     @staticmethod
     def select(sql_txt):
-        engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath')
+        #engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath')
+        engine = create_engine('mysql+mysqldb://lcy:lcy123@rdskc8ij3fyg5xklrhxj7public.mysql.rds.aliyuncs.com/nath')
         conn = engine.connect()
         
         try:
@@ -544,12 +555,134 @@ class QueryDB():
             return result
 
 
+    @staticmethod
+    def get_account_bind_table(name):
+        metadata = MetaData()
+        table = Table(name,metadata,
+                Column('uuid',mysql.VARCHAR(48),nullable=False,primary_key=True),
+                Column('pwd',mysql.BINARY(32)),
+                Column('reg_time',mysql.TIME,nullable=False)
+                )
+        return table
+
+    @staticmethod
+    def get_account_status_table():
+        metadata = MetaData()
+        table = Table('account_status',metadata,
+                Column('uname',mysql.VARCHAR(255)),
+                Column('is_login',mysql.BOOLEAN,nullable=False),
+                Column('last_login_time',mysql.TIME,nullable=False),
+                Column('chost',mysql.VARCHAR(22),nullable=False),
+                mysql_engine='InnoDB',
+                mysql_charset='utf8'
+                )
+        return table
+    
+    @staticmethod
+    def get_account_table():
+        metadata = MetaData()
+        account = Table('account',metadata,
+                #Column('uuid',mysql.UUID,primary_key=True),
+                Column('uname',mysql.VARCHAR(255),primary_key=True),
+                Column('pwd',mysql.BINARY(32)),
+                Column('is_active',mysql.BOOLEAN,nullable=False),
+                Column('reg_time',mysql.TIME,nullable=False),
+                mysql_engine='InnoDB',
+                mysql_charset='utf8'
+                )
+        return account
+
+    @staticmethod
+    def get_devices_table(tname):
+        metadata = MetaData()
+        mirco_devices = Table(tname,metadata,
+                Column('devid',mysql.BINARY(16),primary_key=True,unique=True),
+                Column('is_active',mysql.BOOLEAN,nullable=False),
+                Column('last_login_time',mysql.TIMESTAMP,nullable=False),
+                Column('is_online',mysql.BOOLEAN,nullable=False),
+                Column('chost',mysql.VARCHAR(22),nullable=False),
+                Column('data',mysql.BINARY),
+                mysql_engine='InnoDB',
+                mysql_charset='utf8'
+                )
+        return mirco_devices
+    
+    @staticmethod
+    def check_boot_tables():
+        engine = create_engine('mysql+mysqldb://lcy:lcy123@rdskc8ij3fyg5xklrhxj7public.mysql.rds.aliyuncs.com/nath')
+        atable = MySQLEngine.get_account_table()
+        conn = engine.connect()
+        if not atable.exists(engine):
+            conn.execute(""" 
+            CREATE TABLE account
+            (
+            uname character varying(255) NOT NULL,
+            pwd BINARY(32),
+            is_active boolean NOT NULL DEFAULT true,
+            reg_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP ,
+            CONSTRAINT uname_pkey PRIMARY KEY(uname),
+            CONSTRAINT uname_ukey UNIQUE(uname)
+            )
+            """)
+        stable = MySQLEngine.get_account_status_table()
+        if not stable.exists(engine):
+            conn.execute(""" 
+            CREATE TABLE account_status
+            (
+              uname character varying(255) NOT NULL ,
+              is_login boolean NOT NULL DEFAULT false,
+              last_login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              chost character varying(22) NOT NULL DEFAULT '',
+              CONSTRAINT account_status_uname_fkey FOREIGN KEY (uname)
+                  REFERENCES account (uname) MATCH SIMPLE
+                  ON UPDATE NO ACTION ON DELETE NO ACTION
+            )
+            """)
+
+class PostgresSQLEngine():
+    def __init__(self):
+        #self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=8192,max_overflow=4096,\
+        #        poolclass=QueuePool)
+        self.engine = create_engine('postgresql+psycopg2cffi://postgres:lcy123@192.168.25.105:5432/nath')
+
+    def check_table(self,table):
+        return table.exists(self.engine)
+
+    def get_engine(self):
+        return self.engine
+
+    def get_dbconn(self):
+        return self.get_engine().connect()
+    
+    def execute(self,stmt):
+        return self.get_dbconn().execute(stmt)
+        
+
+    def create_table(self,sql_txt):
+        self.engine.connect().execute(sql_txt)
+
+    @staticmethod
+    def select(sql_txt):
+        engine = create_engine('postgresql+psycopg2cffi://postgres:lcy123@192.168.25.105:5432/nath')
+        #engine = create_engine('postgresql+psycopg2cffi://postgres:lcy123@127.0.0.1:5432/nath')
+        conn = engine.connect()
+        result = conn.execute(sql_txt)
+        res = []
+        try:
+            for row in result:
+                res.append(row)
+        except ResourceClosedError:
+            res = []
+        conn.close()
+        return res
+
+
 
     @staticmethod
     def get_account_bind_table(name):
         metadata = MetaData()
         table = Table(name,metadata,
-                Column('uuid',pgsql.VARCHAR(48),nullable=False,primary_key=True),
+                Column('devid',pgsql.VARCHAR(48),nullable=False,primary_key=True),
                 Column('pwd',pgsql.BYTEA),
                 Column('reg_time',pgsql.TIME,nullable=False)
                 )
@@ -562,7 +695,7 @@ class QueryDB():
                 Column('uname',pgsql.VARCHAR(255)),
                 Column('is_login',pgsql.BOOLEAN,nullable=False),
                 Column('last_login_time',pgsql.TIME,nullable=False),
-                Column('chost',pgsql.ARRAY(pgsql.BIGINT),nullable=False)
+                Column('chost',pgsql.VARCHAR(22),nullable=False)
                 )
         return table
     
@@ -586,8 +719,108 @@ class QueryDB():
                 Column('is_active',pgsql.BOOLEAN,nullable=False),
                 Column('last_login_time',pgsql.TIMESTAMP,nullable=False),
                 Column('is_online',pgsql.BOOLEAN,nullable=False),
-                Column('chost',pgsql.ARRAY(pgsql.BIGINT),nullable=False),
+                Column('chost',pgsql.VARCHAR(22),nullable=False),
                 Column('data',pgsql.BYTEA)
                 )
         return mirco_devices
+    @staticmethod
+    def get_vendor_table(): #记录厂商的名称
+        metadata = MetaData()
+        vtable = Table('vendor',metadata,
+                Column('vname',pgsql.VARCHAR(8),nullable=False,primary_key=True,unique=True)
+                )
+        return vtable
+
+
+    @staticmethod
+    def check_boot_tables():
+        engine = create_engine('postgresql+psycopg2cffi://postgres:lcy123@192.168.25.105:5432/nath')
+        conn = engine.connect()
+        atable = PostgresSQLEngine.get_account_table()
+        if not atable.exists(engine):
+            conn.execute("""
+            CREATE TABLE account
+            (
+            uname character varying(255) NOT NULL,
+            pwd BYTEA,
+            is_active boolean NOT NULL DEFAULT true,
+            reg_time timestamp with time zone DEFAULT now(),
+            CONSTRAINT uname_pkey PRIMARY KEY(uname),
+            CONSTRAINT uname_ukey UNIQUE(uname)
+            )
+            WITH (
+              OIDS=FALSE
+            );
+            ALTER TABLE account
+              OWNER TO postgres;
+
+            CREATE OR REPLACE FUNCTION add_bindtable() RETURNS TRIGGER AS $BODY$
+            BEGIN
+            EXECUTE format('
+            CREATE TABLE IF NOT EXISTS "'||NEW.uname||'"  (
+              devid VARCHAR(48) NOT NULL PRIMARY KEY,
+              pwd BYTEA,
+              reg_time timestamp with time zone DEFAULT now()
+              );');
+            RETURN NEW;
+            END;
+            $BODY$ LANGUAGE plpgsql;
+            
+            CREATE TRIGGER add_bind BEFORE INSERT OR UPDATE ON account FOR EACH ROW EXECUTE PROCEDURE add_bindtable();
+            """)
+
+        stable = PostgresSQLEngine.get_account_status_table()
+        if not stable.exists(engine):
+            conn.execute(""" 
+            CREATE TABLE account_status
+            (
+              uname character varying(255) NOT NULL ,
+              is_login boolean NOT NULL DEFAULT false,
+              last_login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              chost character varying(22) NOT NULL DEFAULT '',
+              CONSTRAINT account_status_uname_fkey FOREIGN KEY (uname)
+                  REFERENCES account (uname) MATCH SIMPLE
+                  ON UPDATE NO ACTION ON DELETE NO ACTION
+            )
+            """)
+
+#        vtable = PostgresSQLEngine.get_vendor_table()
+#        if not vtable.exists(engine):
+#            #vtable.create(engine)
+#            """每插入一条新的厂商名到vendor表，就为这个名字新建一张表"""
+#            conn.execute("""
+#            CREATE TABLE vendor
+#            (
+#              vname character varying(8) NOT NULL,
+#              CONSTRAINT vendor_pkey PRIMARY KEY (vname)
+#            )
+#            WITH (
+#              OIDS=FALSE
+#            );
+#            ALTER TABLE vendor
+#              OWNER TO postgres;
+#
+#            
+#            CREATE FUNCTION add_vendor() RETURNS TRIGGER AS $$
+#            BEGIN
+#            EXECUTE format('
+#            CREATE TABLE IF NOT EXISTS "'||new.vname||'" (
+#              devid uuid NOT NULL PRIMARY KEY,
+#              is_active boolean NOT NULL,
+#              last_login_time timestamp without time zone NOT NULL,
+#              is_online boolean NOT NULL,
+#              chost character varying(22) NOT NULL,
+#              data bytea 
+#              );');
+#              RETURN NEW;
+#            END;
+#            $$LANGUAGE plpgsql;
+#            
+#            CREATE TRIGGER insert_device BEFORE INSERT OR UPDATE ON vendor FOR EACH ROW EXECUTE PROCEDURE add_vendor();
+#            """)
+        
+
+
+            
+
 

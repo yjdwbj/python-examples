@@ -323,15 +323,15 @@ class DevicesFunc():
         #stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%d' % time.time()))
         stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify('%.05f' % time.time()))
         stun_add_fingerprint(od)
-        lst = ''.join(get_list_from_od(od))
-        tlist = filter(None,lst)
-        if len(tlist) != 11:
-            print "some msg lost",lst
+        for n in STUN_HEAD_KEY:
+            if not od.has_key(n):
+                print 'app packet head miss key %s' % n
+        lst = get_list_from_od(od)
         b = ''.join(lst)
         del lst[:]
         del lst
         n = int(b[8:12],16)
-        if n != len(b) * 2:
+        if n*2 != len(b):
             print "len is wrong some msg lost",b
         return b
 
@@ -402,7 +402,6 @@ class APPfunc():
                 qdict.err.put('sock %d, recv not data' % self.fileno)
                 break
             self.recv += binascii.b2a_hex(data)
-            print "app recv",self.recv
             del data
             if self.process_handle_first():
                 break
@@ -573,7 +572,6 @@ class APPfunc():
     
     
     def write_sock(self):
-        print "send",self.sbuf
         if self.sbuf:
             try:
                 nbyte = self.sock.send(unhexlify(self.sbuf))
@@ -640,7 +638,6 @@ class APPfunc():
         #buf = []
         #stun_init_command_str(STUN_METHOD_BINDING,buf)
         od = stun_init_command_head(STUN_METHOD_BINDING)
-        print od
         stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,hexlify(self.user))
         obj = hashlib.sha256()
         obj.update(self.pwd)
@@ -659,13 +656,13 @@ class APPfunc():
         od = stun_init_command_head(STUN_METHOD_SEND)
         od['srcsock']='%08x' % self.srcsock
         od['dstsock']='%08x' % self.dstsock
-        #buf[3] = '%08x' % self.srcsock
-        #buf[4] = '%08x' % self.dstsock
         od['sequence']= sequence
-        #buf[-1] = sequence
-        #stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%d' % time.time()))
         stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify('%.05f' % time.time()))
         stun_add_fingerprint(od)
+        for n in STUN_HEAD_KEY:
+            if not od.has_key(n):
+                print 'app packet head miss key %s' % n
+
         return ''.join(get_list_from_od(od))
 
     
