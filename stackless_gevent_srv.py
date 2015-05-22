@@ -31,7 +31,7 @@ from gevent.pool import Group
 from gevent.queue import Queue
 monkey.patch_all(thread=False)
 
-from multiprocessing import Process,current_process
+from multiprocessing import Process,current_process,Lock
 
 
 
@@ -147,8 +147,16 @@ class EpollServer():
         self.maxbuffer = ''
         [setattr(self,x,{}) for x in store]
         """取得厂商数量，避免每次去查询"""
-        
+        self.db = PostgresSQLEngine()
+        vendor = QueryDB.get_vendor_table()
+        s = sql.select([vendor])
+        rn = self.db.execute(s)
+        self.vendors = set()
+        for n in rn:
+            self.vendors.add(n[3:11])
 
+        self.lock = Lock()
+        print 'we have vendors', self.vendors
         self.prefunc= {
               STUN_METHOD_ALLOCATE:self.handle_allocate_request, # 小机登录方法
               STUN_METHOD_CHECK_USER:self.handle_chkuser_request,
@@ -166,7 +174,7 @@ class EpollServer():
                 }
         #self.server = StreamServer(('0.0.0.0',3478),self.handle_new_accept,backlog = 8192)
         #self.server.serve_forever()
-        self.listener = _tcp_listener(('0.0.0.0',3478),32768,1)
+        self.listener = _tcp_listener(('0.0.0.0',3478),65536,1)
         #self.server = StreamServer(('0.0.0.0',3478),self.handle_new_accept,backlog=100000)
         #self.server.start()
         #for i in xrange(1):
@@ -320,7 +328,8 @@ class EpollServer():
         btable = QueryDB.get_account_bind_table(uname)
         s = sql.select([btable])
         try:
-            fall = QueryDB.select(s).fetchall()
+            #fall = QueryDB.select(s)
+            fall = self.db.execute(s)
         except ProgrammingError:
             #print "table not exits"
             res.eattr = STUN_ERROR_OBJ_NOT_EXIST
@@ -595,7 +604,9 @@ class EpollServer():
         try:
             pwd = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
             user = unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])
+            n = time.time()
             result = self.app_user_login(user,pwd)
+            #print "app login end QueryDB",time.time() -n
             if not result:
                 res.eattr = STUN_ERROR_AUTH
                 return  stun_error_response(res)
@@ -607,7 +618,12 @@ class EpollServer():
         #tcs.name = result[0][0]
         tcs.name = user
         """disable select db """
-        self.app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME],res.host)
+        n = time.time()
+        #print "app update status start QueryDB",n
+        #self.app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME],res.host)
+        """改用pgsql语言简化处理"""
+        self.db.rawselect("update_or_insert_table('%s','%s');" % (unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME]),"%s:%d" % (res.host[0],res.host[1])))
+        #print "app update status end QueryDB",time.time() -n
         #self.statqueue[current_process().name].put('user %s login,socket is %d,host %s:%d' % (tcs.name,res.fileno,res.host[0],res.host[1]))
         self.users[res.fileno] = user
         return app_user_auth_success(res)
@@ -638,8 +654,17 @@ class EpollServer():
     
         res.vendor = huid[32:40]
         res.tuid = huid[:32]
+        """检查是不是新的厂商名"""
+        if res.vendor not in self.vendors:
+            print "vendor not in vendos"
+            self.db.insert_vendor_table(res.vendor)
+            self.lock.acquire()
+            self.vendors.add(res.vendor)
+            self.lock.release()
+            print "now we have vendors",self.vendors
 
-        self.update_newdevice(res)
+        #self.update_newdevice(res)
+        self.db.insert_vendor_dt(res.vendor,res.tuid,'%s:%d' % (res.host[0],res.host[1]),'')
 
         self.devsock[res.fileno] = tcs = ComState()
         self.devuuid[huid] = res.fileno
@@ -689,13 +714,16 @@ class EpollServer():
             return
 
         try:
-            QueryDB.select(ins)
+            #QueryDB.select(ins)
+            self.db.nexecute(ins)
         except IntegrityError:
             stmt = btable.update().values(reg_time = time.strftime("%Y-%m-%d %H:%M:%S")).where(btable.c.devid == res.attrs[STUN_ATTRIBUTE_UUID])
-            QueryDB.select(stmt)
+            #QueryDB.select(stmt)
+            self.db.nexecute(stmt)
         except ProgrammingError:
             stmt = btable.update().values(reg_time = time.strftime("%Y-%m-%d %H:%M:%S")).where(btable.c.devid == res.attrs[STUN_ATTRIBUTE_UUID])
-            QueryDB.select(stmt)
+            self.db.nexecute(stmt)
+            #QueryDB.select(stmt)
         #conn.close()
 
     def handle_app_bind_device(self,res):
@@ -755,13 +783,13 @@ class EpollServer():
     
     def mirco_devices_logout(self,devid):
         vendor = devid[32:40]
-        #print "update status for tuid",hexlify(suid[0])
         mtable = QueryDB.get_devices_table(vendor)
         #ss = mtable.update().values(is_online=False).where(mtable.c.devid == hexlify(suid[0]))
         ss = mtable.update().values(is_online=False).where(mtable.c.devid == devid[:32])
         del vendor
         try:
-            QueryDB.select(ss)
+            #QueryDB.select(ss)
+            self.db.nexecute(ss)
         except IOError:
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,devid,str(sys._getframe().f_lineno)]))
             return 0
@@ -802,7 +830,8 @@ class EpollServer():
         atable = QueryDB.get_account_status_table()
         ss = atable.update().values(is_login=False).where(atable.c.uname == uname)
         try:
-            QueryDB.select(ss)
+            #QueryDB.select(ss)
+            self.db.nexecute(ss)
         except :
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
 
@@ -948,7 +977,7 @@ class EpollServer():
         obj.update(pwd)
         ins = account.insert().values(uname=uname,pwd=obj.digest(),is_active=True,reg_time=time.strftime("%Y-%m-%d %H:%M:%S"))
         try:
-            QueryDB.select(ins)
+            self.db.nexecute(ins)
         except IntegrityError:
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
             del uname
@@ -976,7 +1005,8 @@ class EpollServer():
             sss = status_tables.insert().values(uname=uname,is_login=True,chost="%s:%d" % (host[0],host[1]))
 
         try:
-            QueryDB.select(sss)
+            #QueryDB.select(sss)
+            self.db.nexecute(sss)
         except DataError:
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,host[0],str(sys._getframe().f_lineno)]))
         del uname
@@ -991,14 +1021,8 @@ class EpollServer():
         s = sql.select([account]).where(and_(account.c.uname == uname,account.c.pwd == obj.digest(),
             account.c.is_active == True))
         del obj
-        try:
-            result = QueryDB.select(s)
-            del s
-        except:
-            self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,uname,str(sys._getframe().f_lineno)]))
-        else:
-            return result
-        return None
+            #result = QueryDB.select(s)
+        return    self.db.execute(s)
     
     
     def check_user_in_database(self,uname):
@@ -1007,26 +1031,14 @@ class EpollServer():
         """
         account = QueryDB.get_account_table()
         s = sql.select([account.c.uname]).where(account.c.uname == uname)
-        try:
-            result = QueryDB.select(s)
-        except:
-            self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,uname,self.clients[fileno],str(sys._getframe().f_lineno)]))
-        else:
-            return result.fetchall()
+        return self.db.execute(s)
     
     def find_device_state(self,uid):
         vendor = uid[32:40]
         #print "find uuid is",uid,"vendor is",vendor
         mirco_devices = QueryDB.get_devices_table(vendor)
         s = sql.select([mirco_devices]).where(mirco_devices.c.devid == uid[:32] )
-        try:
-            #result = self.execute(s)
-            result = QueryDB.select(s)
-        except:
-            self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,uuid,str(sys._getframe().f_lineno)]))
-            return None
-        else:
-            return result.fetchall()
+        result = QueryDB.select(s)
     
     
     def update_newdevice(self,res):
@@ -1044,8 +1056,18 @@ class EpollServer():
         ins = mirco_devices.insert().values(devid=res.tuid,is_active=True,
                 is_online=True,chost="%s:%d" % (res.host[0],res.host[1]),data=data,last_login_time=time.strftime("%Y-%m-%d %H:%M:%S"))
         try:
-            result = QueryDB.select(ins)
+            #result = QueryDB.select(ins)
+            result = self.db.execute(ins)
             #self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
+        except IntegrityError:
+            upd = mirco_devices.update().values(is_online=True,chost ="%s:%d" % (res.host[0],res.host[1]),data=data,
+                    last_login_time=time.strftime("%Y-%m-%d %H:%M:%S")).where(mirco_devices.c.devid == res.tuid)
+            try:
+                #result = QueryDB.select(upd)
+                result = self.db.execute(upd)
+            except ProgrammingError:
+                self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
+
         except ProgrammingError as e:
             p = "\"%s\" does not exist" % res.vendor
             if p in str(e):
@@ -1056,14 +1078,6 @@ class EpollServer():
             else:
                 print e
 
-        except DataError: 
-            upd = mirco_devices.update().values(is_online=True,chost ="%s:%d" % (res.host[0],res.host[1]),data=data,
-                    last_login_time=time.strftime("%Y-%m-%d %H:%M:%S")).where(mirco_devices.c.devid == res.tuid)
-            try:
-                result = QueryDB.select(upd)
-            except ProgrammingError:
-                self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
-            #print "insert new devices result fetchall"
         ipadr = None
         ipprt = None
         data = None
