@@ -21,6 +21,7 @@ from datetime import datetime
 import hashlib
 import gc
 from sockbasic import *
+from dbdriver import *
 #from sockbasic import MySQLEngine as QueryDB
 from sockbasic import PostgresSQLEngine as QueryDB
 import threading
@@ -147,16 +148,16 @@ class EpollServer():
         self.maxbuffer = ''
         [setattr(self,x,{}) for x in store]
         """取得厂商数量，避免每次去查询"""
-        self.db = PostgresSQLEngine()
-        vendor = QueryDB.get_vendor_table()
-        s = sql.select([vendor])
-        rn = self.db.execute(s)
-        self.vendors = set()
-        for n in rn:
-            self.vendors.add(n[3:11])
-
+#        self.db = PostgresSQLEngine()
+#        vendor = QueryDB.get_vendor_table()
+#        s = sql.select([vendor])
+#        rn = self.db.execute(s)
+#        self.vendors = set()
+#        for n in rn:
+#            self.vendors.add(n[3:11])
+        initdb()
+        self.vendors = set([n.vname for n in session.query(Vendor).all()])
         self.lock = Lock()
-        print 'we have vendors', self.vendors
         self.prefunc= {
               STUN_METHOD_ALLOCATE:self.handle_allocate_request, # 小机登录方法
               STUN_METHOD_CHECK_USER:self.handle_chkuser_request,
@@ -656,15 +657,20 @@ class EpollServer():
         res.tuid = huid[:32]
         """检查是不是新的厂商名"""
         if res.vendor not in self.vendors:
-            print "vendor not in vendos"
-            self.db.insert_vendor_table(res.vendor)
+            nvendor = Vendor(vname=res.vendor)
+            session.merge(nvendor)
+            session.commit()
             self.lock.acquire()
             self.vendors.add(res.vendor)
             self.lock.release()
-            print "now we have vendors",self.vendors
 
         #self.update_newdevice(res)
-        self.db.insert_vendor_dt(res.vendor,res.tuid,'%s:%d' % (res.host[0],res.host[1]),'')
+        newdev = VendorDev(res.vendor)
+        newdev.devid = res.tuid
+        newdev.chost = "%s:%d" % (res.host[0],res.host[1])
+        session.merge(newdev)
+        session.commit()
+        #self.db.insert_vendor_dt(res.vendor,res.tuid,'%s:%d' % (res.host[0],res.host[1]),'')
 
         self.devsock[res.fileno] = tcs = ComState()
         self.devuuid[huid] = res.fileno
@@ -1122,6 +1128,6 @@ __version__ = '0.1.0'
 
 store = ['clients','hosts','responses','appbinds','appsock','devsock','devuuid','users','requests']
 if __name__ == '__main__':
-    QueryDB.check_boot_tables()
+    #QueryDB.check_boot_tables()
     srv = EpollServer(3478)
     #srv.run()

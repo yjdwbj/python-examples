@@ -21,6 +21,7 @@ from sqlalchemy import sql,and_
 from sqlalchemy.dialects import postgresql as pgsql
 from sqlalchemy.dialects import mysql
 from sqlalchemy.pool import QueuePool
+from sqlalchemy.orm import sessionmaker
 import sys
 import traceback
 
@@ -689,16 +690,8 @@ class PostgresSQLEngine():
         return vtable
 
     def insert_vendor_dt(self,vendor_name,devid,host,data):
-        metadata = MetaData()
-        dt = Table(vendor_name,metadata,
-                Column('devid',pgsql.UUID,primary_key=True,unique=True),
-                Column('is_active',pgsql.BOOLEAN,nullable=False),
-                Column('last_login_time',pgsql.TIMESTAMP,nullable=False),
-                Column('is_online',pgsql.BOOLEAN,nullable=False),
-                Column('chost',pgsql.VARCHAR(22),nullable=False),
-                Column('data',pgsql.BYTEA)
-                )
-        sel = select([literal(devid)],True,text('now()'),True,literal(host),literal(data)).where(
+        dt = self.get_devices_table(vendor_name)
+        sel = select([literal(devid),True,text('CURRENT_TIMESTAMP'),True,literal(host),literal(data)]).where(
                    ~exists([dt.c.devid]).where(dt.c.devid == devid)
               )
         ins = dt.insert().from_select(['devid','is_active','last_login_time','is_online','chost','data'], sel)
@@ -715,15 +708,20 @@ class PostgresSQLEngine():
             );
         """
         
-        metadata = MetaData()
-        vt = Table('vendor',metadata,
-                Column('vname',pgsql.VARCHAR(8),nullable=False,primary_key=True,unique=True)
-                )
+        vt = self.get_vendor_table()
         sel = select([literal(vname)]).where(
                    ~exists([vt.c.vname]).where(vt.c.vname == vname)
               )
         
         ins = vt.insert().from_select(['vname'], sel)
+        self.nexecute(ins)
+
+
+    def insert_account_table(self,uname,pwd):
+        at = self.get_account_table()
+        sel = select([literal(uname),pwd,True,text('CURRENT_TIMESTAMP')]).where(
+                ~exists([at.c.uname]).where(at.c.uname == uname))
+        ins = at.insert().from_select(['uname'],sel)
         self.nexecute(ins)
 
 
@@ -863,52 +861,11 @@ class PostgresSQLEngine():
             LANGUAGE plpgsql;
             """)
 
-        conn.execute("""
-
-            CREATE OR REPLACE FUNCTION query_dev_tables(_vt regclass,tuid character varying,host character varying,bdata character varying) RETURNS VOID AS 
-            $$
-            DECLARE 
-            tt timestamp:= now();
-            BEGIN
-                    EXECUTE ('
-                    INSERT INTO '||_vt::regclass||' (devid,is_active,last_login_time,is_online,chost,data) VALUES('||quote_literal(tuid)||',True,'||quote_literal(tt)||',True,'||quote_literal(host)||','||quote_literal(bdata)||')');
-                    EXCEPTION WHEN unique_violation THEN
-                    EXECUTE '
-                        UPDATE '||_vt::regclass||' SET chost ='||quote_literal(host)||',last_login_time='||quote_literal(tt)||' ,data='||quote_literal(bdata)||' WHERE devid = '||quote_literal(tuid);
-            END;
-            $$ LANGUAGE plpgsql;
-            
-            CREATE OR REPLACE FUNCTION query_vendor(name text) RETURNS text  AS
-            $$
-            DECLARE 
-            res text;
-            BEGIN
-                SELECT vname into res from vendor WHERE vname = $1;
-                return res;
-            END;
-            $$LANGUAGE plpgsql;
-
-        """)
-
         vtable = PostgresSQLEngine.get_vendor_table()
         if not vtable.exists(engine):
             #vtable.create(engine)
             """每插入一条新的厂商名到vendor表，就为这个名字新建一张表"""
             conn.execute("""
-            CREATE TABLE vendor
-            (
-              vname character varying(8) NOT NULL,
-              CONSTRAINT vendor_pkey PRIMARY KEY (vname)
-            )
-            WITH (
-              OIDS=FALSE
-            );
-            ALTER TABLE vendor
-              OWNER TO postgres;
-
-
-
-            
             CREATE FUNCTION add_vendor() RETURNS TRIGGER AS $$
             BEGIN
             EXECUTE format('
