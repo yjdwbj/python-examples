@@ -156,7 +156,17 @@ class EpollServer():
 #        for n in rn:
 #            self.vendors.add(n[3:11])
         initdb()
-        self.vendors = set([n.vname for n in session.query(Vendor).all()])
+        session = Session()
+        try:
+            self.vendors = set([n.vname for n in session.query(Vendor).all()])
+            session.commit()
+        except:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+        #devclass = VendorDev('00000000')
+        #devlist = [''.join([n.devid,n.chost]) for n in  session.query(type(devclass)).all()]
         self.lock = Lock()
         self.prefunc= {
               STUN_METHOD_ALLOCATE:self.handle_allocate_request, # 小机登录方法
@@ -282,7 +292,22 @@ class EpollServer():
     
 
     def handle_modify_bind_item(self,res):
-        btable = QueryDB.get_account_bind_table(self.users[res.fileno])
+        #btable = QueryDB.get_account_bind_table(self.users[res.fileno])
+        user = self.users[res.fileno]
+        abt = AccBindTable(user)()
+        abt.uuid = res.attrs[STUN_ATTRIBUTE_UUID]
+        abt.pwd = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
+        session = Session()
+        try:
+            session.merge(abt)
+            session.commit()
+        except:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+        return stun_return_same_package(res)
+
         stmt = btable.update().values(pwd=unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])).\
                 where(btable.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID])
         try:
@@ -307,7 +332,21 @@ class EpollServer():
             k = mcore_handle(popfunc,(n))
         except TypeError:
             self.errqueue[current_process().name].put("TypeError %d,n is none" % res.fileno)
-        self.delete_binds_in_db(uname,uids)
+
+        abt = AccBindTable(uname)()
+
+        session = Session()
+        try:
+            dobj = session.query(abt).filter(abt.uuid == uids).first()
+            session.delete(dobj)
+            session.commit()
+        except:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+        #self.delete_binds_in_db(uname,uids)
         del uname
         del uids
         return  stun_return_same_package(res)
@@ -326,24 +365,41 @@ class EpollServer():
         用户从服务器拉数据表
         """
         uname = self.users[res.fileno]
-        btable = QueryDB.get_account_bind_table(uname)
-        s = sql.select([btable])
+        abt = AccBindTable(uname)
+        session = Session()
+        data = None
         try:
-            #fall = QueryDB.select(s)
-            fall = self.db.execute(s)
-        except ProgrammingError:
-            #print "table not exits"
+            data = ''.join([''.join([n.devid,n.pwd]) for n in  session.query(abt).all()])
+            session.commit()
+        except:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+        #data = ''.join([ ''.join([r[0],r[1]]) for r in fall])
+        if not data:
             res.eattr = STUN_ERROR_OBJ_NOT_EXIST
             return  stun_error_response(res)
-        except KeyError:
-            res.eattr =STUN_ERROR_UNKNOWN_PACKET
-            return  stun_error_response(res)
-        else:
-            data = ''.join([ ''.join([r[0],r[1]]) for r in fall])
-            if not data:
-                res.eattr = STUN_ERROR_OBJ_NOT_EXIST
-                return  stun_error_response(res)
-            return  app_user_pull_table(res,data)
+        return  app_user_pull_table(res,data)
+        #btable = QueryDB.get_account_bind_table(uname)
+        #s = sql.select([btable])
+#        try:
+#            #fall = QueryDB.select(s)
+#            fall = self.db.execute(s)
+#        except ProgrammingError:
+#            #print "table not exits"
+#            res.eattr = STUN_ERROR_OBJ_NOT_EXIST
+#            return  stun_error_response(res)
+#        except KeyError:
+#            res.eattr =STUN_ERROR_UNKNOWN_PACKET
+#            return  stun_error_response(res)
+#        else:
+#            data = ''.join([n.vname for n in session.query(Vendor).all()])
+#            #data = ''.join([ ''.join([r[0],r[1]]) for r in fall])
+#            if not data:
+#                res.eattr = STUN_ERROR_OBJ_NOT_EXIST
+#                return  stun_error_response(res)
+#            return  app_user_pull_table(res,data)
 
     def delete_fileno(self,fileno):
         try:
@@ -605,8 +661,21 @@ class EpollServer():
         try:
             pwd = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
             user = unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])
-            n = time.time()
-            result = self.app_user_login(user,pwd)
+            obj = hashlib.sha256()
+            obj.update(user)
+            obj.update(pwd)
+            session = Session()
+            result = None
+            try:
+                result = session.query(Account).filter(Account.uname==user,Account.pwd==obj.digest()).first()
+                session.commit()
+            except:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+            #print 'login result is',result
+            #result = self.app_user_login(user,pwd)
             #print "app login end QueryDB",time.time() -n
             if not result:
                 res.eattr = STUN_ERROR_AUTH
@@ -623,7 +692,18 @@ class EpollServer():
         #print "app update status start QueryDB",n
         #self.app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME],res.host)
         """改用pgsql语言简化处理"""
-        self.db.rawselect("update_or_insert_table('%s','%s');" % (unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME]),"%s:%d" % (res.host[0],res.host[1])))
+        #self.db.rawselect("update_or_insert_table('%s','%s');" % (unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME]),"%s:%d" % (res.host[0],res.host[1])))
+        astatus = AccountStatus(uname=user,last_login_time=datetime.now(),is_login=True,chost="%s:%d" % (res.host[0],res.host[1]))
+        session = Session()
+        try:
+            session.merge(astatus)
+            session.commit()
+        except:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+        
         #print "app update status end QueryDB",time.time() -n
         #self.statqueue[current_process().name].put('user %s login,socket is %d,host %s:%d' % (tcs.name,res.fileno,res.host[0],res.host[1]))
         self.users[res.fileno] = user
@@ -657,19 +737,37 @@ class EpollServer():
         res.tuid = huid[:32]
         """检查是不是新的厂商名"""
         if res.vendor not in self.vendors:
-            nvendor = Vendor(vname=res.vendor)
-            session.merge(nvendor)
-            session.commit()
+            session = Session()
+            try:
+                ev = session.query(Vendor).filter(Vendor.vname == res.vendor).first()
+                if not ev:
+                    nvendor = Vendor(vname=res.vendor)
+                    session.add(nvendor)
+                    session.commit()
+            except:
+                session.rollback()
+                raise
+            finally:
+                session.close()
             self.lock.acquire()
             self.vendors.add(res.vendor)
             self.lock.release()
 
         #self.update_newdevice(res)
-        newdev = VendorDev(res.vendor)
+        newdev = VendorDev(res.vendor)()
+        
         newdev.devid = res.tuid
         newdev.chost = "%s:%d" % (res.host[0],res.host[1])
-        session.merge(newdev)
-        session.commit()
+        newdev.last_login_time = datetime.now()
+        session = Session()
+        try:
+            session.merge(newdev)
+            session.commit()
+        except:
+            session.rollback()
+            raise
+        finally:
+            session.close()
         #self.db.insert_vendor_dt(res.vendor,res.tuid,'%s:%d' % (res.host[0],res.host[1]),'')
 
         self.devsock[res.fileno] = tcs = ComState()
@@ -682,8 +780,18 @@ class EpollServer():
 
     def handle_chkuser_request(self,res):
         """disable select db """
-        f = check_user_in_database(res.attrs[STUN_ATTRIBUTE_USERNAME])
-        if f != 0:
+        r = None
+        session = Session()
+        try:
+            r = session.query(Account).filter(Account.uname == res.attrs[STUN_ATTRIBUTE_USERNAME]).first()
+            session.commit()
+        except:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+        #f = check_user_in_database(res.attrs[STUN_ATTRIBUTE_USERNAME])
+        if r:
             #self.errqueue[current_process().name].put("User Exist %s" % res.attrs[STUN_ATTRIBUTE_USERNAME])
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
@@ -692,45 +800,77 @@ class EpollServer():
 
     def handle_register_request(self,res):
         """disable select db """
-        if self.app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]):
-            # 用户名已经存了。
-            #self.errqueue[current_process().name].put("User has Exist! %s" % res.attrs[STUN_ATTRIBUTE_USERNAME])
-            res.eattr = STUN_ERROR_USER_EXIST
-            return stun_error_response(res)
+        #if self.app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]):
+        user = unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])
+        session = Session()
+        try:
+            r = session.query(Account).filter(Account.uname == user).first()
+            session.commit()
+            if r:
+                # 用户名已经存了。
+                #self.errqueue[current_process().name].put("User has Exist! %s" % res.attrs[STUN_ATTRIBUTE_USERNAME])
+                res.eattr = STUN_ERROR_USER_EXIST
+                return stun_error_response(res)
+            else:
+                obj = hashlib.sha256()
+                obj.update(user)
+                obj.update(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])
+                na = Account(uname=user,pwd=obj.digest(),is_active=True,reg_time=datetime.now())
+                session.merge(na)
+                session.commit()
+        except:
+            session.rollback()
+            raise
+        finally:
+            session.close()
     
         #self.statqueue[current_process().name].put('register success %s' % res.attrs[STUN_ATTRIBUTE_USERNAME])
-        return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME])
+            return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME])
 
     def handle_add_bind_to_user(self,res):
         """
         绑定小机到用户表里,
         """
-        btable  = QueryDB.get_account_bind_table(self.users[res.fileno])
+        #btable  = QueryDB.get_account_bind_table(self.users[res.fileno])
+        user = self.users[res.fileno]
+        newbind = AccBindTable(user)()
+        newbind.devid = res.attrs[STUN_ATTRIBUTE_UUID]
+        newbind.pwd = unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])
+        newbind.reg_time = datetime.now()
+        session = Session()
+        try:
+            session.merge(newbind)
+            session.commit()
+        except:
+            session.rollback()
+            raise
+        finally:
+            session.close()
         #添加新绑定的小机用户表下面
-        ins = ''
-        try:
-            ins = btable.insert().values(devid=res.attrs[STUN_ATTRIBUTE_UUID],\
-                    pwd=unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]),reg_time=time.strftime("%Y-%m-%d %H:%M:%S"))
-        except KeyError:
-            self.errqueue[current_process().name].put(','.join(['sock %d' % res.fileno,'no uuid attr to bind']))
-            res.eattr = STUN_ERROR_UNKNOWN_PACKET
-            return 
-        except TypeError:
-            #p = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
-            return
-
-        try:
-            #QueryDB.select(ins)
-            self.db.nexecute(ins)
-        except IntegrityError:
-            stmt = btable.update().values(reg_time = time.strftime("%Y-%m-%d %H:%M:%S")).where(btable.c.devid == res.attrs[STUN_ATTRIBUTE_UUID])
-            #QueryDB.select(stmt)
-            self.db.nexecute(stmt)
-        except ProgrammingError:
-            stmt = btable.update().values(reg_time = time.strftime("%Y-%m-%d %H:%M:%S")).where(btable.c.devid == res.attrs[STUN_ATTRIBUTE_UUID])
-            self.db.nexecute(stmt)
-            #QueryDB.select(stmt)
-        #conn.close()
+#        ins = ''
+#        try:
+#            ins = btable.insert().values(devid=res.attrs[STUN_ATTRIBUTE_UUID],\
+#                    pwd=unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]),reg_time=time.strftime("%Y-%m-%d %H:%M:%S"))
+#        except KeyError:
+#            self.errqueue[current_process().name].put(','.join(['sock %d' % res.fileno,'no uuid attr to bind']))
+#            res.eattr = STUN_ERROR_UNKNOWN_PACKET
+#            return 
+#        except TypeError:
+#            #p = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
+#            return
+#
+#        try:
+#            #QueryDB.select(ins)
+#            self.db.nexecute(ins)
+#        except IntegrityError:
+#            stmt = btable.update().values(reg_time = time.strftime("%Y-%m-%d %H:%M:%S")).where(btable.c.devid == res.attrs[STUN_ATTRIBUTE_UUID])
+#            #QueryDB.select(stmt)
+#            self.db.nexecute(stmt)
+#        except ProgrammingError:
+#            stmt = btable.update().values(reg_time = time.strftime("%Y-%m-%d %H:%M:%S")).where(btable.c.devid == res.attrs[STUN_ATTRIBUTE_UUID])
+#            self.db.nexecute(stmt)
+#            #QueryDB.select(stmt)
+#        #conn.close()
 
     def handle_app_bind_device(self,res):
         """
@@ -848,7 +988,18 @@ class EpollServer():
             del self.appsock[fileno]
             #self.statqueue[current_process().name].put('app %s logout info dev,self fileno %d' % (name,fileno))
             """disable select db """
-            self.app_user_logout(name)
+            #self.app_user_logout(name)
+            acc = AccountStatus(uname=name,is_login=False)
+            session = Session()
+            try:
+                session.merge(acc)
+                session.commit()
+            except:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+            
             del name
         except KeyError:
             pass
@@ -858,7 +1009,22 @@ class EpollServer():
         #return
 
         try:
-            self.mirco_devices_logout(self.devsock[fileno].uuid)
+            #self.mirco_devices_logout(self.devsock[fileno].uuid)
+            uuid = self.devsock[fileno].uuid
+            vendor = uuid[32:40]
+            dtclass = VendorDev(vendor)
+            dt = dtclass(devid=uuid[:32],is_online=False)
+            session = Session()
+            try:
+
+                session.merge(dt)
+                session.commit()
+            except:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+            
         except KeyError:
             pass
     

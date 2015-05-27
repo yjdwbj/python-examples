@@ -6,53 +6,55 @@ from sqlalchemy import Table,create_engine,Column,func,or_,not_,and_,ForeignKey,
 from sqlalchemy.dialects import postgresql as pgsql
 from sqlalchemy.dialects.postgresql import BYTEA,UUID,TIMESTAMP
 from sqlalchemy.pool import QueuePool
-from sqlalchemy.orm import sessionmaker,relationship,backref,mapper,create_session
+from sqlalchemy.orm import sessionmaker,relationship,backref,mapper,create_session,configure_mappers,clear_mappers,class_mapper,object_mapper
 from sqlalchemy.ext.declarative import declarative_base
 
 SQLDriver='postgresql+psycopg2cffi://postgres:lcy123@192.168.25.105:5432/nath'
 
-eng = create_engine(SQLDriver)
+eng = create_engine(SQLDriver,pool_size=8192,max_overflow=1024)
 
-Session = sessionmaker(bind=eng)
 BaseModel = declarative_base()
-session = Session()
-metadata = MetaData()
-
-class DynamicTable(object):
-    pass
+#g_vendordev = dict()
+#g_bindtable = dict()
 
 class Vendor(BaseModel):
     __tablename__ = 'vendor'
     vname = Column(VARCHAR(8),nullable=False,primary_key=True)
 
+def Session():
+    S = sessionmaker(bind=eng)
+    return S()
+
 def VendorDev(tname):
-    metadata = MetaData(bind=eng)
-    mirco_devices = Table(tname,metadata,
-             Column('devid',pgsql.UUID,primary_key=True,unique=True),
-             Column('is_active',pgsql.BOOLEAN,nullable=False,default=True),
-             Column('last_login_time',pgsql.TIMESTAMP,nullable=False,default=datetime.now()),
-             Column('is_online',pgsql.BOOLEAN,nullable=False,default=False),
-             Column('chost',pgsql.VARCHAR(22),nullable=False,default=''),
-             Column('data',pgsql.BYTEA)
-             )
-    metadata.create_all()
-    mapper(DynamicTable,mirco_devices,non_primary=True)
-    return DynamicTable()
-    #return create_session(bind=eng,autocommit=False,autoflush=True)
+    #if g_vendordev.has_key(tname):
+    #    return g_vendordev[tname]
+    #g_vendordev[tname] = 
+    return type("NewClass",(BaseModel,),{"__tablename__":tname,
+                                           #"__init__":settnlname,
+                                           "extend_existing":True,
+                                           "autoload":True,
+                                           "devid":Column(UUID,primary_key=True,unique=True,nullable=False),
+                                           "is_active":Column(Boolean,nullable=False,default=True),
+                                           "last_login_time":Column(TIMESTAMP,nullable=False,default=datetime.now()),
+                                           "is_online":Column(Boolean,nullable=False,default=True),
+                                           "chost":Column(VARCHAR(22),nullable=False,default=''),
+                                           "data":Column(BYTEA,default='')
+                                           })
+    #return g_vendordev[tname]
+
 
 
 def AccBindTable(tname):
-    metadata = MetaData(bind=eng)
-    table = Table(tname,metadata,
-            Column('devid',pgsql.VARCHAR(48),nullable=False,primary_key=True),
-            Column('pwd',pgsql.BYTEA,default=''),
-            Column('reg_time',pgsql.TIME,nullable=False,default=datetime.now())
-            )
-    metadata.create_all()
-    mapper(DynamicTable,table)
-    return DynamicTable()
-    #return create_session(bind=eng,autocommit=False,autoflush=True)
-
+    #if g_bindtable.has_key(tname):
+    #    return g_bindtable[tname]
+    #g_bindtable[tname] = 
+    return type("BindClass",(BaseModel,),{"__tablename__":tname,
+            "extend_existing":True,
+            'devid':Column(VARCHAR(48),nullable=False,primary_key=True),
+            'pwd':Column(BYTEA,default=''),
+            'reg_time':Column(TIMESTAMP,nullable=False,default=datetime.now())
+            })
+    #return g_bindtable[tname]
 
 class Account(BaseModel):
     __tablename__ = 'account'
@@ -67,10 +69,12 @@ class AccountStatus(BaseModel):
     is_login = Column(Boolean,default=False)
     last_login_time = Column(TIMESTAMP,default=datetime.now())
     chost = Column(VARCHAR(22),nullable=False,default='')
-    account = relationship("Account",backref='account')
+    #account = relationship("Account",backref='account')
+
 
 def initdb():
     BaseModel.metadata.create_all(eng)
+    session = Session()
     session.execute("""
     CREATE OR REPLACE FUNCTION add_vendor() RETURNS TRIGGER AS $$
     BEGIN
@@ -107,4 +111,5 @@ def initdb():
     CREATE TRIGGER add_bind BEFORE INSERT OR UPDATE ON account FOR EACH ROW EXECUTE PROCEDURE add_bindtable();
     """)
     session.commit()
+    session.close()
 
