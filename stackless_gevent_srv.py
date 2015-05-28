@@ -337,7 +337,7 @@ class EpollServer():
 
         session = Session()
         try:
-            dobj = session.query(abt).filter(abt.uuid == uids).first()
+            dobj = session.query(abt).with_for_update().filter(abt.uuid == uids)
             session.delete(dobj)
             session.commit()
         except:
@@ -665,15 +665,9 @@ class EpollServer():
             obj.update(user)
             obj.update(pwd)
             session = Session()
-            result = None
-            try:
-                result = session.query(Account).filter(Account.uname==user,Account.pwd==obj.digest()).first()
-                session.commit()
-            except:
-                session.rollback()
-                raise
-            finally:
-                session.close()
+            result = session.query(Account).filter(Account.uname==user,Account.pwd==obj.digest())
+            session.commit()
+            session.close()
             #print 'login result is',result
             #result = self.app_user_login(user,pwd)
             #print "app login end QueryDB",time.time() -n
@@ -693,16 +687,15 @@ class EpollServer():
         #self.app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME],res.host)
         """改用pgsql语言简化处理"""
         #self.db.rawselect("update_or_insert_table('%s','%s');" % (unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME]),"%s:%d" % (res.host[0],res.host[1])))
-        astatus = AccountStatus(uname=user,last_login_time=datetime.now(),is_login=True,chost="%s:%d" % (res.host[0],res.host[1]))
+        #astatus = AccountStatus(uname=user,last_login_time=datetime.now(),is_login=True,chost="%s:%d" % (res.host[0],res.host[1]))
         session = Session()
-        try:
-            session.merge(astatus)
+        obj = session.query(AccountStatus).with_for_update().filter(AccountStatus.uname == user).first()
+        if obj:
+            obj.is_login = True
+            obj.chost = "%s:%d" % (res.host[0],res.host[1])
+            obj.last_login_time = datetime.now()
             session.commit()
-        except:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+        session.close()
         
         #print "app update status end QueryDB",time.time() -n
         #self.statqueue[current_process().name].put('user %s login,socket is %d,host %s:%d' % (tcs.name,res.fileno,res.host[0],res.host[1]))
@@ -739,10 +732,11 @@ class EpollServer():
         if res.vendor not in self.vendors:
             session = Session()
             try:
-                ev = session.query(Vendor).filter(Vendor.vname == res.vendor).first()
+                ev = session.query(Vendor).with_for_update(read=False,nowait=False,of=Vendor).filter(Vendor.vname == res.vendor).first()
                 if not ev:
                     nvendor = Vendor(vname=res.vendor)
                     session.add(nvendor)
+                    VendorDev(res.vendor).__table__.create(eng,checkfirst=True)
                     session.commit()
             except:
                 session.rollback()
@@ -754,20 +748,23 @@ class EpollServer():
             self.lock.release()
 
         #self.update_newdevice(res)
-        newdev = VendorDev(res.vendor)()
-        
-        newdev.devid = res.tuid
-        newdev.chost = "%s:%d" % (res.host[0],res.host[1])
-        newdev.last_login_time = datetime.now()
         session = Session()
-        try:
-            session.merge(newdev)
+        BaseModel.metadata.clear()
+        vdclass = VendorDev(res.vendor)
+        print "vdclass mapper",vdclass.__mapper__
+        vdobj = session.query(vdclass).with_for_update().filter(vdclass.devid==res.tuid).first()
+        session.commit()
+        if vdobj:
+            vdobj.last_login_time = datetime.now()
             session.commit()
-        except:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+        else:
+            newdev = vdclass(devid=res.tuid,chost = "%s:%d" % (res.host[0],res.host[1]),last_login_time=datetime.now(),last_logout_time=datetime.now(),data='')
+            session.add(newdev)
+            session.commit()
+
+
+        #newdev = VendorDev(res.vendor)(devid=res.tuid,chost = "%s:%d" % (res.host[0],res.host[1]),last_login_time=datetime.now(),last_logout_time=datetime.now(),data='')
+        session.close()
         #self.db.insert_vendor_dt(res.vendor,res.tuid,'%s:%d' % (res.host[0],res.host[1]),'')
 
         self.devsock[res.fileno] = tcs = ComState()
@@ -804,7 +801,7 @@ class EpollServer():
         user = unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])
         session = Session()
         try:
-            r = session.query(Account).filter(Account.uname == user).first()
+            r = session.query(Account).with_for_update().filter(Account.uname == user).first()
             session.commit()
             if r:
                 # 用户名已经存了。
@@ -816,7 +813,13 @@ class EpollServer():
                 obj.update(user)
                 obj.update(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])
                 na = Account(uname=user,pwd=obj.digest(),is_active=True,reg_time=datetime.now())
+                abt = AccBindTable(user)
+                """动态创建该用户的绑定表，原来用数据库的trigger函数不能在多进程同步"""
+                abt.__table__.create(eng,checkfirst=True)
+                astatus = AccountStatus(uname = user,is_login=False,last_login_time='now()',last_logout_time='now()',chost="%s:%d" % (res.host[0],res.host[1]))
                 session.merge(na)
+                session.flush()
+                session.add(astatus)
                 session.commit()
         except:
             session.rollback()
@@ -833,19 +836,16 @@ class EpollServer():
         """
         #btable  = QueryDB.get_account_bind_table(self.users[res.fileno])
         user = self.users[res.fileno]
-        newbind = AccBindTable(user)()
-        newbind.devid = res.attrs[STUN_ATTRIBUTE_UUID]
-        newbind.pwd = unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])
-        newbind.reg_time = datetime.now()
         session = Session()
-        try:
-            session.merge(newbind)
+        BaseModel.metadata.clear()
+        abtclass = AccBindTable(user)
+        abtobj = session.query(abtclass).with_for_update().filter(abtclass.devid == res.attrs[STUN_ATTRIBUTE_UUID]).first()
+        session.commit()
+        if not abtobj:
+            newbind = abtclass(devid = res.attrs[STUN_ATTRIBUTE_UUID],pwd=unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]),reg_time=datetime.now())
+            session.add(newbind)
             session.commit()
-        except:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+        session.close()
         #添加新绑定的小机用户表下面
 #        ins = ''
 #        try:
@@ -881,7 +881,7 @@ class EpollServer():
             if chk:
                 res.eattr = chk
                 del chk
-                self.errqueue[current_process().name].put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(str(sys._getframe().f_lineno))]))
+                self.errqueue[current_process().name].put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
                 return stun_error_response(res)
             self.bind_each_uuid((res.attrs[STUN_ATTRIBUTE_UUID],res.fileno))
             """disable select db """
@@ -989,10 +989,12 @@ class EpollServer():
             #self.statqueue[current_process().name].put('app %s logout info dev,self fileno %d' % (name,fileno))
             """disable select db """
             #self.app_user_logout(name)
-            acc = AccountStatus(uname=name,is_login=False)
             session = Session()
+            item = session.query(AccountStatus).with_for_update(read=True).filter(AccountStatus.uname == name).first()
+            if item:
+                item.is_login = False
+                item.last_logout_time = datetime.now()
             try:
-                session.merge(acc)
                 session.commit()
             except:
                 session.rollback()
@@ -1012,12 +1014,16 @@ class EpollServer():
             #self.mirco_devices_logout(self.devsock[fileno].uuid)
             uuid = self.devsock[fileno].uuid
             vendor = uuid[32:40]
-            dtclass = VendorDev(vendor)
-            dt = dtclass(devid=uuid[:32],is_online=False)
-            session = Session()
-            try:
 
-                session.merge(dt)
+            #dt = dtclass(devid=uuid[:32],is_online=False)
+            session = Session()
+            BaseModel.metadata.clear()
+            dtclass = VendorDev(vendor)
+            item = session.query(dtclass).with_for_update().filter(dtclass.devid == uuid[:32]).first()
+            if item:
+                item.is_online = False
+                item.last_logout_time = datetime.now()
+            try:
                 session.commit()
             except:
                 session.rollback()
