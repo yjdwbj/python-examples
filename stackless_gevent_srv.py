@@ -615,7 +615,7 @@ class EpollServer():
             obj = hashlib.sha256()
             obj.update(user)
             obj.update(pwd)
-            if not self.db.user_login(user,obj.digest()):
+            if not self.db.user_login(user,obj.digest(),'%s:%d' % (res.host[0],res.host[1])):
                 res.eattr = STUN_ERROR_AUTH
                 return  stun_error_response(res)
         except KeyError:
@@ -671,7 +671,12 @@ class EpollServer():
             self.lock.release()
 
         #self.update_newdevice(res)
-        self.db.insert_devtable(vname=res.vendor,devid=res.tuid,chost="%s:%d" % (res.host[0],res.host[1]),data='')
+        data = ''
+        try:
+            data = res.attrs[STUN_ATTRIBUTE_DATA]
+        except KeyError:
+            pass
+        self.db.insert_devtable(vname=res.vendor,devid=res.tuid,chost="%s:%d" % (res.host[0],res.host[1]),data=data)
 
         #newdev = VendorDev(res.vendor)(devid=res.tuid,chost = "%s:%d" % (res.host[0],res.host[1]),last_login_time=datetime.now(),last_logout_time=datetime.now(),data='')
         #self.db.insert_vendor_dt(res.vendor,res.tuid,'%s:%d' % (res.host[0],res.host[1]),'')
@@ -696,13 +701,15 @@ class EpollServer():
         """disable select db """
         #if self.app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]):
         user = unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])
-        if self.db.check_user_exist(unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])):
+        print "user is check",user
+        print current_process().name
+        if self.db.check_user_exist(user):
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
         obj = hashlib.sha256()
         obj.update(user)
         obj.update(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])
-        self.db.insert_account_table(user,obj.digest())
+        self.db.insert_account_table(user,obj.digest(),"%s:%d" % (res.host[0],res.host[1]))
         #self.statqueue[current_process().name].put('register success %s' % res.attrs[STUN_ATTRIBUTE_USERNAME])
         return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME])
 
@@ -857,18 +864,7 @@ class EpollServer():
             #self.statqueue[current_process().name].put('app %s logout info dev,self fileno %d' % (name,fileno))
             """disable select db """
             #self.app_user_logout(name)
-            session = Session()
-            item = session.query(AccountStatus).with_for_update(read=True).filter(AccountStatus.uname == name).first()
-            if item:
-                item.is_login = False
-                item.last_logout_time = datetime.now()
-            try:
-                session.commit()
-            except:
-                session.rollback()
-                raise
-            finally:
-                session.close()
+            self.db.user_logout(name)
             
             del name
         except KeyError:
@@ -882,22 +878,10 @@ class EpollServer():
             #self.mirco_devices_logout(self.devsock[fileno].uuid)
             uuid = self.devsock[fileno].uuid
             vendor = uuid[32:40]
+            self.db.devtable_logout(vendor,uuid[:32])
+
 
             #dt = dtclass(devid=uuid[:32],is_online=False)
-            session = Session()
-            BaseModel.metadata.clear()
-            dtclass = VendorDev(vendor)
-            item = session.query(dtclass).with_for_update().filter(dtclass.devid == uuid[:32]).first()
-            if item:
-                item.is_online = False
-                item.last_logout_time = datetime.now()
-            try:
-                session.commit()
-            except:
-                session.rollback()
-                raise
-            finally:
-                session.close()
             
         except KeyError:
             pass

@@ -643,248 +643,248 @@ class MySQLEngine():
             """)
 
 #SQLDriver="postgresql+psycopg2cffi://postgres:lcy123@nath.cavxfx5fkqgx.us-west-2.rds.amazonaws.com:5432"
-SQLDriver='postgresql+psycopg2cffi://postgres:lcy123@192.168.25.105:5432/nath'
-
-class PostgresSQLEngine():
-    def __init__(self):
-        #self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=8192,max_overflow=4096,\
-        #        poolclass=QueuePool)
-        self.engine = create_engine(SQLDriver,pool_size=8192,max_overflow=4096)
-
-    def check_table(self,table):
-        return table.exists(self.engine)
-
-    def get_engine(self):
-        return self.engine
-
-    def get_dbconn(self):
-        return self.get_engine().connect()
-
-    def nexecute(self,stmt): #不做返回的查询
-        self.get_dbconn().execute(stmt)
-    
-    def execute(self,stmt):
-        result = self.get_dbconn().execute(stmt)
-        res = []
-        try:
-            for row in result:
-                res.append(str(row))
-        except ResourceClosedError:
-            res = []
-        return res
-        #return self.get_dbconn().execute(stmt)
-        
-
-    def rawselect(self,stmt):
-        self.get_engine().execute("select %s;" % stmt);
-
-    def create_table(self,sql_txt):
-        self.engine.connect().execute(sql_txt)
-        
-    @staticmethod
-    def get_vendor_table(): #记录厂商的名称
-        metadata = MetaData()
-        vtable = Table('vendor',metadata,
-                Column('vname',pgsql.VARCHAR(8),nullable=False,primary_key=True,unique=True)
-                )
-        return vtable
-
-    def insert_vendor_dt(self,vendor_name,devid,host,data):
-        dt = self.get_devices_table(vendor_name)
-        sel = select([literal(devid),True,text('CURRENT_TIMESTAMP'),True,literal(host),literal(data)]).where(
-                   ~exists([dt.c.devid]).where(dt.c.devid == devid)
-              )
-        ins = dt.insert().from_select(['devid','is_active','last_login_time','is_online','chost','data'], sel)
-        self.nexecute(ins)
-
-    def insert_vendor_table(self,vname):
-        """
-        INSERT INTO example_table
-            (id, name)
-        SELECT 1, 'John'
-        WHERE
-            NOT EXISTS (
-                SELECT id FROM example_table WHERE id = 1
-            );
-        """
-        
-        vt = self.get_vendor_table()
-        sel = select([literal(vname)]).where(
-                   ~exists([vt.c.vname]).where(vt.c.vname == vname)
-              )
-        
-        ins = vt.insert().from_select(['vname'], sel)
-        self.nexecute(ins)
-
-
-    def insert_account_table(self,uname,pwd):
-        at = self.get_account_table()
-        sel = select([literal(uname),pwd,True,text('CURRENT_TIMESTAMP')]).where(
-                ~exists([at.c.uname]).where(at.c.uname == uname))
-        ins = at.insert().from_select(['uname'],sel)
-        self.nexecute(ins)
-
-
-    @staticmethod
-    def select(sql_txt):
-        engine = create_engine(SQLDriver)
-        #engine = create_engine('postgresql+psycopg2cffi://postgres:lcy123@127.0.0.1:5432/nath')
-        conn = engine.connect()
-        result = conn.execute(sql_txt)
-        res = []
-        try:
-            for row in result:
-                res.append(str(row))
-        except ResourceClosedError:
-            res = []
-        conn.close()
-        return res
-
-
-
-    @staticmethod
-    def get_account_bind_table(name):
-        metadata = MetaData()
-        table = Table(name,metadata,
-                Column('devid',pgsql.VARCHAR(48),nullable=False,primary_key=True),
-                Column('pwd',pgsql.BYTEA),
-                Column('reg_time',pgsql.TIME,nullable=False)
-                )
-        return table
-
-    @staticmethod
-    def get_account_status_table():
-        metadata = MetaData()
-        table = Table('account_status',metadata,
-                Column('uname',pgsql.VARCHAR(255)),
-                Column('is_login',pgsql.BOOLEAN,nullable=False),
-                Column('last_login_time',pgsql.TIME,nullable=False),
-                Column('chost',pgsql.VARCHAR(22),nullable=False)
-                )
-        return table
-    
-    @staticmethod
-    def get_account_table():
-        metadata = MetaData()
-        account = Table('account',metadata,
-                #Column('uuid',pgsql.UUID,primary_key=True),
-                Column('uname',pgsql.VARCHAR(255),primary_key=True),
-                Column('pwd',pgsql.BYTEA),
-                Column('is_active',pgsql.BOOLEAN,nullable=False),
-                Column('reg_time',pgsql.TIME,nullable=False)
-                )
-        return account
-
-    @staticmethod
-    def get_devices_table(vendor_name):
-        metadata = MetaData()
-        mirco_devices = Table(vendor_name,metadata,
-                Column('devid',pgsql.UUID,primary_key=True,unique=True),
-                Column('is_active',pgsql.BOOLEAN,nullable=False),
-                Column('last_login_time',pgsql.TIMESTAMP,nullable=False),
-                Column('is_online',pgsql.BOOLEAN,nullable=False),
-                Column('chost',pgsql.VARCHAR(22),nullable=False),
-                Column('data',pgsql.BYTEA)
-                )
-        return mirco_devices
-
-
-    @staticmethod
-    def check_boot_tables():
-        engine = create_engine(SQLDriver)
-        conn = engine.connect()
-        atable = PostgresSQLEngine.get_account_table()
-        if not atable.exists(engine):
-            conn.execute("""
-            CREATE TABLE account
-            (
-            uname character varying(255) NOT NULL,
-            pwd BYTEA,
-            is_active boolean NOT NULL DEFAULT true,
-            reg_time timestamp with time zone DEFAULT now(),
-            CONSTRAINT uname_pkey PRIMARY KEY(uname),
-            CONSTRAINT uname_ukey UNIQUE(uname)
-            )
-            WITH (
-              OIDS=FALSE
-            );
-            ALTER TABLE account
-              OWNER TO postgres;
-
-            CREATE OR REPLACE FUNCTION add_bindtable() RETURNS TRIGGER AS $BODY$
-            BEGIN
-            EXECUTE format('
-            CREATE TABLE IF NOT EXISTS "'||NEW.uname||'"  (
-              devid VARCHAR(48) NOT NULL PRIMARY KEY,
-              pwd BYTEA,
-              reg_time timestamp with time zone DEFAULT now()
-              );');
-            RETURN NEW;
-            END;
-            $BODY$ LANGUAGE plpgsql;
-
-            
-            CREATE TRIGGER add_bind BEFORE INSERT OR UPDATE ON account FOR EACH ROW EXECUTE PROCEDURE add_bindtable();
-            """)
-
-        stable = PostgresSQLEngine.get_account_status_table()
-        if not stable.exists(engine):
-            conn.execute(""" 
-            CREATE TABLE account_status
-            (
-              uname character varying(255) NOT NULL ,
-              is_login boolean NOT NULL DEFAULT false,
-              last_login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              chost character varying(22) NOT NULL DEFAULT '',
-              CONSTRAINT account_status_uname_fkey FOREIGN KEY (uname)
-                  REFERENCES account (uname) MATCH SIMPLE
-                  ON UPDATE NO ACTION ON DELETE NO ACTION
-            );
-            
-            CREATE OR REPLACE FUNCTION update_or_insert_table(name text,host text) RETURNS VOID AS
-            $$
-            BEGIN
-                LOOP
-                    UPDATE account_status SET last_login_time = NOW(),chost = host WHERE uname = name;
-                    if found THEN
-                        RETURN;
-                    END IF;
-                    BEGIN
-                        INSERT INTO account_status(uname,is_login,last_login_time,chost) VALUES(name,True,'now',host);
-                        RETURN;
-                    EXCEPTION WHEN unique_violation THEN
-                        NULL;
-                    END;
-                END LOOP;
-            END;
-            $$
-            LANGUAGE plpgsql;
-            """)
-
-        vtable = PostgresSQLEngine.get_vendor_table()
-        if not vtable.exists(engine):
-            #vtable.create(engine)
-            """每插入一条新的厂商名到vendor表，就为这个名字新建一张表"""
-            conn.execute("""
-            CREATE FUNCTION add_vendor() RETURNS TRIGGER AS $$
-            BEGIN
-            EXECUTE format('
-            CREATE TABLE IF NOT EXISTS "'||new.vname||'" (
-              devid uuid NOT NULL PRIMARY KEY,
-              is_active boolean NOT NULL,
-              last_login_time timestamp without time zone NOT NULL,
-              is_online boolean NOT NULL,
-              chost character varying(22) NOT NULL,
-              data bytea 
-              );');
-              RETURN NEW;
-            END;
-            $$LANGUAGE plpgsql;
-
-                
-            CREATE TRIGGER insert_device BEFORE INSERT OR UPDATE ON vendor FOR EACH ROW EXECUTE PROCEDURE add_vendor();
-            """)
-        conn.close()
+#SQLDriver='postgresql+psycopg2cffi://postgres:lcy123@192.168.25.105:5432/nath'
+#
+#class PostgresSQLEngine():
+#    def __init__(self):
+#        #self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=8192,max_overflow=4096,\
+#        #        poolclass=QueuePool)
+#        self.engine = create_engine(SQLDriver,pool_size=8192,max_overflow=4096)
+#
+#    def check_table(self,table):
+#        return table.exists(self.engine)
+#
+#    def get_engine(self):
+#        return self.engine
+#
+#    def get_dbconn(self):
+#        return self.get_engine().connect()
+#
+#    def nexecute(self,stmt): #不做返回的查询
+#        self.get_dbconn().execute(stmt)
+#    
+#    def execute(self,stmt):
+#        result = self.get_dbconn().execute(stmt)
+#        res = []
+#        try:
+#            for row in result:
+#                res.append(str(row))
+#        except ResourceClosedError:
+#            res = []
+#        return res
+#        #return self.get_dbconn().execute(stmt)
+#        
+#
+#    def rawselect(self,stmt):
+#        self.get_engine().execute("select %s;" % stmt);
+#
+#    def create_table(self,sql_txt):
+#        self.engine.connect().execute(sql_txt)
+#        
+#    @staticmethod
+#    def get_vendor_table(): #记录厂商的名称
+#        metadata = MetaData()
+#        vtable = Table('vendor',metadata,
+#                Column('vname',pgsql.VARCHAR(8),nullable=False,primary_key=True,unique=True)
+#                )
+#        return vtable
+#
+#    def insert_vendor_dt(self,vendor_name,devid,host,data):
+#        dt = self.get_devices_table(vendor_name)
+#        sel = select([literal(devid),True,'now()',True,literal(host),literal(data)]).where(
+#                   ~exists([dt.c.devid]).where(dt.c.devid == literal(devid))
+#              )
+#        ins = dt.insert().from_select(['devid','is_active','last_login_time','is_online','chost','data','last_logout_time], sel)
+#        self.nexecute(ins)
+#
+#    def insert_vendor_table(self,vname):
+#        """
+#        INSERT INTO example_table
+#            (id, name)
+#        SELECT 1, 'John'
+#        WHERE
+#            NOT EXISTS (
+#                SELECT id FROM example_table WHERE id = 1
+#            );
+#        """
+#        
+#        vt = self.get_vendor_table()
+#        sel = select([literal(vname)]).where(
+#                   ~exists([vt.c.vname]).where(vt.c.vname == literal(vname))
+#              )
+#        
+#        ins = vt.insert().from_select(['vname'], sel)
+#        self.nexecute(ins)
+#
+#
+#    def insert_account_table(self,uname,pwd):
+#        at = self.get_account_table()
+#        sel = select([literal(uname),decode(pwd,'hex'),True,'now()']).where(
+#                ~exists([at.c.uname]).where(at.c.uname == literal(uname)))
+#        ins = at.insert().from_select(['uname','pwd','is_active','reg_time'],sel)
+#        self.nexecute(ins)
+#
+#
+#    @staticmethod
+#    def select(sql_txt):
+#        engine = create_engine(SQLDriver)
+#        #engine = create_engine('postgresql+psycopg2cffi://postgres:lcy123@127.0.0.1:5432/nath')
+#        conn = engine.connect()
+#        result = conn.execute(sql_txt)
+#        res = []
+#        try:
+#            for row in result:
+#                res.append(str(row))
+#        except ResourceClosedError:
+#            res = []
+#        conn.close()
+#        return res
+#
+#
+#
+#    @staticmethod
+#    def get_account_bind_table(name):
+#        metadata = MetaData()
+#        table = Table(name,metadata,
+#                Column('devid',pgsql.VARCHAR(48),nullable=False,primary_key=True),
+#                Column('pwd',pgsql.BYTEA),
+#                Column('reg_time',pgsql.TIME,nullable=False)
+#                )
+#        return table
+#
+#    @staticmethod
+#    def get_account_status_table():
+#        metadata = MetaData()
+#        table = Table('account_status',metadata,
+#                Column('uname',pgsql.VARCHAR(255)),
+#                Column('is_login',pgsql.BOOLEAN,nullable=False),
+#                Column('last_login_time',pgsql.TIME,nullable=False),
+#                Column('chost',pgsql.VARCHAR(22),nullable=False)
+#                )
+#        return table
+#    
+#    @staticmethod
+#    def get_account_table():
+#        metadata = MetaData()
+#        account = Table('account',metadata,
+#                #Column('uuid',pgsql.UUID,primary_key=True),
+#                Column('uname',pgsql.VARCHAR(255),primary_key=True),
+#                Column('pwd',pgsql.BYTEA),
+#                Column('is_active',pgsql.BOOLEAN,nullable=False),
+#                Column('reg_time',pgsql.TIME,nullable=False)
+#                )
+#        return account
+#
+#    @staticmethod
+#    def get_devices_table(vendor_name):
+#        metadata = MetaData()
+#        mirco_devices = Table(vendor_name,metadata,
+#                Column('devid',pgsql.UUID,primary_key=True,unique=True),
+#                Column('is_active',pgsql.BOOLEAN,nullable=False),
+#                Column('last_login_time',pgsql.TIMESTAMP,nullable=False),
+#                Column('is_online',pgsql.BOOLEAN,nullable=False),
+#                Column('chost',pgsql.VARCHAR(22),nullable=False),
+#                Column('data',pgsql.BYTEA)
+#                )
+#        return mirco_devices
+#
+#
+#    @staticmethod
+#    def check_boot_tables():
+#        engine = create_engine(SQLDriver)
+#        conn = engine.connect()
+#        atable = PostgresSQLEngine.get_account_table()
+#        if not atable.exists(engine):
+#            conn.execute("""
+#            CREATE TABLE account
+#            (
+#            uname character varying(255) NOT NULL,
+#            pwd BYTEA,
+#            is_active boolean NOT NULL DEFAULT true,
+#            reg_time timestamp with time zone DEFAULT now(),
+#            CONSTRAINT uname_pkey PRIMARY KEY(uname),
+#            CONSTRAINT uname_ukey UNIQUE(uname)
+#            )
+#            WITH (
+#              OIDS=FALSE
+#            );
+#            ALTER TABLE account
+#              OWNER TO postgres;
+#
+#            CREATE OR REPLACE FUNCTION add_bindtable() RETURNS TRIGGER AS $BODY$
+#            BEGIN
+#            EXECUTE format('
+#            CREATE TABLE IF NOT EXISTS "'||NEW.uname||'"  (
+#              devid VARCHAR(48) NOT NULL PRIMARY KEY,
+#              pwd BYTEA,
+#              reg_time timestamp with time zone DEFAULT now()
+#              );');
+#            RETURN NEW;
+#            END;
+#            $BODY$ LANGUAGE plpgsql;
+#
+#            
+#            CREATE TRIGGER add_bind BEFORE INSERT OR UPDATE ON account FOR EACH ROW EXECUTE PROCEDURE add_bindtable();
+#            """)
+#
+#        stable = PostgresSQLEngine.get_account_status_table()
+#        if not stable.exists(engine):
+#            conn.execute(""" 
+#            CREATE TABLE account_status
+#            (
+#              uname character varying(255) NOT NULL ,
+#              is_login boolean NOT NULL DEFAULT false,
+#              last_login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+#              chost character varying(22) NOT NULL DEFAULT '',
+#              CONSTRAINT account_status_uname_fkey FOREIGN KEY (uname)
+#                  REFERENCES account (uname) MATCH SIMPLE
+#                  ON UPDATE NO ACTION ON DELETE NO ACTION
+#            );
+#            
+#            CREATE OR REPLACE FUNCTION update_or_insert_table(name text,host text) RETURNS VOID AS
+#            $$
+#            BEGIN
+#                LOOP
+#                    UPDATE account_status SET last_login_time = NOW(),chost = host WHERE uname = name;
+#                    if found THEN
+#                        RETURN;
+#                    END IF;
+#                    BEGIN
+#                        INSERT INTO account_status(uname,is_login,last_login_time,chost) VALUES(name,True,'now',host);
+#                        RETURN;
+#                    EXCEPTION WHEN unique_violation THEN
+#                        NULL;
+#                    END;
+#                END LOOP;
+#            END;
+#            $$
+#            LANGUAGE plpgsql;
+#            """)
+#
+#        vtable = PostgresSQLEngine.get_vendor_table()
+#        if not vtable.exists(engine):
+#            #vtable.create(engine)
+#            """每插入一条新的厂商名到vendor表，就为这个名字新建一张表"""
+#            conn.execute("""
+#            CREATE FUNCTION add_vendor() RETURNS TRIGGER AS $$
+#            BEGIN
+#            EXECUTE format('
+#            CREATE TABLE IF NOT EXISTS "'||new.vname||'" (
+#              devid uuid NOT NULL PRIMARY KEY,
+#              is_active boolean NOT NULL,
+#              last_login_time timestamp without time zone NOT NULL,
+#              is_online boolean NOT NULL,
+#              chost character varying(22) NOT NULL,
+#              data bytea 
+#              );');
+#              RETURN NEW;
+#            END;
+#            $$LANGUAGE plpgsql;
+#
+#                
+#            CREATE TRIGGER insert_device BEFORE INSERT OR UPDATE ON vendor FOR EACH ROW EXECUTE PROCEDURE add_vendor();
+#            """)
+#        conn.close()
         
 
 

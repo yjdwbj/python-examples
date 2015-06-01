@@ -2,10 +2,12 @@
 
 from datetime import datetime
 from sqlalchemy.exc import *
-from sqlalchemy import Table,create_engine,Column,func,or_,not_,and_,ForeignKey,String,Integer,BigInteger,Date,MetaData,DateTime,Boolean,VARCHAR,sql,exists,literal
+from sqlalchemy import Table,create_engine,Column,func,or_,not_,and_,ForeignKey,String,Integer,BigInteger,Date,MetaData,DateTime,Boolean,VARCHAR,sql,exists,literal,text
 from sqlalchemy.dialects import postgresql as pgsql
 from sqlalchemy.dialects.postgresql import BYTEA,UUID,TIMESTAMP
 from sqlalchemy.pool import QueuePool
+from sqlalchemy.sql.expression import insert,select,update,delete
+from binascii import unhexlify,hexlify
 
 SQLDriver='postgresql+psycopg2cffi://postgres:lcy123@192.168.25.105:5432/nath'
 
@@ -22,7 +24,8 @@ def get_account_table():
             Column('uname',pgsql.VARCHAR(255),primary_key=True),
             Column('pwd',pgsql.BYTEA,nullable=False,default =''),
             Column('is_active',pgsql.BOOLEAN,nullable=False,default=True),
-            Column('reg_time',pgsql.TIME,nullable=False)
+            Column('reg_time',pgsql.TIME,nullable=False,default='now()'),
+            Column('reg_host',pgsql.VARCHAR(22),nullable=False,default='127.0.0.1')
             )
     return account
 
@@ -49,8 +52,8 @@ def get_account_status_table():
     table = Table('account_status',metadata,
             Column('uname',pgsql.VARCHAR(255),ForeignKey("account.uname")),
             Column('is_login',pgsql.BOOLEAN,nullable=False,default=False),
-            Column('last_login_time',pgsql.TIME,nullable=False,default ='now()'),
-            Column('last_logout_time',pgsql.TIME,nullable=False,default='now()'),
+            Column('last_login_time',pgsql.TIME,default ='now()'),
+            Column('last_logout_time',pgsql.TIME,default='now()'),
             Column('chost',pgsql.VARCHAR(22),nullable=False,default='')
             )
     return table
@@ -63,8 +66,8 @@ def get_devices_table(vendor_name):
             Column('is_active',pgsql.BOOLEAN,nullable=False,default=True),
             Column('last_login_time',pgsql.TIMESTAMP,nullable=False,default='now()'),
             Column('last_logout_time',pgsql.TIMESTAMP,nullable=False,default='now()'),
-            Column('is_online',pgsql.BOOLEAN,nullable=False),
-            Column('chost',pgsql.VARCHAR(22),nullable=False),
+            Column('is_online',pgsql.BOOLEAN,nullable=False,default=False),
+            Column('chost',pgsql.VARCHAR(22),nullable=False,default=''),
             Column('data',pgsql.BYTEA,nullable=False,default='')
             )
     return mirco_devices
@@ -110,7 +113,7 @@ class PostgresSQLEngine():
     def get_vendor_to_set(self):
         vt = get_vendor_table()
         ins = sql.select([vt.c.vname])
-        conn = self.get_dbconn()
+        conn = self.engine.connect()
         trans = conn.begin()
         result = None
         try:
@@ -121,7 +124,7 @@ class PostgresSQLEngine():
             raise PGError('run query as %s occur err' % str(ins))
         mset= set()
         for row in result:
-            mlist.add(row['vname'])
+            mset.add(row['vname'])
         return mset
 
 
@@ -137,46 +140,53 @@ class PostgresSQLEngine():
         """
         
         vt = get_vendor_table()
-        sel = sql.select([vname]).where(
-                   ~exists([vt.c.vname]).where(vt.c.vname == vname))
+        sel = sql.select([literal(vname)]).where(
+                   ~exists([vt.c.vname]).where(vt.c.vname == literal(vname)))
         ins = vt.insert().from_select(['vname'], sel)
         return self.run_trans(ins)
 
     """ 用户表操作"""
 
-    def insert_account_table(self,uname,pwd):
+    def insert_account_table(self,uname,pwd,chost):
         at = get_account_table()
-        sel = sql.select([literal(uname),literal(pwd)]).where(
-                ~exists([at.c.uname]).where(at.c.uname == uname))
-        ins = at.insert().from_select(['uname','pwd','is_active','reg_time'],sel)
-        return self.run_trans(ins)
+        sel = sql.select([literal(uname),literal(hexlify(pwd)),True,at.c.reg_time,literal(chost)]).where(
+                ~exists([at.c.uname]).where(at.c.uname == literal(uname)))
+        ins = at.insert().from_select(['uname','pwd','is_active','reg_time','reg_host'],sel)
+        conn = self.get_dbconn()
+        trans = conn.begin()
+        conn.execute(ins)
+        trans.commit()
+        ast = get_account_status_table()
+        ins = ast.insert().values(uname =literal(uname),chost = literal(chost))
+        self.run_trans(ins)
+            #trans.rollback()
+            #raise PGError('run query as %s occur err' % str(ins))
+            #raise
 
     def user_logout(self,uname):
         ast = get_account_status_table()
-        ins = ast.update().values(last_logout_time = 'now()').where(ast.c.uanme == uname)
+        ins = ast.update().values(last_logout_time = 'now()',is_login=False).where(ast.c.uname == literal(uname))
         return self.run_trans(ins)
 
-    def user_login(self,uname,pwd):
+    def user_login(self,uname,pwd,chost):
         at = get_account_table()
-        ins = sql.select([at.c.uname]).where(at.c.uname == uname,at.c.pwd == pwd)
+        ins = sql.select([at.c.uname]).where(and_(at.c.uname == literal(uname),at.c.pwd == literal(hexlify(pwd)),at.c.is_active==True))
         conn = self.get_dbconn()
         trans = conn.begin()
         n = None
-        try:
-            n = conn.execute(ins).first()
-            trans.commit()
-            if n:
-                ast = self.get_account_status_table()
-                ins = ast.update().values(last_login_time = 'now()').where(ast.c.uanme == uname)
-                self.run_trans(ins)
-        except:
-            trans.rollback()
-            raise PGError('run query as %s occur err' % str(s))
+        n = conn.execute(ins).first()
+        trans.commit()
+        if n:
+            ast = get_account_status_table()
+            ins = ast.update().values(last_login_time = 'now()',chost=literal(chost),is_login=True).where(ast.c.uname == literal(uname))
+            self.run_trans(ins)
+        #trans.rollback()
+        #raise PGError('run query as %s occur err' % str(ins))
 
         return n
     def update_bind_table(self,uname,devid,pwd):
         bt = get_account_bind_table(uname)
-        ins = bt.update().values(pwd=pwd,bind_time = 'now()').where(bt.c.devid == devid)
+        ins = bt.update().values(pwd=pwd,bind_time = 'now()').where(bt.c.devid == literal(devid))
         return self.run_trans(ins)
 
     def delete_bind_table(self,uname,devid):
@@ -209,36 +219,34 @@ class PostgresSQLEngine():
 
     def insert_bind_table(self,uname,devid,pwd):
         bt = get_account_bind_table(uname)
-        sel = sql.select([devid,pwd]).where(~exists([bt.c.devid]).where(bt.c.devid == devid))
+        sel = sql.select([literal(devid),literal(pwd)]).where(~exists([bt.c.devid]).where(bt.c.devid == literal(devid)))
         ins = bt.insert().from_select(['devid','pwd'],sel)
         return self.run_trans(ins)
 
     def check_user_exist(self,uname):
         at=get_account_table()
-        s = sql.select([at.c.uname]).where(at.c.uname == uname).limit(1)
+        s = sql.select([at.c.uname]).where(at.c.uname == literal(uname)).limit(1)
         conn = self.get_dbconn()
         trans = conn.begin()
         n = None
-        try:
-            n = conn.execute(s).first()
-            trans.commit()
-        except:
-            trans.rollback()
-            raise PGError('run query as %s occur err' % str(s))
+        n = conn.execute(s).first()
+        trans.commit()
+            #trans.rollback()
+            #raise PGError('run query as %s occur err' % str(s))
         return n
 
     """ 小机表的操作"""
     def devtable_logout(self,vname,devid):
         dt = get_devices_table(vname)
-        ins = dt.update().values(last_logout_time='now()').where(dt.c.devid == devid)
+        ins = dt.update().values(last_logout_time='now()',is_online=False).where(dt.c.devid == literal(devid))
         return self.run_trans(ins)
 
     def insert_devtable(self,vname,devid,chost,data):
         dt = get_devices_table(vname)
         conn = self.get_dbconn()
         trans = conn.begin()
-        sel = sql.select([devid,chost,'now()',data]).where(~exists([dt.c.devid]).where(dt.c.devid == devid))
-        ins = bt.insert().from_select(['devid','chost','last_login_time','data'],sel)
+        sel = sql.select([literal(devid),True,text('CURRENT_TIMESTAMP'),text('CURRENT_TIMESTAMP'),True,literal(chost),literal(data)]).where(~exists([dt.c.devid]).where(dt.c.devid == literal(devid)))
+        ins = dt.insert().from_select(['devid','is_active','last_login_time','last_logout_time','is_online','chost','data'],sel)
         return self.run_trans(ins)
 
     @staticmethod
@@ -270,11 +278,6 @@ class PostgresSQLEngine():
             raise
 
 
-
-
-
-
-
     @staticmethod
     def check_boot_tables():
         engine = create_engine(SQLDriver)
@@ -288,25 +291,27 @@ class PostgresSQLEngine():
             EXECUTE format('
             CREATE TABLE IF NOT EXISTS "'||NEW.uname||'"  (
               devid VARCHAR(48) NOT NULL PRIMARY KEY,
-              pwd BYTEA,
-              reg_time timestamp with time zone DEFAULT now()
+              pwd BYTEA ,
+              bind_time timestamp with time zone DEFAULT now()
               );');
             RETURN NEW;
             END;
             $BODY$ LANGUAGE plpgsql;
 
             
+            DROP TRIGGER IF EXISTS add_bind ON account;
             CREATE TRIGGER add_bind BEFORE INSERT OR UPDATE ON account FOR EACH ROW EXECUTE PROCEDURE add_bindtable();
-            CREATE OR REPLACE FUNCTION insert_account_status() RETURNS TRIGGER as 
-                $$
-            BEGIN
-            INSERT into account_status (uname,is_login,last_login_time,chost) VALUES(quote_ident(NEW.uname),False,'now()','');
-            RETURN NEW;
-            END;
-            $$ LANGUAGE plpgsql;
-
-            DROP TRIGGER IF EXISTS insert_account ON account;
-            CREATE TRIGGER insert_account AFTER INSERT  ON account FOR EACH ROW EXECUTE PROCEDURE insert_account_status();
+---           CREATE OR REPLACE FUNCTION insert_account_status() RETURNS TRIGGER as ---
+---               $$---
+---           BEGIN---
+---           EXECUTE format('---
+---           INSERT into account_status (uname,chost) VALUES(quote_ident('||NEW.uname||'),quote_ident('||NEW.chost||'));');---
+---           RETURN NEW;---
+---           END;---
+---           $$ LANGUAGE plpgsql;---
+------
+---           DROP TRIGGER IF EXISTS insert_account ON account;---
+---           CREATE TRIGGER insert_account AFTER INSERT  ON account FOR EACH ROW EXECUTE PROCEDURE insert_account_status();---
             """)
 
         stable = get_account_status_table()
@@ -334,11 +339,12 @@ class PostgresSQLEngine():
             EXECUTE format('
             CREATE TABLE IF NOT EXISTS "'||new.vname||'" (
               devid uuid NOT NULL PRIMARY KEY,
-              is_active boolean NOT NULL,
-              last_login_time timestamp without time zone NOT NULL,
-              is_online boolean NOT NULL,
-              chost character varying(22) NOT NULL,
-              data bytea 
+              is_active boolean NOT NULL DEFAULT true,
+              last_login_time timestamp without time zone NOT NULL DEFAULT now(),
+              last_logout_time timestamp without time zone NOT NULL DEFAULT now(),
+              is_online boolean NOT NULL default False,
+              chost character varying(22) NOT NULL ,
+              data bytea NOT NULL 
               );');
               RETURN NEW;
             END;
