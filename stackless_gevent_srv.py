@@ -701,8 +701,6 @@ class EpollServer():
         """disable select db """
         #if self.app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]):
         user = unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])
-        print "user is check",user
-        print current_process().name
         if self.db.check_user_exist(user):
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)

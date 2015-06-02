@@ -78,35 +78,6 @@ class PostgresSQLEngine():
         #        poolclass=QueuePool)
         self.engine = create_engine(SQLDriver,pool_size=8192,max_overflow=4096)
 
-    def check_table(self,table):
-        return table.exists(self.engine)
-
-    def get_engine(self):
-        return self.engine
-
-    def get_dbconn(self):
-        return self.get_engine().connect()
-
-    def nexecute(self,stmt): #不做返回的查询
-        self.get_dbconn().execute(stmt)
-    
-    def execute(self,stmt):
-        result = self.get_dbconn().execute(stmt)
-        res = []
-        try:
-            for row in result:
-                res.append(str(row))
-        except ResourceClosedError:
-            res = []
-        return res
-        #return self.get_dbconn().execute(stmt)
-        
-
-    def rawselect(self,stmt):
-        self.get_engine().execute("select %s;" % stmt);
-
-    def create_table(self,sql_txt):
-        self.engine.connect().execute(sql_txt)
         
     """商厂表的相关操作"""
 
@@ -116,12 +87,10 @@ class PostgresSQLEngine():
         conn = self.engine.connect()
         trans = conn.begin()
         result = None
-        try:
+        with conn.begin():
             result = conn.execute(ins).fetchall()
-            trans.commit()
-        except:
-            trans.rollback()
-            raise PGError('run query as %s occur err' % str(ins))
+            #raise PGError('run query as %s occur err' % str(ins))
+        conn.close()
         mset= set()
         for row in result:
             mset.add(row['vname'])
@@ -149,13 +118,10 @@ class PostgresSQLEngine():
 
     def insert_account_table(self,uname,pwd,chost):
         at = get_account_table()
-        sel = sql.select([literal(uname),literal(hexlify(pwd)),True,at.c.reg_time,literal(chost)]).where(
+        sel = sql.select([literal(uname),literal(hexlify(pwd)),True,literal(chost)]).where(
                 ~exists([at.c.uname]).where(at.c.uname == literal(uname)))
-        ins = at.insert().from_select(['uname','pwd','is_active','reg_time','reg_host'],sel)
-        conn = self.get_dbconn()
-        trans = conn.begin()
-        conn.execute(ins)
-        trans.commit()
+        ins = at.insert().from_select(['uname','pwd','is_active','reg_host'],sel)
+        self.run_trans(ins)
         ast = get_account_status_table()
         ins = ast.insert().values(uname =literal(uname),chost = literal(chost))
         self.run_trans(ins)
@@ -171,19 +137,19 @@ class PostgresSQLEngine():
     def user_login(self,uname,pwd,chost):
         at = get_account_table()
         ins = sql.select([at.c.uname]).where(and_(at.c.uname == literal(uname),at.c.pwd == literal(hexlify(pwd)),at.c.is_active==True))
-        conn = self.get_dbconn()
-        trans = conn.begin()
         n = None
-        n = conn.execute(ins).first()
-        trans.commit()
+        conn = self.engine.connect()
+        with conn.begin():
+            n = conn.execute(ins).first()
+        conn.close()
         if n:
             ast = get_account_status_table()
             ins = ast.update().values(last_login_time = 'now()',chost=literal(chost),is_login=True).where(ast.c.uname == literal(uname))
             self.run_trans(ins)
         #trans.rollback()
         #raise PGError('run query as %s occur err' % str(ins))
-
         return n
+
     def update_bind_table(self,uname,devid,pwd):
         bt = get_account_bind_table(uname)
         ins = bt.update().values(pwd=pwd,bind_time = 'now()').where(bt.c.devid == literal(devid))
@@ -197,16 +163,21 @@ class PostgresSQLEngine():
     def pull_bind_table(self,uname):
         bt = get_account_bind_table(uname)
         ins  = sql.select([bt.c.devid,bt.c.pwd])
-        conn = self.get_dbconn()
-        trans = conn.begin()
         result = None
-        try:
-            result = conn.execute(ins).fetchall()
-            trans.commit()
-        except:
-            trans.rollback()
-            raise PGError('run query as %s occur err' % str(ins))
-
+        while 1:
+            conn = self.engine.connect()
+            trans = conn.begin()
+            try:
+                result = conn.execute(ins).fetchall()
+                trans.commit()
+            except:
+                print "execute error in bin table",ins
+                trans.rollback()
+                conn.close()
+            else:
+                conn.close()
+                break
+    
         mlist = []
         for row in result:
             mlist.extend(list(row))
@@ -226,11 +197,10 @@ class PostgresSQLEngine():
     def check_user_exist(self,uname):
         at=get_account_table()
         s = sql.select([at.c.uname]).where(at.c.uname == literal(uname)).limit(1)
-        conn = self.get_dbconn()
-        trans = conn.begin()
         n = None
-        n = conn.execute(s).first()
-        trans.commit()
+        conn = self.engine.connect()
+        with conn.begin():
+            n = conn.execute(s).first()
             #trans.rollback()
             #raise PGError('run query as %s occur err' % str(s))
         return n
@@ -243,40 +213,35 @@ class PostgresSQLEngine():
 
     def insert_devtable(self,vname,devid,chost,data):
         dt = get_devices_table(vname)
-        conn = self.get_dbconn()
-        trans = conn.begin()
-        sel = sql.select([literal(devid),True,text('CURRENT_TIMESTAMP'),text('CURRENT_TIMESTAMP'),True,literal(chost),literal(data)]).where(~exists([dt.c.devid]).where(dt.c.devid == literal(devid)))
-        ins = dt.insert().from_select(['devid','is_active','last_login_time','last_logout_time','is_online','chost','data'],sel)
+        sel = sql.select([literal(devid),True,text('CURRENT_TIMESTAMP'),True,literal(chost),literal(data)]).where(~exists([dt.c.devid]).where(dt.c.devid == literal(devid)))
+        ins = dt.insert().from_select(['devid','is_active','last_login_time','is_online','chost','data'],sel)
         return self.run_trans(ins)
-
-    @staticmethod
-    def select(sql_txt):
-        engine = create_engine(SQLDriver)
-        #engine = create_engine('postgresql+psycopg2cffi://postgres:lcy123@127.0.0.1:5432/nath')
-        conn = engine.connect()
-        result = conn.execute(sql_txt)
-        res = []
-        try:
-            for row in result:
-                res.append(str(row))
-        except ResourceClosedError:
-            res = []
-        conn.close()
-        return res
 
 
 
     def run_trans(self,ins):
-        conn = self.get_dbconn()
-        trans = conn.begin()
-        try:
-            conn.execute(ins)
-            trans.commit()
-        except:
-            trans.rollback()
-            #raise PGError('run query as %s occur err' % str(ins))
-            raise
+        conn = self.engine.connect()
+        with conn.begin():
+                conn.execute(ins)
+        conn.close()
 
+#    def run_trans(self,ins):
+#        while 1:
+#            conn = self.engine.connect()
+#            trans = conn.begin()
+#            try:
+#                conn.execute(ins)
+#                trans.commit()
+#            except:
+#                print "execute error in run_trans"
+#                trans.rollback()
+#                raise
+#                conn.close()
+#            else:
+#                conn.close()
+#                break
+#
+            #raise PGError('run query as %s occur err' % str(ins))
 
     @staticmethod
     def check_boot_tables():

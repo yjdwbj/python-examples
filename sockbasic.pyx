@@ -13,15 +13,15 @@ from select import epoll,EPOLLET,EPOLLIN,EPOLLOUT,EPOLLHUP,EPOLLERR
 
 from binascii import hexlify,unhexlify
 from datetime import datetime
-import MySQLdb
-from sqlalchemy import *
-from sqlalchemy.exc import *
-from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,MetaData,DateTime,Boolean,SmallInteger,VARCHAR
-from sqlalchemy import sql,and_
-from sqlalchemy.dialects import postgresql as pgsql
-from sqlalchemy.dialects import mysql
-from sqlalchemy.pool import QueuePool
-from sqlalchemy.orm import sessionmaker
+#import MySQLdb
+#from sqlalchemy import *
+#from sqlalchemy.exc import *
+#from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,MetaData,DateTime,Boolean,SmallInteger,VARCHAR
+#from sqlalchemy import sql,and_
+#from sqlalchemy.dialects import postgresql as pgsql
+#from sqlalchemy.dialects import mysql
+#from sqlalchemy.pool import QueuePool
+#from sqlalchemy.orm import sessionmaker
 import sys
 import traceback
 
