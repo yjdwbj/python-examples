@@ -85,12 +85,9 @@ class PostgresSQLEngine():
         vt = get_vendor_table()
         ins = sql.select([vt.c.vname])
         conn = self.engine.connect()
-        trans = conn.begin()
         result = None
-        with conn.begin():
-            result = conn.execute(ins).fetchall()
+        result = conn.execute(ins).fetchall()
             #raise PGError('run query as %s occur err' % str(ins))
-        conn.close()
         mset= set()
         for row in result:
             mset.add(row['vname'])
@@ -139,8 +136,7 @@ class PostgresSQLEngine():
         ins = sql.select([at.c.uname]).where(and_(at.c.uname == literal(uname),at.c.pwd == literal(hexlify(pwd)),at.c.is_active==True))
         n = None
         conn = self.engine.connect()
-        with conn.begin():
-            n = conn.execute(ins).first()
+        n = conn.execute(ins).first()
         conn.close()
         if n:
             ast = get_account_status_table()
@@ -164,20 +160,9 @@ class PostgresSQLEngine():
         bt = get_account_bind_table(uname)
         ins  = sql.select([bt.c.devid,bt.c.pwd])
         result = None
-        while 1:
-            conn = self.engine.connect()
-            trans = conn.begin()
-            try:
-                result = conn.execute(ins).fetchall()
-                trans.commit()
-            except:
-                print "execute error in bin table",ins
-                trans.rollback()
-                conn.close()
-            else:
-                conn.close()
-                break
-    
+        conn = self.engine.connect()
+        result = conn.execute(ins).fetchall()
+        conn.close()
         mlist = []
         for row in result:
             mlist.extend(list(row))
@@ -199,10 +184,10 @@ class PostgresSQLEngine():
         s = sql.select([at.c.uname]).where(at.c.uname == literal(uname)).limit(1)
         n = None
         conn = self.engine.connect()
-        with conn.begin():
-            n = conn.execute(s).first()
+        n = conn.execute(s).first()
             #trans.rollback()
             #raise PGError('run query as %s occur err' % str(s))
+        conn.close()
         return n
 
     """ 小机表的操作"""
@@ -221,8 +206,7 @@ class PostgresSQLEngine():
 
     def run_trans(self,ins):
         conn = self.engine.connect()
-        with conn.begin():
-                conn.execute(ins)
+        conn.execute(ins)
         conn.close()
 
 #    def run_trans(self,ins):
