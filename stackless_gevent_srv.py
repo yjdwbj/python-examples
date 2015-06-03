@@ -22,6 +22,7 @@ import hashlib
 import gc
 from sockbasic import *
 from pg_driver import *
+from cluster import *
 #from sockbasic import MySQLEngine as QueryDB
 from pg_driver import PostgresSQLEngine as QueryDB
 import threading
@@ -34,16 +35,11 @@ monkey.patch_all(thread=False)
 
 from multiprocessing import Process,current_process,Lock
 
-
-
 from sqlalchemy import *
 from sqlalchemy.exc import *
 from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,MetaData,DateTime,Boolean,SmallInteger,VARCHAR
 from sqlalchemy import sql,and_
 from sqlalchemy.dialects import postgresql as pgsql
-
-
-
 
 LOG_ERROR_UUID='UUID Format Error'
 LOG_ERROR_AUTH='Guest Authentication error'
@@ -55,7 +51,6 @@ LOG_ERROR_PACKET='Unkown packet format'
 LOG_ERROR_ATTR='Unkown packet Attribute'
 LOG_ERROR_FILENO='Too many fileno opened'
 LOG_ERROR_IILAGE_CLIENT='Iilega Client request'
-
 
 class ComState: pass
 
@@ -149,6 +144,11 @@ class EpollServer():
         [setattr(self,x,{}) for x in store]
         """取得厂商数量，避免每次去查询"""
         self.db = PostgresSQLEngine()
+        self.mcastsqueue = Queue()
+        self.mcastrqueue = Queue()
+        self.cluster = ClusterSRV(self.mcastsqueue,self.mcastrqueue)
+        gevent.joinall([gevent.spawn(self.cluster.send_to_mcast()),gevent.spawn(self.cluster.recv_daemon())])
+        print "start cluster multicast"
 #        vendor = QueryDB.get_vendor_table()
 #        s = sql.select([vendor])
 #        rn = self.db.execute(s)
@@ -287,20 +287,6 @@ class EpollServer():
         self.db.update_bind_table(user,res.attrs[STUN_ATTRIBUTE_UUID],unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]))
         return stun_return_same_package(res)
 
-#        stmt = btable.update().values(pwd=unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])).\
-#                where(btable.c.uuid == res.attrs[STUN_ATTRIBUTE_UUID])
-#        try:
-#            QueryDB.select(stmt)
-#        except ProgrammingError:
-#            #print "table not exits"
-#            res.eattr = STUN_ERROR_OBJ_NOT_EXIST
-#            return  stun_error_response(res)
-#        except KeyError:
-#            res.eattr =STUN_ERROR_UNKNOWN_ATTR
-#            return stun_error_response(res)
-#        else:
-#            return stun_return_same_package(res)
-#
 
     def handle_delete_bind_item(self,res):
         uname = self.users[res.fileno]
@@ -334,25 +320,6 @@ class EpollServer():
             res.eattr = STUN_ERROR_OBJ_NOT_EXIST
             return  stun_error_response(res)
         return  app_user_pull_table(res,data)
-        #btable = QueryDB.get_account_bind_table(uname)
-        #s = sql.select([btable])
-#        try:
-#            #fall = QueryDB.select(s)
-#            fall = self.db.execute(s)
-#        except ProgrammingError:
-#            #print "table not exits"
-#            res.eattr = STUN_ERROR_OBJ_NOT_EXIST
-#            return  stun_error_response(res)
-#        except KeyError:
-#            res.eattr =STUN_ERROR_UNKNOWN_PACKET
-#            return  stun_error_response(res)
-#        else:
-#            data = ''.join([n.vname for n in session.query(Vendor).all()])
-#            #data = ''.join([ ''.join([r[0],r[1]]) for r in fall])
-#            if not data:
-#                res.eattr = STUN_ERROR_OBJ_NOT_EXIST
-#                return  stun_error_response(res)
-#            return  app_user_pull_table(res,data)
 
     def delete_fileno(self,fileno):
         try:
@@ -711,38 +678,6 @@ class EpollServer():
         #self.statqueue[current_process().name].put('register success %s' % res.attrs[STUN_ATTRIBUTE_USERNAME])
         return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME])
 
-    def handle_add_bind_to_user(self,res):
-        """
-        绑定小机到用户表里,
-        """
-        #btable  = QueryDB.get_account_bind_table(self.users[res.fileno])
-        user = self.users[res.fileno]
-        #添加新绑定的小机用户表下面
-        ins = ''
-        try:
-            ins = btable.insert().values(devid=res.attrs[STUN_ATTRIBUTE_UUID],\
-                    pwd=unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]),reg_time=time.strftime("%Y-%m-%d %H:%M:%S"))
-        except KeyError:
-            self.errqueue[current_process().name].put(','.join(['sock %d' % res.fileno,'no uuid attr to bind']))
-            res.eattr = STUN_ERROR_UNKNOWN_PACKET
-            return 
-        except TypeError:
-            #p = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
-            return
-
-        try:
-            #QueryDB.select(ins)
-            self.db.nexecute(ins)
-        except IntegrityError:
-            stmt = btable.update().values(reg_time = time.strftime("%Y-%m-%d %H:%M:%S")).where(btable.c.devid == res.attrs[STUN_ATTRIBUTE_UUID])
-            #QueryDB.select(stmt)
-            self.db.nexecute(stmt)
-        except ProgrammingError:
-            stmt = btable.update().values(reg_time = time.strftime("%Y-%m-%d %H:%M:%S")).where(btable.c.devid == res.attrs[STUN_ATTRIBUTE_UUID])
-            self.db.nexecute(stmt)
-            #QueryDB.select(stmt)
-        #conn.close()
-
     def handle_app_bind_device(self,res):
         """
         绑定小机的命的命令包
@@ -997,69 +932,7 @@ class EpollServer():
                 pass
     
 
-    def app_user_register(self,user,pwd):
-        account = QueryDB.get_account_table()
-        uname = unhexlify(user)
-        obj = hashlib.sha256()
-        obj.update(uname)
-        obj.update(pwd)
-        ins = account.insert().values(uname=uname,pwd=obj.digest(),is_active=True,reg_time=time.strftime("%Y-%m-%d %H:%M:%S"))
-        try:
-            self.db.nexecute(ins)
-        except IntegrityError:
-            self.errqueue[current_process().name].put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
-            del uname
-            return True
-        except DataError:
-            self.errqueue[current_process().name].put(','.join([LOG_ERROR_REGISTER,uname,str(sys._getframe().f_lineno)]))
-            del uname
-            return True
-        else:
-            del account
-            del uname
-            del obj
-            del ins
-            return False
-
     
-    def app_user_update_status(self,user,host):
-        """更新用户的状态,这里有优化表结构与流程的可能性"""
-        uname = unhexlify(user)
-        status_tables = QueryDB.get_account_status_table()
-        sss = ''
-        try:
-            sss = status_tables.update().values(last_login_time = time.strftime("%Y-%m-%d %H:%M:%S"),chost="%s:%d" %(host[0],host[1])).where(status_tables.c.uname == user)
-        except DataError:
-            sss = status_tables.insert().values(uname=uname,is_login=True,chost="%s:%d" % (host[0],host[1]))
-
-        try:
-            #QueryDB.select(sss)
-            self.db.nexecute(sss)
-        except DataError:
-            self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,host[0],str(sys._getframe().f_lineno)]))
-        del uname
-        del sss
-    
-    
-    def app_user_login(self,uname,pwd):
-        account = QueryDB.get_account_table()
-        obj = hashlib.sha256()
-        obj.update(uname)
-        obj.update(pwd)
-        s = sql.select([account]).where(and_(account.c.uname == uname,account.c.pwd == obj.digest(),
-            account.c.is_active == True))
-        del obj
-            #result = QueryDB.select(s)
-        return    self.db.execute(s)
-    
-    
-    def check_user_in_database(self,uname):
-        """
-        检查用户是否注册过
-        """
-        account = QueryDB.get_account_table()
-        s = sql.select([account.c.uname]).where(account.c.uname == uname)
-        return self.db.execute(s)
     
     def find_device_state(self,uid):
         vendor = uid[32:40]
@@ -1069,50 +942,6 @@ class EpollServer():
         result = QueryDB.select(s)
     
     
-    def update_newdevice(self,res):
-        '''添加新的小机到数据库'''
-        #print "host %d:%d" % (ipadr,ipprt)
-        data = ''
-        try:
-            data = res.attrs[STUN_ATTRIBUTE_DATA]
-        except KeyError:
-            pass
-
-        """这里只存放了标准的16B的UUID，不是24B的UUID"""
-        mirco_devices = QueryDB.get_devices_table(res.vendor)
-
-        ins = mirco_devices.insert().values(devid=res.tuid,is_active=True,
-                is_online=True,chost="%s:%d" % (res.host[0],res.host[1]),data=data,last_login_time=time.strftime("%Y-%m-%d %H:%M:%S"))
-        try:
-            #result = QueryDB.select(ins)
-            result = self.db.execute(ins)
-            #self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
-        except IntegrityError:
-            upd = mirco_devices.update().values(is_online=True,chost ="%s:%d" % (res.host[0],res.host[1]),data=data,
-                    last_login_time=time.strftime("%Y-%m-%d %H:%M:%S")).where(mirco_devices.c.devid == res.tuid)
-            try:
-                #result = QueryDB.select(upd)
-                result = self.db.execute(upd)
-            except ProgrammingError:
-                self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
-
-        except ProgrammingError as e:
-            p = "\"%s\" does not exist" % res.vendor
-            if p in str(e):
-                eng = QueryDB().get_engine()
-                mirco_devices.create(eng)
-                result = QueryDB.select(ins)
-            #self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
-            else:
-                print e
-
-        ipadr = None
-        ipprt = None
-        data = None
-
-
-
-
 
 def logger_worker(queue,logger):
     while 1:
