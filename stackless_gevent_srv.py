@@ -137,7 +137,7 @@ def stun_return_same_package(res):
 
 
 class EpollServer():
-    def __init__(self,port):
+    def __init__(self,port,cluster_eth):
         #statqueue = statqueue
         """创建多个engine让它平均到多个进程上，性能问题要进一步调试"""
         self.maxbuffer = ''
@@ -147,7 +147,7 @@ class EpollServer():
         self.mcastsqueue = Queue()
         self.mcastrqueue = Queue()
         self.cluster = ClusterSRV(self.mcastsqueue,self.mcastrqueue)
-        gevent.joinall([gevent.spawn(self.cluster.send_to_mcast()),gevent.spawn(self.cluster.recv_daemon())])
+        gevent.joinall([gevent.spawn(self.cluster.send_run,cluster_eth),gevent.spawn(self.cluster.recv_daemon())])
         print "start cluster multicast"
 #        vendor = QueryDB.get_vendor_table()
 #        s = sql.select([vendor])
@@ -602,6 +602,7 @@ class EpollServer():
         #print "app update status end QueryDB",time.time() -n
         #self.statqueue[current_process().name].put('user %s login,socket is %d,host %s:%d' % (tcs.name,res.fileno,res.host[0],res.host[1]))
         self.users[res.fileno] = user
+        self.cluster.send_to_mcast(1,1,res.host,user,res.fileno)
         return app_user_auth_success(res)
 
     def handle_allocate_request(self,res):
@@ -654,6 +655,7 @@ class EpollServer():
         #print "login devid is",tcs.uuid
         #self.statqueue[current_process().name].put('device login uuid is %s,socket is %d, host %s:%d' % (huid,res.fileno,res.host[0],res.host[1]))
         del huid
+        self.cluster.send_to_mcast(1,0,res.host,user,res.fileno)
         return device_login_sucess(res)
 
     def handle_chkuser_request(self,res):
@@ -959,19 +961,12 @@ def make_argument_parser():
     parser = argparse.ArgumentParser(
         formatter_class = argparse.ArgumentDefaultsHelpFormatter
         )
-    parser.add_argument('-d',action='store',dest='loglevel',type=int,help='''set Logging to Debug level\
-        CRITTICAL == 5,
-        ERROR = 4,
-        WARNING = 3,
-        INFO = 2(defult),
-        DEBUG = 1,
-        NOTEST = 0''')
-    parser.add_argument('-H',action='store',dest='srv_port',type=int,help='Set Services Port')
+    parser.add_argument('-p',action='store',dest='srv_port',type=int,help='Set Services Port')
+    parser.add_argument('-B',action='store',dest='bind_eth',type=str,help='Set Bind Server on interface')
+    parser.add_argument('-I',action='store',dest='cluster_interface',type=str,help='cluster communicate interface')
     parser.add_argument('--version',action='version',version=__version__)
     return parser
 
-__version__ = '0.1.0'
-#options = make_argument_parser().parse_args()
 #port = options.srv_port if options.srv_port else 3478
 
 
@@ -979,6 +974,10 @@ __version__ = '0.1.0'
 
 store = ['clients','hosts','responses','appbinds','appsock','devsock','devuuid','users','requests']
 if __name__ == '__main__':
-    QueryDB.check_boot_tables()
-    srv = EpollServer(3478)
+    __version__ = '0.1.0'
+    options = make_argument_parser().parse_args()
+    port = options.srv_port if options.srv_port else 3478
+    cluster_eth = options.cluster_interface if options.cluster_interface else None
+    QueryDB.check_boot_tables() # 检查数据库
+    srv = EpollServer(port,cluster_eth)
     #srv.run()
