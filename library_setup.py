@@ -5,7 +5,7 @@ from Cython.Distutils import build_ext
 from Cython.Build import cythonize
 ext_modules = [Extension("sockbasic",["sockbasic.pyx"]),
                Extension("pg_driver",["pg_driver.pyx"]),
-               Extension("cluster",["stackless_cluster_srv.pyx"])
+               Extension("cluster_mod",["cluster_mod.pyx"])
                ]
 setup(
     name = "socket server baisc funcs",

@@ -11,8 +11,9 @@ from netifaces import AF_INET,AF_INET6,AF_LINK,AF_PACKET,AF_BRIDGE
 import netifaces as ni
 #from Queue import Queue,Empty
 import gevent
-from gevent.queue import Queue,Empty,socket,DatagramServer
-from gevent import monkey
+from gevent.queue import Queue,Empty
+from gevent import monkey,socket
+from gevent.server import DatagramServer
 monkey.patch_all(thread=False)
 
 try:

@@ -22,7 +22,7 @@ import hashlib
 import gc
 from sockbasic import *
 from pg_driver import *
-from cluster import *
+from cluster_mod import *
 #from sockbasic import MySQLEngine as QueryDB
 from pg_driver import PostgresSQLEngine as QueryDB
 import threading
@@ -146,8 +146,7 @@ class EpollServer():
         self.db = PostgresSQLEngine()
         self.mcastsqueue = Queue()
         self.mcastrqueue = Queue()
-        self.cluster = ClusterSRV(self.mcastsqueue,self.mcastrqueue)
-        gevent.joinall([gevent.spawn(self.cluster.send_run,cluster_eth),gevent.spawn(self.cluster.recv_daemon())])
+        self.cluster = ClusterSRV(cluster_eth)
         print "start cluster multicast"
 #        vendor = QueryDB.get_vendor_table()
 #        s = sql.select([vendor])
