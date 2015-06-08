@@ -34,6 +34,7 @@ from gevent.queue import Queue
 monkey.patch_all(thread=False)
 
 from multiprocessing import Process,current_process,Lock
+import multiprocessing as mp
 
 from sqlalchemy import *
 from sqlalchemy.exc import *
@@ -187,7 +188,7 @@ class EpollServer():
         self.errlog = {}
         self.fwdlog = {}
         self.startime = time.time()
-        for i in xrange(7):
+        for i in xrange(mp.cpu_count()-1):
             Process(target=self.start_srv).start()
         #self.server.serve_forever()
 
@@ -268,6 +269,7 @@ class EpollServer():
                         break
                 n = 5 # 重试读取5次
                 hdata = hexlify(recvbuf)
+                print hdata
                 del recvbuf
                 try:
                     self.requests[fileno] += hdata
@@ -601,6 +603,7 @@ class EpollServer():
         #print "app update status end QueryDB",time.time() -n
         #self.statqueue[current_process().name].put('user %s login,socket is %d,host %s:%d' % (tcs.name,res.fileno,res.host[0],res.host[1]))
         self.users[res.fileno] = user
+        print "app login"
         self.cluster.send_to_mcast(1,1,res.host,user,res.fileno)
         return app_user_auth_success(res)
 
@@ -654,7 +657,7 @@ class EpollServer():
         #print "login devid is",tcs.uuid
         #self.statqueue[current_process().name].put('device login uuid is %s,socket is %d, host %s:%d' % (huid,res.fileno,res.host[0],res.host[1]))
         del huid
-        self.cluster.send_to_mcast(1,0,res.host,user,res.fileno)
+        self.cluster.send_to_mcast(1,0,res.host,huid,res.fileno)
         return device_login_sucess(res)
 
     def handle_chkuser_request(self,res):

@@ -13,15 +13,14 @@ import netifaces as ni
 import gevent
 from gevent.queue import Queue,Empty
 from gevent import monkey,socket
-from gevent.server import DatagramServer
+from gevent.server import DatagramServer,_udp_socket
+from multiprocessing import Process
 monkey.patch_all(thread=False)
 
 try:
     import cPickle as pickle
 except:
     import pickle
-
-
 
 GRP_ADDR= '224.1.1.1'
 GRP_PORT= 7878
@@ -34,39 +33,8 @@ class CastClass():
         self.uname = uname
         self.fileno = fileno
 
-
-class ClusterSRV(object):
-    def __init__(self,bind_interface):
-        self.sendsock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM,socket.IPPROTO_UDP)
-        self.sendsock.setsockopt(socket.IPPROTO_IP,socket.IP_MULTICAST_TTL,5)
-        self.sendsock.setsockopt(socket.IPPROTO_IP,socket.IP_MULTICAST_LOOP,0) # 禁止发给自己
-        if bind_interface: # 指定网卡发送多播。这里服务器的内部网络
-            ipaddr = ni.ifaddresses(bind_interface)[AF_INET][0]['addr']
-            self.sendsock.setsockopt(socket.SOL_IP,socket.IP_MULTICAST_IF,socket.aton(ipaddr))
-
-        self.localips = [ni.ifaddresses(n)[AF_INET][0]['addr'] for n in ni.interfaces()]
-        self.ClustUserDict = {} #其它服务器的上的用户
-        self.ClustDevDict = {}  #其它服务器的上的小机
-
-        self.recvsock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM,socket.IPPROTO_UDP)
-        self.recvsock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-        self.recvsock.bind((GRP_ADDR,GRP_PORT))
-        mreq = struct.pack("4sl",
-                socket.inet_aton(GRP_ADDR),socket.INADDR_ANY)
-        self.recvsock.setsockopt(socket.IPPROTO_IP,socket.IP_ADD_MEMBERSHIP,mreq)
-        DatagramServer(self.recvsock,self.handle_mcast).serve_forever()
-
-
-    def send_run(self,bind_interface):
-        print "send run"
-        while 1:
-            try:
-                self.sendsock.sendto(pickle.dumps(self.squeue.get_nowait()),(GRP_ADDR,GRP_PORT))
-            except Empty:
-                continue
-            time.sleep(0.001)
-
-    def handle_mcast(self,data,addr):
+class RecvServer(DatagramServer):
+    def handle(self,data,addr):
         print "recv data",data,addr
         obj = pickle.loads(data)
         if obj.opt:  # 登录 1 , 登出 0
@@ -93,6 +61,46 @@ class ClusterSRV(object):
                 tmp.__dict__.pop('fileno',None)
                 self.ClustDevDict.pop(obj.uname,None)
                 del tmp
+
+
+class ClusterSRV(object):
+    def __init__(self,bind_interface):
+        self.sendsock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM,socket.IPPROTO_UDP)
+        self.sendsock.setsockopt(socket.IPPROTO_IP,socket.IP_MULTICAST_TTL,5)
+        self.sendsock.setsockopt(socket.IPPROTO_IP,socket.IP_MULTICAST_LOOP,0) # 禁止发给自己
+        if bind_interface: # 指定网卡发送多播。这里服务器的内部网络
+            ipaddr = ni.ifaddresses(bind_interface)[AF_INET][0]['addr']
+            self.sendsock.setsockopt(socket.SOL_IP,socket.IP_MULTICAST_IF,socket.inet_aton(ipaddr))
+
+        self.localips = [ni.ifaddresses(n)[AF_INET][0]['addr'] for n in ni.interfaces()]
+        self.ClustUserDict = {} #其它服务器的上的用户
+        self.ClustDevDict = {}  #其它服务器的上的小机
+
+        self.recvsock = _udp_socket((GRP_ADDR,GRP_PORT))
+        #self.recvsock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM,socket.IPPROTO_UDP)
+        self.recvsock.setsockopt(socket.IPPROTO_IP,socket.IP_MULTICAST_LOOP,0) # 禁止发给自己
+        self.recvsock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        #self.recvsock.bind((GRP_ADDR,GRP_PORT))
+        mreq = struct.pack("4sl",
+                socket.inet_aton(GRP_ADDR),socket.INADDR_ANY)
+        self.recvsock.setsockopt(socket.IPPROTO_IP,socket.IP_ADD_MEMBERSHIP,mreq)
+        Process(target=self.run_srv).start()
+
+    def run_srv(self):
+        print "start recv server"
+        RecvServer(self.recvsock).serve_forever()
+        #DatagramServer(self.recvsock,self.handle_mcast).serve_forever()
+
+
+    def send_run(self,bind_interface):
+        print "send run"
+        while 1:
+            try:
+                self.sendsock.sendto(pickle.dumps(self.squeue.get_nowait()),(GRP_ADDR,GRP_PORT))
+            except Empty:
+                continue
+            time.sleep(0.001)
+
             
     def recv_daemon(self):     
         print 'test'
@@ -125,9 +133,11 @@ class ClusterSRV(object):
                     self.ClustDevDict.pop(obj.uname,None)
                     del tmp
             time.sleep(0.001)
+            print "not recv"
+        print "recv mcast will exit"
 
     def send_to_mcast(self,opt,typ,addr,uname,fileno):
-        obj = CastClass(self,opt,typ,addr,uname,fileno)
+        obj = CastClass(opt,typ,addr,uname,fileno)
         self.sendsock.sendto(pickle.dumps(obj),(GRP_ADDR,GRP_PORT))
 
     def check_user_in_cluster(self,uname):
