@@ -27,7 +27,7 @@ from cluster_mod import *
 from pg_driver import PostgresSQLEngine as QueryDB
 import threading
 import gevent
-from gevent.server import StreamServer,_tcp_listener
+from gevent.server import StreamServer,_tcp_listener,DatagramServer
 from gevent import server,event,socket,monkey
 from gevent.pool import Group
 from gevent.queue import Queue
@@ -41,6 +41,11 @@ from sqlalchemy.exc import *
 from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,MetaData,DateTime,Boolean,SmallInteger,VARCHAR
 from sqlalchemy import sql,and_
 from sqlalchemy.dialects import postgresql as pgsql
+
+try:
+    import cPickle as pickle
+except:
+    import pickle
 
 LOG_ERROR_UUID='UUID Format Error'
 LOG_ERROR_AUTH='Guest Authentication error'
@@ -269,7 +274,6 @@ class EpollServer():
                         break
                 n = 5 # 重试读取5次
                 hdata = hexlify(recvbuf)
-                print hdata
                 del recvbuf
                 try:
                     self.requests[fileno] += hdata
@@ -344,6 +348,10 @@ class EpollServer():
             except socket.error:
                 self.dealwith_peer_hup(fileno)
 
+    def handle_cluster(self,data,addr):
+        
+        pass
+        
 
     def handle_refresh_request(self,res):
         pass
@@ -404,6 +412,10 @@ class EpollServer():
         try:
             aforward = self.appsock[fileno]
         except KeyError: 
+            """如果是多台主机分布式负载，这里要查一下其它主机"""
+            self.cluster.get_user_info(self.users[fileno])
+            
+
             pass
         else:
             if res.method == STUN_METHOD_REFRESH: # 刷新就可以步过了
@@ -603,7 +615,6 @@ class EpollServer():
         #print "app update status end QueryDB",time.time() -n
         #self.statqueue[current_process().name].put('user %s login,socket is %d,host %s:%d' % (tcs.name,res.fileno,res.host[0],res.host[1]))
         self.users[res.fileno] = user
-        print "app login"
         self.cluster.send_to_mcast(1,1,res.host,user,res.fileno)
         return app_user_auth_success(res)
 
@@ -656,8 +667,8 @@ class EpollServer():
         tcs.uuid = huid
         #print "login devid is",tcs.uuid
         #self.statqueue[current_process().name].put('device login uuid is %s,socket is %d, host %s:%d' % (huid,res.fileno,res.host[0],res.host[1]))
-        del huid
         self.cluster.send_to_mcast(1,0,res.host,huid,res.fileno)
+        del huid
         return device_login_sucess(res)
 
     def handle_chkuser_request(self,res):
