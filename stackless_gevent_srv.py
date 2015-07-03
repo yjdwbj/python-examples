@@ -152,7 +152,7 @@ class EpollServer():
         self.db = PostgresSQLEngine()
         self.mcastsqueue = Queue()
         self.mcastrqueue = Queue()
-        self.cluster = ClusterSRV(cluster_eth)
+        #self.cluster = ClusterSRV(cluster_eth)
         print "start cluster multicast"
 #        vendor = QueryDB.get_vendor_table()
 #        s = sql.select([vendor])
@@ -413,7 +413,7 @@ class EpollServer():
             aforward = self.appsock[fileno]
         except KeyError: 
             """如果是多台主机分布式负载，这里要查一下其它主机"""
-            self.cluster.get_user_info(self.users[fileno])
+            #self.cluster.get_user_info(self.users[fileno])
             
 
             pass
@@ -615,7 +615,7 @@ class EpollServer():
         #print "app update status end QueryDB",time.time() -n
         #self.statqueue[current_process().name].put('user %s login,socket is %d,host %s:%d' % (tcs.name,res.fileno,res.host[0],res.host[1]))
         self.users[res.fileno] = user
-        self.cluster.send_to_mcast(1,1,res.host,user,res.fileno)
+        #self.cluster.send_to_mcast(1,1,res.host,user,res.fileno)
         return app_user_auth_success(res)
 
     def handle_allocate_request(self,res):
@@ -667,7 +667,7 @@ class EpollServer():
         tcs.uuid = huid
         #print "login devid is",tcs.uuid
         #self.statqueue[current_process().name].put('device login uuid is %s,socket is %d, host %s:%d' % (huid,res.fileno,res.host[0],res.host[1]))
-        self.cluster.send_to_mcast(1,0,res.host,huid,res.fileno)
+        #self.cluster.send_to_mcast(1,0,res.host,huid,res.fileno)
         del huid
         return device_login_sucess(res)
 

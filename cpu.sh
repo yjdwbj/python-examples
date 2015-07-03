@@ -37,58 +37,13 @@ DEF:wa=$db:wa:AVERAGE \
 DEF:si=$db:si:AVERAGE  \
 VDEF:minus=us,MINIMUM \
 VDEF:maxus=us,MAXIMUM \
-VDEF:avgus=us,AVERAGE \
 VDEF:minsy=sy,MINIMUM \
 VDEF:maxsy=sy,MAXIMUM \
-VDEF:avgsy=sy,AVERAGE \
 VDEF:minid=id,MINIMUM \
 VDEF:maxid=id,MAXIMUM \
-VDEF:avgid=id,AVERAGE \
-VDEF:minwa=wa,MINIMUM \
-VDEF:maxwa=wa,MAXIMUM \
-VDEF:avgwa=wa,AVERAGE \
 VDEF:minsi=si,MINIMUM \
 VDEF:maxsi=si,MAXIMUM \
-VDEF:avgsi=si,AVERAGE \
-"COMMENT:   \l" \
-"COMMENT:   " \
-"COMMENT:   " \
-"COMMENT:   " \
-"COMMENT:Minimum   " \
-"COMMENT:Maxnum   " \
-"COMMENT:Average  \l" \
-"COMMENT:   " \
-"AREA:us#EDA362:Usage " \
-"LINE1:us#F47200" \
-"GPRINT:minus:%3.1lf %sP/s " \
-"GPRINT:maxus:%3.1lf %sP/s " \
-"GPRINT:avgus:%3.1lf %sP/s \l" \
-"COMMENT:   " \
-"AREA:sy#8AD3F1:System " \
-"LINE1:sy#49BEEF" \
-"GPRINT:minsy:%3.1lf %sP/s " \
-"GPRINT:maxsy:%3.1lf %sP/s " \
-"GPRINT:avgsy:%3.1lf %sP/s \l" \
-"COMMENT:   " \
-"AREA:id#93BFDE:Idle " \
-"LINE1:id#2A3FBE" \
-"GPRINT:minid:%3.1lf %sP/s " \
-"GPRINT:maxid:%3.1lf %sP/s " \
-"GPRINT:avgid:%3.1lf %sP/s \l" \
-"COMMENT:   " \
-"AREA:wa#EBD34A:Wait " \
-"LINE1:wa#BB56FF" \
-"GPRINT:minwa:%3.1lf %sP/s " \
-"GPRINT:maxwa:%3.1lf %sP/s " \
-"GPRINT:avgwa:%3.1lf %sP/s \l" \
-"COMMENT:   " \
-"AREA:si#192DFE:Soft " \
-"LINE1:si#998FBA" \
-"GPRINT:minsi:%3.1lf %sP/s " \
-"GPRINT:maxsi:%3.1lf %sP/s " \
-"GPRINT:avgsi:%3.1lf %sP/s \l" > /dev/null
-
-
+VDEF:avgus=us,AVERAGE 
 done
 
 

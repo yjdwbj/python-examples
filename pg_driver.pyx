@@ -8,10 +8,56 @@ from sqlalchemy.dialects.postgresql import BYTEA,UUID,TIMESTAMP
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.sql.expression import insert,select,update,delete
 from binascii import unhexlify,hexlify
+import ConfigParser
+from ConfigParser import NoOptionError
+import sys
+from sys import exit
 
-SQLDriver='postgresql+psycopg2cffi://postgres:lcy123@192.168.25.105:5432/nath'
+#SQLDriver='postgresql+psycopg2cffi://postgres:lcy123@192.168.25.105:5432/nath'
 
 #SQLDriver="postgresql+psycopg2cffi://postgres:lcy123@nath.cavxfx5fkqgx.us-west-2.rds.amazonaws.com:5432"
+def GetSqlDriver(fname):
+    config = ConfigParser.SafeConfigParser()
+    db = config.read(fname)
+    if len(db) is 0:
+        print "db config is not exists"
+        sys.exit(0)
+    db = config.sections()
+    if 'db' not in 'db':
+        print "config format error"
+        exit(0)
+
+    try:
+        host = config.get('db','host')
+    except NoOptionError:
+        print "config format error,not found host items"
+        exit(0)
+
+    try:
+        port = config.get('db','port')
+    except NoOptionError:
+        print "config format error,not found port items"
+        exit(0)
+
+    try:
+        user = config.get('db','user')
+    except NoOptionError:
+        print "config format error,not found user   items"
+        exit(0)
+
+    try:
+        password = config.get('db','password')
+    except NoOptionError:
+        print "config format error,not found password items"
+        exit(0)
+        
+    return 'postgresql+psycopg2cffi://%s:%s@%s:%s/nath' % (user,password,host,port)
+
+
+
+
+
+SQLDriver=GetSqlDriver("config.ini")
 
 class PGError(Exception):
     def __init__(self,msg):

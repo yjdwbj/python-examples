@@ -7,8 +7,9 @@ import struct
 import time
 import threading
 import fcntl
-from netifaces import AF_INET,AF_INET6,AF_LINK,AF_PACKET,AF_BRIDGE
 import netifaces as ni
+import netifaces
+from netifaces import AF_INET,AF_INET6,AF_LINK,AF_PACKET,AF_BRIDGE
 #from Queue import Queue,Empty
 import gevent
 from gevent.queue import Queue,Empty

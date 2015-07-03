@@ -205,7 +205,6 @@ class EpollServer():
                     self.dealwith_peer_hup(fileno)
                     break
                 hdata = hexlify(recvbuf)
-                del recvbuf
                 self.requests[fileno] += hdata
                 self.process_handle_first(fileno)
                 eventlet.sleep(0.001)
@@ -234,10 +233,8 @@ class EpollServer():
             popfunc = lambda d,v: d.pop(v)
             k = mcore_handle(popfunc,(n))
         except TypeError:
-            self.errqueue.put("TypeError %d,n is none" % res.fileno)
+            print "TypeError %d,n is none" % res.fileno
         self.delete_binds_in_db(uname,uids)
-        del uname
-        del uids
         return  stun_return_same_package(res)
         
 
@@ -316,7 +313,6 @@ class EpollServer():
             onepack = self.requests[fileno][:nlen]
             self.requests[fileno] = self.requests[fileno][nlen:]
             self.handle_requests_buf(onepack,fileno)
-            del onepack
             
                     
     def handle_requests_buf(self,hbuf,fileno): # pair[0] == hbuf, pair[1] == fileno
@@ -345,8 +341,6 @@ class EpollServer():
                     self.handle_forward_packet(hbuf,res,self.devsock)
             else:
                 self.handle_postauth_process(res,hbuf)
-            del hbuf
-            del res
             return # 一切正常返回
         except KeyError:
             pass
@@ -363,8 +357,6 @@ class EpollServer():
                     self.handle_forward_packet(hbuf,res,self.appsock)
             else:
                 self.handle_postauth_process(res,hbuf)
-            del hbuf
-            del res
             return # 一切正常返回
         except KeyError:
             pass
@@ -373,8 +365,6 @@ class EpollServer():
         处理要认证的客务端
         """
         self.handle_client_request_preauth(res,hbuf)
-        del res
-        del hbuf
 
     def handle_postauth_process(self,res,hbuf):
         """
@@ -451,7 +441,6 @@ class EpollServer():
     
         res.attrs = trip[0]
         res.reqlst = trip[1]
-        del trip
         if res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and (len(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])/2) != 32:
             res.eattr = STUN_ERROR_AUTH
             self.errqueue.put(','.join([LOG_ERROR_AUTH,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
@@ -494,7 +483,6 @@ class EpollServer():
             if chk:
                 res.eattr = chk
                 self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
-                del chk
                 return stun_error_response(res)
         except KeyError:
             #res.eattr= hexlify("Not Found UUID")
@@ -518,7 +506,6 @@ class EpollServer():
         tcs.uuid = huid
         #print "login devid is",tcs.uuid
         self.statqueue.put('device login uuid is %s,socket is %d, host %s:%d' % (huid,res.fileno,res.host[0],res.host[1]))
-        del huid
         return device_login_sucess(res)
 
     def handle_chkuser_request(self,res):
@@ -576,7 +563,6 @@ class EpollServer():
             chk = check_jluuid(res.attrs[STUN_ATTRIBUTE_UUID])
             if chk:
                 res.eattr = chk
-                del chk
                 self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(str(sys._getframe().f_lineno))]))
                 return stun_error_response(res)
             self.bind_each_uuid((res.attrs[STUN_ATTRIBUTE_UUID],res.fileno))
@@ -664,8 +650,7 @@ class EpollServer():
             alist = [n for n in binds if self.appsock.has_key(n)]
             for n in alist:
                 self.appbinds[n][uuid]=0xFFFFFFFF
-            del uuid
-            del alist[:]
+            uuid = None
     
     def app_user_logout(self,uname):
         atable = QueryDB.get_account_status_table()
@@ -736,9 +721,7 @@ class EpollServer():
     
     def remove_fileno_resources(self,fileno):
         m = [(getattr(self,n),fileno) for n in store]
-        pool = eventlet.GreenPool(len(m))
-        pool.imap(clean_dict,m)
-        del m[:]
+        mcore_handle(clean_dict,m)
             
 
 

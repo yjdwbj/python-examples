@@ -17,6 +17,8 @@ import sys
 import os
 import unittest
 import argparse
+from multiprocessing import Process,Pipe,Queue,Pool
+import multiprocessing
 
 from datetime import datetime
 from sqlalchemy import create_engine
@@ -215,10 +217,10 @@ class CheckSesionThread(threading.Thread):
 
 
 
-class MTWorker(Thread.threading):
+class MPConsumer(multiprocessing.Process):
     store = ['clients','hosts','requests','responses','appbinds','appsock','devsock','devuuid']
     def __init__(self,srvsocket,epoll):
-        Thread.threading.__init__(self)
+        multiprocessing.Process.__init__(self)
         self.srvsocket = srvsocket
         self.epoll = epoll 
         [setattr(self,x,{}) for x in store]
@@ -890,6 +892,9 @@ class MTWorker(Thread.threading):
             except:
                 log.error(','.join([LOG_ERROR_DB,res.tuid,str(sys._getframe().f_lineno)]))
 
+def MPrun(sock,epoll):
+    mp = MPConsumer(sock,epoll)
+    mp.run()
 
 class EpollServer():
     def __init__(self,port):
@@ -910,7 +915,7 @@ class EpollServer():
 
     def start(self):
         log.info("Start Server")
-        mtworker = MTWorker(self.srvsocket,self.epoll)
+        handle_proc = MPConsumer(self.srvsocket,self.epoll)
         handle_proc.daemon =True
         handle_proc.run()
         handle_proc.join()
