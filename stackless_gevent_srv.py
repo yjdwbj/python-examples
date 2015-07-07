@@ -78,11 +78,12 @@ def notify_app_bind_islogin(bindinfo):
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
-def register_success(uname):
+def register_success(uname,ftpwd):
     buf = []
     #stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf)
     od = stun_init_command_head(stun_make_success_response(STUN_METHOD_REGISTER))
     stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,uname)
+    stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,ftpwd)
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
@@ -689,9 +690,10 @@ class EpollServer():
         obj = hashlib.sha256()
         obj.update(user)
         obj.update(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])
-        self.db.insert_account_table(user,obj.digest(),"%s:%d" % (res.host[0],res.host[1]))
+        ftpwd = pwd_generator()
+        self.db.insert_account_table(user,obj.digest(),ftpwd,"%s:%d" % (res.host[0],res.host[1]))
         #self.statqueue[current_process().name].put('register success %s' % res.attrs[STUN_ATTRIBUTE_USERNAME])
-        return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME])
+        return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME],ftpwd)
 
     def handle_app_bind_device(self,res):
         """

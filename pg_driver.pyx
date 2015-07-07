@@ -69,6 +69,7 @@ def get_account_table():
             #Column('uuid',pgsql.UUID,primary_key=True),
             Column('uname',pgsql.VARCHAR(255),primary_key=True),
             Column('pwd',pgsql.BYTEA,nullable=False,default =''),
+            Column('ftpwd',pgsql.BYTEA,nullable=False,default =''),
             Column('is_active',pgsql.BOOLEAN,nullable=False,default=True),
             Column('reg_time',pgsql.TIME,nullable=False,default='now()'),
             Column('reg_host',pgsql.VARCHAR(22),nullable=False,default='127.0.0.1')

@@ -4,6 +4,7 @@ import struct
 import uuid
 import time
 import logging
+import string,random
 from logging import handlers
 from itertools import *
 from collections import OrderedDict
@@ -446,6 +447,9 @@ def parser_stun_package(buf):
 def split_muuid(b):
     hlen = UUID_SIZE * 2
     return  [b[k:k+hlen] for k in xrange(0,len(b),hlen)]
+
+def pwd_generator(size=6,chars=string.ascii_lowercase+string.digists):
+    return ''.join(random.SystemRandom().choice(chars) for _ in xrange(size)
 
 def split_mruuid(b):
     hlen = UUID_SIZE * 2+8
