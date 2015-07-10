@@ -10,7 +10,7 @@ from django.core import serializers
 
 def fmitem(request):
     objs = RadioItem.objects.all()
-    nobjs = [ {'link': x.__dict__['link'],'title':x.__dict__['title'],'id':x.__dict__['id']} for x in objs]
+    nobjs = [ {'link': x.__dict__['link'],'title':x.__dict__['title']} for x in objs]
     #data = serializers.serialize('json',nobjs)
     data = json.dumps(nobjs)
     return HttpResponse(data,content_type='text/json')

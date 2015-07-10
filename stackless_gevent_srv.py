@@ -83,7 +83,7 @@ def register_success(uname,ftpwd):
     #stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf)
     od = stun_init_command_head(stun_make_success_response(STUN_METHOD_REGISTER))
     stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,uname)
-    stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,ftpwd)
+    stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,hexlify(ftpwd))
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 

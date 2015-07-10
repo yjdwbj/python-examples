@@ -11,7 +11,8 @@ modsrc="sockbasic.pyx pg_driver.pyx cluster_mod.pyx"
 modsetup="library_setup.py"
 srv="stackless_gevent_srv.py"
 rexe="run_test.sh"
-srvhost="root@srv:/root/srv_dir"
+srvhost="root@srv:"
+srvdir="/home/lcy/srv_dir"
 clusterhost=~/cluster.txt
 cluster_srv_dir="/opt/srv_dir"
 #rsync $srv $modsrc $modsetup root@srv:/home/log/srv_dir
@@ -43,8 +44,8 @@ parallel-ssh -i -h $vhostfile /opt/client_test/make_lib.sh
 copy_to_srv(){
     echo "copy files to srv"
 srvfile="$modsrc $srv run_node.sh $modsetup"
-rsync  $srvfile  $srvhost
-parallel-ssh -i -H root@srv " cd /root/srv_dir ; /opt/stackless-279/bin/python $modsetup build_ext "
+rsync  $srvfile  $srvhost$srvdir
+parallel-ssh -i -H root@srv " cd /home/lcy/srv_dir ; /opt/stackless-279/bin/python $modsetup build_ext && chown lcy:lcy -R *"
 }
 
 copyt_to_cluster(){

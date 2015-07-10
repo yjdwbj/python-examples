@@ -4,12 +4,12 @@ from django.contrib import admin
 
 # Create your models here.
 class RadioItem(models.Model):
-    title = models.CharField(max_length=150)
+    title = models.CharField(max_length=150,primary_key=True)
     link = models.CharField(max_length=255)
 
 class PhoneUser(models.Model):
     pmodel = models.CharField(max_length=50) # 手机型号
-    pimei = models.CharField(max_length=15) #IMEI
+    pimei = models.CharField(max_length=15,primary_key=True) #IMEI
     paddr = models.GenericIPAddressField()
     
 admin.site.register(RadioItem)

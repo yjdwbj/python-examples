@@ -2,10 +2,10 @@
 
 from datetime import datetime
 from sqlalchemy.exc import *
+import sqlalchemy
 from sqlalchemy import Table,create_engine,Column,func,or_,not_,and_,ForeignKey,String,Integer,BigInteger,Date,MetaData,DateTime,Boolean,VARCHAR,sql,exists,literal,text
 from sqlalchemy.dialects import postgresql as pgsql
 from sqlalchemy.dialects.postgresql import BYTEA,UUID,TIMESTAMP
-from sqlalchemy.pool import QueuePool
 from sqlalchemy.sql.expression import insert,select,update,delete
 from binascii import unhexlify,hexlify
 import ConfigParser
@@ -51,9 +51,18 @@ def GetSqlDriver(fname):
         print "config format error,not found password items"
         exit(0)
         
+    #return 'postgresql+psycopg2cffi://%s:%s@%s:%s/nath' % (user,password,host,port)
     return 'postgresql+psycopg2cffi://%s:%s@%s:%s/nath' % (user,password,host,port)
 
 
+def GetConn(engine):
+    try:
+        conn = engine.connect()
+    except OperationalError:
+        print "Connection DataBase refused"
+        exit(0)
+    else:
+        return conn
 
 
 
@@ -69,7 +78,7 @@ def get_account_table():
             #Column('uuid',pgsql.UUID,primary_key=True),
             Column('uname',pgsql.VARCHAR(255),primary_key=True),
             Column('pwd',pgsql.BYTEA,nullable=False,default =''),
-            Column('ftpwd',pgsql.BYTEA,nullable=False,default =''),
+            Column('ftpwd',pgsql.VARCHAR(6),nullable=False,default =''),
             Column('is_active',pgsql.BOOLEAN,nullable=False,default=True),
             Column('reg_time',pgsql.TIME,nullable=False,default='now()'),
             Column('reg_host',pgsql.VARCHAR(22),nullable=False,default='127.0.0.1')
@@ -123,7 +132,7 @@ class PostgresSQLEngine():
     def __init__(self):
         #self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=8192,max_overflow=4096,\
         #        poolclass=QueuePool)
-        self.engine = create_engine(SQLDriver,pool_size=8192,max_overflow=4096)
+        self.engine = create_engine(SQLDriver,poolclass=sqlalchemy.pool.NullPool)
 
         
     """商厂表的相关操作"""
@@ -160,15 +169,24 @@ class PostgresSQLEngine():
 
     """ 用户表操作"""
 
-    def insert_account_table(self,uname,pwd,chost):
+    def insert_account_table(self,uname,pwd,ftpwd,chost):
+        n = self.check_user_exist(uname)
         at = get_account_table()
-        sel = sql.select([literal(uname),literal(hexlify(pwd)),True,literal(chost)]).where(
-                ~exists([at.c.uname]).where(at.c.uname == literal(uname)))
-        ins = at.insert().from_select(['uname','pwd','is_active','reg_host'],sel)
-        self.run_trans(ins)
-        ast = get_account_status_table()
-        ins = ast.insert().values(uname =literal(uname),chost = literal(chost))
-        self.run_trans(ins)
+        if not n:
+            ins = at.insert().values(uname=literal(uname),pwd=literal(hexlify(pwd)),ftpwd=literal(ftpwd),is_active=True,reg_host=literal(chost))
+            conn = GetConn(self.engine)
+            try:
+                conn.execute(ins)
+            except IntegrityError:
+                conn.close()
+                return
+            conn.close()
+        #sel = sql.select([literal(uname),literal(hexlify(pwd)),literal(ftpwd),True,literal(chost)]).where(
+        #        ~exists([at.c.uname]).where(at.c.uname == literal(uname)))
+        #ins = at.insert().from_select(['uname','pwd','ftpwd','is_active','reg_host'],sel)
+            ast = get_account_status_table()
+            ins = ast.insert().values(uname =literal(uname),chost = literal(chost))
+            self.run_trans(ins)
             #trans.rollback()
             #raise PGError('run query as %s occur err' % str(ins))
             #raise
@@ -182,13 +200,14 @@ class PostgresSQLEngine():
         at = get_account_table()
         ins = sql.select([at.c.uname]).where(and_(at.c.uname == literal(uname),at.c.pwd == literal(hexlify(pwd)),at.c.is_active==True))
         n = None
-        conn = self.engine.connect()
-        n = conn.execute(ins).first()
-        conn.close()
-        if n:
+        conn = GetConn(self.engine)
+        n = conn.execute(ins)
+        if n and n.fetchone():
             ast = get_account_status_table()
             ins = ast.update().values(last_login_time = 'now()',chost=literal(chost),is_login=True).where(ast.c.uname == literal(uname))
             self.run_trans(ins)
+            
+        conn.close()
         #trans.rollback()
         #raise PGError('run query as %s occur err' % str(ins))
         return n
@@ -207,7 +226,7 @@ class PostgresSQLEngine():
         bt = get_account_bind_table(uname)
         ins  = sql.select([bt.c.devid,bt.c.pwd])
         result = None
-        conn = self.engine.connect()
+        conn = GetConn(self.engine)
         result = conn.execute(ins).fetchall()
         conn.close()
         mlist = []
@@ -230,12 +249,11 @@ class PostgresSQLEngine():
         at=get_account_table()
         s = sql.select([at.c.uname]).where(at.c.uname == literal(uname)).limit(1)
         n = None
-        conn = self.engine.connect()
-        n = conn.execute(s).first()
-            #trans.rollback()
-            #raise PGError('run query as %s occur err' % str(s))
+        conn = GetConn(self.engine)
+        result = conn.execute(s)
         conn.close()
-        return n
+
+        return None if n is None else n.fetchone()
 
     """ 小机表的操作"""
     def devtable_logout(self,vname,devid):
@@ -252,7 +270,7 @@ class PostgresSQLEngine():
 
 
     def run_trans(self,ins):
-        conn = self.engine.connect()
+        conn = GetConn(self.engine)
         conn.execute(ins)
         conn.close()
 
@@ -277,7 +295,7 @@ class PostgresSQLEngine():
     @staticmethod
     def check_boot_tables():
         engine = create_engine(SQLDriver)
-        conn = engine.connect()
+        conn = GetConn(engine)
         atable = get_account_table()
         if not atable.exists(engine):
             atable.create(engine)
