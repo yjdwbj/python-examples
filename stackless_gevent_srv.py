@@ -95,12 +95,13 @@ def check_user_sucess(res):
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
-def app_user_auth_success(res):
+def app_user_auth_success(res,ftpwd):
     #stun_init_command_str(stun_make_success_response(res.method),buf)
     od= stun_init_command_head(stun_make_success_response(res.method))
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
     stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
     stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,res.attrs[STUN_ATTRIBUTE_USERNAME])
+    stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,hexlify(ftpwd))
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
@@ -590,15 +591,18 @@ class EpollServer():
             self.write_to_sock(res.fileno)
 
     def handle_app_login_request(self,res):
+        ftpwd = None
         try:
             pwd = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
             user = unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])
             obj = hashlib.sha256()
             obj.update(user)
             obj.update(pwd)
-            if not self.db.user_login(user,obj.digest(),'%s:%d' % (res.host[0],res.host[1])):
+            ftpwd = self.db.user_login(user,obj.digest(),'%s:%d' % (res.host[0],res.host[1]))
+            if not ftpwd:
                 res.eattr = STUN_ERROR_AUTH
                 return  stun_error_response(res)
+
         except KeyError:
            res.eattr = STUN_ERROR_AUTH
            return  stun_error_response(res)# APP端必须带用认证信息才能发起连接.
@@ -617,7 +621,7 @@ class EpollServer():
         #self.statqueue[current_process().name].put('user %s login,socket is %d,host %s:%d' % (tcs.name,res.fileno,res.host[0],res.host[1]))
         self.users[res.fileno] = user
         #self.cluster.send_to_mcast(1,1,res.host,user,res.fileno)
-        return app_user_auth_success(res)
+        return app_user_auth_success(res,ftpwd)
 
     def handle_allocate_request(self,res):
         """

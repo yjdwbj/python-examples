@@ -29,6 +29,7 @@ from gevent import monkey,socket
 from gevent.pool import Pool
 from gevent.queue import Queue,Empty
 import multiprocessing
+from ftplib import FTP
 
 #from multiprocessing import Queue
 #from multiprocessing.queues import Empty
@@ -39,6 +40,8 @@ monkey.patch_thread()
 monkey.patch_ssl()
 #monkey.patch_all(socket=True,dns=False,time=True,select=False,thread=True,os=True,ssl=False,httplib=False,subprocess=False,aggressive=True)
 import threading
+
+FTP_HOST='192.168.25.105'
 
 def logger_worker(queue,logger):
     #n = time.time() + 120
@@ -53,6 +56,39 @@ def logger_worker(queue,logger):
             except Empty:
                 break
         gevent.sleep(0)
+
+def upload_ftp(host,uname,pwd,fname):
+    ftp = FTP(host)
+    ftp.login(uname,pwd)
+    ftp.storbinary('STOR %s' % fname,open(fname,'rb'),2048)
+    ftp.quit()
+
+def down_ftp(host,uname,pwd,fname):
+    ftp = FTP(host)
+    ftp.login(uname,pwd)
+    ftp.retrbinary('RETR %s' % fname,open(fname,'wb').write)
+    ftp.delete(fname)
+    ftp.quit()
+
+def get_md5_digest(fname):
+    digest = None
+    try:
+        with open(fname) as f:
+            digest = hashlib.md5(f.read()).hexdigest()
+    except IOError:
+        return None
+    return digest
+
+def cmp_md5_digest(fname,digest):
+    b = False
+    try:
+        with open(fname) as f:
+            b = cmp(hashlib.md5(f.read()).hexdigest(),digest)
+    except IOError:
+        return True
+    return b
+        
+
 
 class DevicesFunc():
     global host
@@ -77,6 +113,8 @@ class DevicesFunc():
         self.recv = ''
         self.sbuf = ''
         self.retry = 50
+        self.ftpuser = ''
+        self.ftpwd = ''
         self.start()
 
     def start(self):
@@ -177,6 +215,23 @@ class DevicesFunc():
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
                 #qdict.recv.put("recv: %s,sock %d,recv from app number of hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],hbuf))
+                p  = parser_stun_package(hbuf[STUN_HEADER_LENGTH:-8]) # 去头去尾
+                if p is None:
+                    print "appfunc parser_stun_package is None",hbuf
+                    return False
+                rdict = p[0]
+                del p
+                d = unhexlify(rdict[STUN_ATTRIBUTE_DATA])
+                if d.index('ftp'):
+                    glist = d.split(':')
+                    down_ftp(FTP_HOST,glist[2],glist[3],glist[4])
+                    self.ftpuser = glist[2]
+                    self.ftpwd = glist[3]
+                    if not cmp_md5_digest(glist[4],glist[5]):
+                        print glist[5]
+                    else:
+                        print "digest error"
+                
                 self.sbuf = self.send_data_to_app('02%s' % hattr.sequence[2:8])
                 #qdict.send.put("send: sock %d,send confirm packet to app;data: %s" % (self.fileno,self.sbuf))
             #下面是我方主动发数据
@@ -193,6 +248,7 @@ class DevicesFunc():
                     #qdict.lost.put('lost: sock %d,losing packet,recv  number  %d, my counter %d;data %s' % (self.fileno,rnum,self.mynum,hbuf))
                     self.rm_queue.put(0)
                     #return False
+
                 self.sbuf = self.send_data_to_app('03%06x' % self.mynum)
                 #qdict.send.put("send: sock %d,%s ,to app  sock %d,packet number %d;data: %s" % (self.fileno,str(self.sock.getsockname()),\
                         #self.dstsock,rnum,self.sbuf))
@@ -321,7 +377,11 @@ class DevicesFunc():
         od['dstsock']='%08x' % self.dstsock
         od['sequence']=sequence
         #stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%d' % time.time()))
-        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify('%.05f' % time.time()))
+        if not cmp(sequence[:2],'03'):
+            upfname = 'app_data.bin'
+            upload_ftp(FTP_HOST,self.ftpuser,self.ftpwd,upfname)
+            digest = get_md5_digest(upfname)
+            stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify('%.05f:ftp:%s:%s:%s:%s' % (time.time(),self.ftpuser,self.ftpwd,upfname,digest)))
         stun_add_fingerprint(od)
         for n in STUN_HEAD_KEY:
             if not od.has_key(n):
@@ -460,6 +520,21 @@ class APPfunc():
             self.dstsock = hattr.srcsock
             if hattr.sequence[:2] == '03':
                 #qdict.recv.put("recv: %s,sock %d,recv from  dev  number of  hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],rbuf))
+                p  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-8]) # 去头去尾
+                if p is None:
+                    print "appfunc parser_stun_package is None",rbuf
+                    return False
+                rdict = p[0]
+                del p
+                d = unhexlify(rdict[STUN_ATTRIBUTE_DATA])
+                if d.index('ftp'):
+                    glist = d.split(':')
+                    down_ftp(FTP_HOST,self.user,self.ftpwd,glist[4])
+                    if not cmp_md5_digest(glist[4],glist[5]):
+                        print glist[5]
+                    else:
+                        print "digest is error"
+                
                 self.sbuf = self.stun_send_data_to_devid('02%s' % hattr.sequence[2:8])
                 #qdict.send.put("send: sock %d,send confirm packet to dev,data %s" % (self.fileno,self.sbuf))
             elif hattr.sequence[:2] == '02':
@@ -503,6 +578,7 @@ class APPfunc():
         del p
         if not cmp(hattr.method,STUN_METHOD_BINDING):
             stat = rdict[STUN_ATTRIBUTE_STATE]
+            self.ftpwd = unhexlify(rdict[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])
             self.srcsock = int(stat[:8],16)
             # 下面绑定一些UUID
             #if len(self.ulist) > 1:
@@ -657,7 +733,11 @@ class APPfunc():
         od['srcsock']='%08x' % self.srcsock
         od['dstsock']='%08x' % self.dstsock
         od['sequence']= sequence
-        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify('%.05f' % time.time()))
+        if not cmp(sequence[:2],'03'):
+            upfname = 'disk_data.bin'
+            upload_ftp(FTP_HOST,self.user,self.ftpwd,upfname)
+            digest = get_md5_digest(upfname)
+            stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify('%.05f:ftp:%s:%s:%s:%s' % (time.time(),self.user,self.ftpwd,upfname,digest)))
         stun_add_fingerprint(od)
         for n in STUN_HEAD_KEY:
             if not od.has_key(n):

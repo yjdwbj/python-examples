@@ -3,6 +3,7 @@
 from datetime import datetime
 from sqlalchemy.exc import *
 import sqlalchemy
+from sqlalchemy.pool import NullPool
 from sqlalchemy import Table,create_engine,Column,func,or_,not_,and_,ForeignKey,String,Integer,BigInteger,Date,MetaData,DateTime,Boolean,VARCHAR,sql,exists,literal,text
 from sqlalchemy.dialects import postgresql as pgsql
 from sqlalchemy.dialects.postgresql import BYTEA,UUID,TIMESTAMP
@@ -56,6 +57,7 @@ def GetSqlDriver(fname):
 
 
 def GetConn(engine):
+    #return engine.connect()
     try:
         conn = engine.connect()
     except OperationalError:
@@ -132,7 +134,7 @@ class PostgresSQLEngine():
     def __init__(self):
         #self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=8192,max_overflow=4096,\
         #        poolclass=QueuePool)
-        self.engine = create_engine(SQLDriver,poolclass=sqlalchemy.pool.NullPool)
+        self.engine = create_engine(SQLDriver,poolclass=NullPool)
 
         
     """商厂表的相关操作"""
@@ -198,11 +200,14 @@ class PostgresSQLEngine():
 
     def user_login(self,uname,pwd,chost):
         at = get_account_table()
-        ins = sql.select([at.c.uname]).where(and_(at.c.uname == literal(uname),at.c.pwd == literal(hexlify(pwd)),at.c.is_active==True))
+        ins = sql.select([at.c.uname,at.c.ftpwd]).where(and_(at.c.uname == literal(uname),at.c.pwd == literal(hexlify(pwd)),at.c.is_active==True))
         n = None
         conn = GetConn(self.engine)
         n = conn.execute(ins)
-        if n and n.fetchone():
+        ftpwd = None
+        if n:
+            ftpwd = n.fetchone()[1]
+        #if n and n.fetchone():
             ast = get_account_status_table()
             ins = ast.update().values(last_login_time = 'now()',chost=literal(chost),is_login=True).where(ast.c.uname == literal(uname))
             self.run_trans(ins)
@@ -210,7 +215,7 @@ class PostgresSQLEngine():
         conn.close()
         #trans.rollback()
         #raise PGError('run query as %s occur err' % str(ins))
-        return n
+        return ftpwd
 
     def update_bind_table(self,uname,devid,pwd):
         bt = get_account_bind_table(uname)

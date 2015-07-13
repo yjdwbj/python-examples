@@ -104,6 +104,7 @@ STUN_OFFLINE='00000000'
 
 LOG_SIZE=536870912
 LOG_COUNT=128
+HEXSEQ='0123456789abcdef'
 
 STUN_HEAD_CUTS=(4,8,12,20,28,32,40) # 固定长度的包头
 STUN_HEAD_KEY=('magic','version','length','srcsock','dstsock','method','sequence') # 包头的格式的名称
@@ -165,10 +166,9 @@ def get_packet_head_class(buf): # 把包头解析成可以识的类属性
 
     if stun_get_type(cc.method) not in mthlist: #命令类形不能识别
         return None
-    t = ('02','03')
     m = (STUN_METHOD_SEND,STUN_METHOD_DATA)
     if cc.method in m:
-        if cc.sequence[:2] in t:
+        if cc.sequence[0] in HEXSEQ and cc.sequence[1] in HEXSEQ:
             return cc
         else:
             return None
