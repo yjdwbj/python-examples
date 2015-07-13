@@ -105,12 +105,14 @@ def app_user_auth_success(res,ftpwd):
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
-def device_login_sucess(res): # 客服端向服务器绑定自己的IP
+def device_login_sucess(res,apps): # 客服端向服务器绑定自己的IP
     buf = []
     #stun_init_command_str(stun_make_success_response(res.method),buf)
     od = stun_init_command_head(stun_make_success_response(res.method))
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
     stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
+    if apps: 
+        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify(apps))
     stun_add_fingerprint(od)
     lst = get_list_from_od(od)
     return lst
@@ -641,7 +643,7 @@ class EpollServer():
             return stun_error_response(res)
     
         huid = res.attrs[STUN_ATTRIBUTE_UUID]
-        self.device_login_notify_app(huid,res.fileno)
+        apps = self.device_login_notify_app(huid,res.fileno)
     #    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
     #        update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
     #    else:
@@ -674,7 +676,7 @@ class EpollServer():
         #self.statqueue[current_process().name].put('device login uuid is %s,socket is %d, host %s:%d' % (huid,res.fileno,res.host[0],res.host[1]))
         #self.cluster.send_to_mcast(1,0,res.host,huid,res.fileno)
         del huid
-        return device_login_sucess(res)
+        return device_login_sucess(res,apps)
 
     def handle_chkuser_request(self,res):
         """disable select db """
@@ -942,15 +944,20 @@ class EpollServer():
     
     def device_login_notify_app(self,uuidstr,devsock):
         """
-        绑定过的小机现在登录了，通知它的用户群
+        绑定过的小机现在登录了，通知它的用户群,再收集用户群返回给小机
         """
+        apps = []
+        
         for fk in self.appbinds.keys():
             try:
                 if self.appbinds[fk].has_key(uuidstr):
+                    apps.append("%s:%d" % (self.users[fk],fk))
                     self.noify_app_uuid_just_login(fk,uuidstr,devsock)
                     break
             except KeyError:
                 pass
+            
+        return ','.join(apps)  # 邦定过这个小机的用户群。
     
 
     

@@ -41,7 +41,8 @@ monkey.patch_ssl()
 #monkey.patch_all(socket=True,dns=False,time=True,select=False,thread=True,os=True,ssl=False,httplib=False,subprocess=False,aggressive=True)
 import threading
 
-FTP_HOST='192.168.25.105'
+#FTP_HOST='192.168.25.105'
+FTP_HOST='ftp.jieli.net'
 
 def logger_worker(queue,logger):
     #n = time.time() + 120
