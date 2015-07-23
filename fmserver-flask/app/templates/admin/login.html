@@ -1,0 +1,8 @@
+{% block content %}
+<h1>登录</h1>
+<form action="{{ url_for('login') }}" method="POST" name="login">
+    用户名:<input type="text" name="uname"/>
+    密码:<input type="PASSWORD" name="passwd"/>
+    <p><input type="SUBMIT" value="登录"></p>
+ </form>
+ {% endblock %}

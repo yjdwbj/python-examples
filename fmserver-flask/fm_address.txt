@@ -1,0 +1,220 @@
+[国家台]
+中国国际广播电台劲曲调频 =mms://live.hitfm.cn/fm887
+中国国际广播电台环球资讯广播 =mms://media.crinewsradio.cn/crinewsradio
+中国国际广播电台客家之声 =mms://live.cri.cn/hakka
+中国国际广播电台华语环球广播 =mms://219.142.120.27/chn
+中国国际广播电台闽南之音 =mms://live.cri.cn/minnan
+中国国际广播电台海峽飛虹网络电台 =mms://live.cri.cn/hxfh
+中国国际广播电台中文环球广播 =mms://live.cri.cn/hyhq
+CRI 轻松调频 =mms://live.cri.cn/en4
+CRI都市流行音乐频道 =mms://live.cri.cn/pop
+CRI怀旧金曲音乐频道 =mms://live.cri.cn/oldies
+CRI英语漫听电台 =mms://live.cri.cn/english
+CRI乡村民谣音乐频道 =mms://live.cri.cn/country
+CRI环球网络电台华盛顿台 =mms://weblive.cri.cn/jyw
+CRI环球网络电台伦敦台 =mms://weblive.cri.cn/jyl
+CRI Language Studio =mms://enmms.chinabroadcast.cn/am1008
+CRI环球网络电台悉尼台 =mms://weblive.cri.cn/jys
+CRI肯尼亚调频广播 =mms://livexwb.cri.com.cn/kenya
+CRI老挝万象调频台 =mms://livexwb.cri.com.cn/lao
+
+[北京]
+
+北京音乐广播  =mms://alive.rbc.cn/fm974
+北京新闻广播  =mms://alive.rbc.cn/fm1006
+北京城市广播  =mms://alive.rbc.cn/fm1073
+北京故事广播  =mms://alive.rbc.cn/am603
+北京交通广播  =mms://alive.rbc.cn/fm1039
+北京体育广播  =mms://alive.rbc.cn/fm1025
+北京文艺广播  =mms://alive.rbc.cn/fm876
+北京外语广播  =mms://alive.rbc.cn/am774
+北京爱家广播  =mms://alive.rbc.cn/am927
+北京古典音乐广播  =mms://alive.rbc.cn/cfm986
+北京通俗音乐广播  =mms://alive.rbc.cn/cfm970
+北京怀旧金曲广播  =mms://alive.rbc.cn/cfm1075
+北京教学广播  =mms://alive.rbc.cn/cfm994
+北京长书广播  =mms://alive.rbc.cn/cfm1043
+北京戏曲曲艺广播  =mms://alive.rbc.cn/cfm1051
+北京欢乐时光广播  =mms://alive.rbc.cn/cfm1065
+嘉定人民广播电台 =mms://219.233.222.37/live2
+
+
+[陕西]
+
+陕西新闻广播  =mms://218.30.15.203/news
+陕西经济广播  =mms://218.30.15.203/encnomy
+陕西交通广播  =mms://218.30.15.203/traffic
+陕西都市广播  =mms://218.30.15.203/city
+陕西故事广播  =mms://218.30.15.203/story
+陕西青春调频  =mms://218.30.15.203/kids
+陕西秦腔广播  =mms://218.30.15.203/cityopera
+陕西农村广播  =mms://218.30.15.203/country
+陕西戏曲广播  =mms://218.30.15.203/opera
+陕西青春调频 =mms://218.30.15.203/kids
+陕西秦腔广播 =mms://218.30.15.203/cityopera
+
+[河北]
+
+河北新闻广播 =mms://audio1.hebradio.com/live1
+河北经济广播 =mms://audio1.hebradio.com/live2
+河北交通广播 =mms://audio1.hebradio.com/live3
+河北文艺广播 =mms://audio1.hebradio.com/live4
+河北生活广播 =mms://audio1.hebradio.com/live5
+河北音乐广播 =mms://audio1.hebradio.com/live6
+河北农村广播 =mms://audio1.hebradio.com/live7
+河北旅游文化广播 =mms://audio1.hebradio.com/live8
+廊坊新闻综合广播 =mms://221.194.144.140/zbxwpd
+廊坊戏曲曲艺广播 =mms://221.194.144.140/zbxqpd
+保定新闻广播 =mms://222.222.129.226/zb1
+保定城市服务广播 =mms://222.222.129.226/zb5
+
+[辽宁]
+大连新闻广播 =mms://218.61.6.228/xwgb?NSMwIzE=
+大连都市广播 =mms://218.61.6.228/dlyp2?NCMwIzE=
+大连体育休闲广播 =mms://218.61.6.228/tygb?OCMwIzE=
+大连交通广播 =mms://218.61.6.228/jtgb?NiMwIzE=
+大连财经广播 =mms://218.61.6.228/cjgb?MTEjMCMx
+彩虹网络电台 =mms://218.61.6.228/wlgb?MTYjMCMx
+大连新城市广播 =mms://218.61.6.228/sqgb?NyMwIzE=
+盘锦新闻综合广播 =mms://m.0427.com/1042
+盘锦生活娱乐广播 =mms://m.0427.com/971
+盘锦长书戏曲广播 =mms://m.0427.com/1018
+盘山人民广播电台 =mms://m.0427.com/939
+盘山评书娱乐广播 =mms://m.0427.com/949
+
+[吉林]
+
+延边交通文艺台 =mms://222.162.105.135:1011
+长白山旅游交通广播 =mms://222.162.105.135:1012
+
+
+[内蒙古]
+赤峰汉语综合广播 =mms://rd.cfradio.cn/r1
+赤峰蒙语综合广播 =mms://rd.cfradio.cn/r2
+赤峰农牧民文艺广播 =mms://rd.cfradio.cn/r3
+赤峰交通广播 =mms://rd.cfradio.cn/r4
+
+[甘肃]
+
+白银人民广播电台 =mms://115.85.197.250:6872
+
+[山东]
+山东人民广播电台新闻频道 =mms://radiolive.jnnc.com/news
+山东人民广播电台经济频道 =mms://radiolive.jnnc.com/jingji
+山东人民广播电台交通频道 =mms://radiolive.jnnc.com/jiaotong
+济南人民广播电台新闻广播 =mms://radiolive.jnnc.com/news
+济南人民广播电台经济广播 =mms://radiolive.jnnc.com/jingji
+济南人民广播电台交通广播 =mms://radiolive.jnnc.com/jiaotong
+济南人民广播电台文艺广播 =mms://radiolive.jnnc.com/wenyi
+济南人民广播电台音乐广播 =mms://radiolive.jnnc.com/music1
+济南人民广播电台故事广播 =mms://radiolive.jnnc.com/jngushi
+淄博新闻广播 =mms://v.liaozhai.tv/radio1
+淄博经济广播 =mms://v.liaozhai.tv/radio2
+淄博交通文艺广播 =mms://v.liaozhai.tv/radio3
+淄博音乐广播 =mms://v.liaozhai.tv/radio4
+潍坊新闻广播 =mms://221.194.144.140/zbxwpd?0MLOxca1tcAjNA==
+潍坊戏曲广播 =mms://221.194.144.140/zbxqpd?z7fH+sa1tcAjNQ==
+
+
+[河南]
+
+郑州新闻广播 =mms://218.28.9.99/xinwen
+郑州经济广播 =mms://218.28.9.99/jingji
+郑州文化娱乐广播 =mms://218.28.9.99/wenyi
+郑州女性时空广播 =mms://218.28.9.99/nvxing
+郑州549频道 =mms://218.28.9.99/549
+郑州都市广播-汽车调频 =mms://218.28.9.99/dushi
+郑州音乐广播 =mms://218.28.9.99/yinyue
+郑州故事广播 =mms://218.28.9.99/gushi
+南阳新闻广播 =mms://123.11.251.10/xwpl
+南阳交通音乐广播 =mms://123.11.251.10/jtpl
+洛阳交通广播 =mms://media.radioluoyang.com/live3
+洛阳经济广播 =mms://media.radioluoyang.com/live2
+洛阳新闻广播 =mms://media.radioluoyang.com/live1
+
+
+
+
+[江西]
+江西新闻广播 =mms://111.75.206.136/xinwen
+江西都市广播 =mms://111.75.206.136/dushi
+江西音乐广播 =mms://111.75.206.136/yinyue
+江西交通广播 =mms://111.75.206.136/jiaotong
+江西民生广播 =mms://111.75.206.136/minsheng
+江西农村广播 =mms://111.75.206.136/nongcun
+江西鄱阳湖之声广播 =mms://111.75.206.136/poyanghu
+
+[江苏]
+
+苏州生活广播 =mms://58.211.0.53/fm
+苏州音乐广播 =mms://58.211.0.53/948
+苏州财富广播 =mms://58.211.0.53/1048
+苏州戏曲广播 =mms://58.211.0.53/846
+苏州城市之声 =mms://58.211.0.53/911
+泰州城市广播 =mms://222.190.155.245/fmtzcs
+泰州新闻广播 =mms://222.190.155.245/973
+泰州交通广播 =mms://222.190.155.245/TZJT
+睢宁人民广播电台 =mms://tv.suining.tv/sntv2
+
+[浙江]
+
+杭州新闻广播 =mms://vod2.hcrt.cn/89?cccode=cc1405
+宁波新闻广播 = mms://lmdb.nbradio.com/xwlive?0MLOxbnjsqUjMg==
+宁波经济广播 =mms://lmdb.nbradio.com/jjpd?vq28w7njsqUjMw==
+宁波交通广播 =mms://lmdb.nbradio.com/jtgb?vbvNqLnjsqUjNQ==
+宁波阳光调频 = mms://lmdb.nbradio.com/lsgb?0fS54rX3xrUjNw==
+宁波音乐广播 = mms://lmdb.nbradio.com/yygb?0vTA1rnjsqUjNg==
+
+[福建]
+
+厦门新闻广播 =mms://mediasrv1.iptv.xmg.com.cn/xinwen
+厦门经济交通广播 =mms://mediasrv1.iptv.xmg.com.cn/jingji
+厦门音乐广播 =mms://mediasrv1.iptv.xmg.com.cn/yinyue
+厦门闽南之声广播 =mms://mediasrv1.iptv.xmg.com.cn/minnan
+厦门旅游广播 =mms://mediasrv2.iptv.xmg.com.cn/tour
+德化人民广播电台 =mms://122.227.16.189/dhgb
+
+[广东]
+
+广东电台音乐之声 =mms://live.fm993.com.cn/musicfm
+广东电台城市之声 =mms://media.fm1036.com/liveaudio
+花都广播电台 =mms://119.33.31.132/pub
+佛山电台FM946 =mms://59.38.110.90/946
+佛山电台FM985 =mms://59.38.110.90/985
+佛山电台FM924 =mms://59.38.110.90/924
+佛山电台FM906 =mms://59.38.110.90/906
+佛山电台FM901 =mms://59.38.110.90/901
+佛山电台畅游883  =mms://59.38.110.90/883
+
+[广西]
+广西新闻综合广播 =mms://222.216.110.227/audio4
+广西文艺广播 =mms://222.216.110.227/audio2
+广西北部湾之声广播 =mms://222.216.110.227/audio6
+广西交通广播 =mms://222.216.110.227/audio5
+贺州人民广播电台音乐广播=mms://www.gxhzradio.com/Music
+
+
+[贵州]
+
+贵阳新闻广播 =mms://58.16.26.60/1
+
+贵阳交通文艺广播 =mms://58.16.26.60/3
+
+贵阳都市女性广播 =mms://58.16.26.60/4
+
+黔西南新闻广播 =mms://119.1.98.52:8080
+
+[四川]
+[青海]
+[西藏]
+[海南]
+[云南]
+[湖北]
+[湖南]
+[重庆]
+[黑龙]
+[安徽]
+[宁夏]
+[山西]
+[上海]
+[天津]
