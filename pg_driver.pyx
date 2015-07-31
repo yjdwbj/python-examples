@@ -80,9 +80,9 @@ def get_account_table():
             #Column('uuid',pgsql.UUID,primary_key=True),
             Column('uname',pgsql.VARCHAR(255),primary_key=True),
             Column('pwd',pgsql.BYTEA,nullable=False,default =''),
-            Column('ftpwd',pgsql.VARCHAR(6),nullable=False,default =''),
+            Column('ftpwd',pgsql.VARCHAR(8),nullable=False,default =''),
             Column('is_active',pgsql.BOOLEAN,nullable=False,default=True),
-            Column('reg_time',pgsql.TIME,nullable=False,default='now()'),
+            Column('reg_time',pgsql.TIMESTAMP,nullable=False,default='now()'),
             Column('reg_host',pgsql.VARCHAR(22),nullable=False,default='127.0.0.1')
             )
     return account
@@ -99,7 +99,7 @@ def get_account_bind_table(name):
     table = Table(name,metadata,
             Column('devid',pgsql.VARCHAR(48),nullable=False,primary_key=True),
             Column('pwd',pgsql.BYTEA,default='',nullable=False),
-            Column('bind_time',pgsql.TIME,nullable=False,default='now()')
+            Column('bind_time',pgsql.TIMESTAMP,nullable=False,default='now()')
             )
     return table
 
@@ -110,8 +110,8 @@ def get_account_status_table():
     table = Table('account_status',metadata,
             Column('uname',pgsql.VARCHAR(255),ForeignKey("account.uname")),
             Column('is_login',pgsql.BOOLEAN,nullable=False,default=False),
-            Column('last_login_time',pgsql.TIME,default ='now()'),
-            Column('last_logout_time',pgsql.TIME,default='now()'),
+            Column('last_login_time',pgsql.TIMESTAMP,default ='now()'),
+            Column('last_logout_time',pgsql.TIMESTAMP,default='now()'),
             Column('chost',pgsql.VARCHAR(22),nullable=False,default='')
             )
     return table
@@ -205,8 +205,9 @@ class PostgresSQLEngine():
         conn = GetConn(self.engine)
         n = conn.execute(ins)
         ftpwd = None
-        if n:
-            ftpwd = n.fetchone()[1]
+        if n != None:
+            print n
+            ftpwd = n.fetchone()
         #if n and n.fetchone():
             ast = get_account_status_table()
             ins = ast.update().values(last_login_time = 'now()',chost=literal(chost),is_login=True).where(ast.c.uname == literal(uname))
@@ -215,7 +216,7 @@ class PostgresSQLEngine():
         conn.close()
         #trans.rollback()
         #raise PGError('run query as %s occur err' % str(ins))
-        return ftpwd
+        return ftpwd if ftpwd is None else ftpwd[1]
 
     def update_bind_table(self,uname,devid,pwd):
         bt = get_account_bind_table(uname)

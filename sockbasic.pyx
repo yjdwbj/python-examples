@@ -448,7 +448,7 @@ def split_muuid(b):
     hlen = UUID_SIZE * 2
     return  [b[k:k+hlen] for k in xrange(0,len(b),hlen)]
 
-def pwd_generator(size=6,chars=string.ascii_lowercase+string.digits):
+def pwd_generator(size=8,chars=string.ascii_lowercase+string.digits):
     return ''.join(random.SystemRandom().choice(chars) for _ in xrange(size))
 
 def split_mruuid(b):

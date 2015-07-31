@@ -643,7 +643,8 @@ class EpollServer():
             return stun_error_response(res)
     
         huid = res.attrs[STUN_ATTRIBUTE_UUID]
-        apps = self.device_login_notify_app(huid,res.fileno)
+        apps = self.device_login_notify_app(huid,res.fileno)+','
+        
     #    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
     #        update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
     #    else:
@@ -1000,7 +1001,7 @@ def make_argument_parser():
 
 store = ['clients','hosts','responses','appbinds','appsock','devsock','devuuid','users','requests']
 if __name__ == '__main__':
-    __version__ = '0.1.0'
+    __version__ = '0.1.2'
     options = make_argument_parser().parse_args()
     port = options.srv_port if options.srv_port else 3478
     cluster_eth = options.cluster_interface if options.cluster_interface else None
