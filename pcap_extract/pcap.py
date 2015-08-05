@@ -8,6 +8,7 @@ import time
 import hashlib
 import collections
 import re
+from socket import inet_aton,inet_ntoa
 PCAP_HEAD = '!IHHIIII'
 #DATA_HEAD = '!IIII'
 ETHERNET_DATA = '!6B6BH'
@@ -16,60 +17,133 @@ TCP_HEAD ='!HHIIBBHHH'
 UDP_HEAD ='!HHHH'
 TCP_OPT ='%dB'
 PCAP_HEAD_LEN = 24
+fmt_pcap = 'PCAP'
+fmt_pcapng = 'PCAPNG'
 
-def read_file(f):
+
+def read_file(infile):
     stream = {}
-    if not is_pcaphead(f.read(PCAP_HEAD_LEN)):
-        print "Valid pcap file"
-        return
-    else:
-        n = 0
-        synpkt =None
-        while 1:
-            #print "Packet Seq", n+1
-            tcp_p = processing_in_memory(f)
-            if not tcp_p:
-                continue
-            #print 'dst port',tcp_p.dst_port,'src port',tcp_p.src_port
-            if tcp_p.dst_port == 443 or tcp_p.src_port == 443:
-                continue
-            ud = {tcp_p.src_ip:tcp_p.src_port,tcp_p.dst_ip:tcp_p.dst_port}
-            k = hashlib.md5(str(ud)).hexdigest()
-            if tcp_p.flags == 0x2: # syn
-                #stream[k] = {'request':{},'response':{}}
-                #newstream = PeerClass(tcp_p)
-                stream[k] = {}
-                synpkt = tcp_p
-                stream[k][tcp_p.seq] = tcp_p
-            elif tcp_p.flags == 0x12: # syn,ack
-                if stream.has_key(k):
-                    stream[k][tcp_p.seq] = tcp_p
-                continue
-            elif tcp_p.flags == 0x4: #rst
-                continue
-            elif tcp_p.flags == 0x10 or tcp_p.flags == 0x18: # ack,psh or ack
-                if stream.has_key(k):
-                    stream[k][tcp_p.seq] = tcp_p
-            elif tcp_p.flags == 0x11: # fin,ack
-                if stream.has_key(k):
-                    stream[k][tcp_p.seq] = tcp_p
-                    proc_stream(stream[k],synpkt)
-                    stream.pop(k)
+    fmt = check_file_format(infile)
+    if not fmt:
+        print "unkown file format"
+        return 
 
-def split_src_dst(src,dst,syn,pkt):
+    proc_func[fmt](infile)
+
+
+def proc_pcapng(infile):
+    infile.seek(0)
+    n = 0
+    global synpkt
+    synpkt = None
+    stream_dict = {}
+    while 1:
+        block_type,buf= read_block(infile)
+        #print "infile seq 0x%08x" % infile.tell()
+        n = n+1
+        #print "packet number",n
+        if not block_type:
+            print "no more packet ,done."
+            exit()
+        try:
+            block_dict[block_type](stream_dict,buf)
+        except TypeError:
+            pass
+
+class Proc_Pcap():
+    def __init__(self,infile):
+        self.stream_dict = {}
+        self.synpkt = None
+        
+
+    
+
+def proc_pcap(infile):
+    head = infile.read(20)
+    n = 0
+    stream_dict = {}
+    global synpkt
+    synpkt = None
+    while 1:
+        #print "Packet Seq", n+1
+        #tcp_p = processing_in_memory(infile)
+        data_head = infile.read(16)
+        if not data_head:
+            print "no more packets,exiting ...."
+            exit()
+        seconds,unseconds = struct.unpack('!II',data_head[:8])
+        packet_len,raw_len = struct.unpack('II',data_head[8:])
+        packet_buf = infile.read(raw_len)
+        tcp_p =  parse_raw_packet(packet_buf)
+        proc_http_packet(stream_dict,tcp_p)
+
+
+def proc_http_packet(stream_dict,tcp_p):
+    global synpkt
+    if not tcp_p:
+        return
+    if tcp_p.dst_port == 443 or tcp_p.src_port == 443:
+        return
+    #print 'dst port',tcp_p.dst_port,'src port',tcp_p.src_port
+    ud = {tcp_p.src_ip:tcp_p.src_port,tcp_p.dst_ip:tcp_p.dst_port}
+    k = hashlib.md5(str(ud)).hexdigest()
+    if tcp_p.flags == 0x2: # syn
+        #stream[k] = {'request':{},'response':{}}
+        #newstream = PeerClass(tcp_p)
+        stream_dict[k] = {}
+        synpkt = tcp_p
+        stream_dict[k][tcp_p.seq] = tcp_p
+    elif tcp_p.flags == 0x12: # syn,ack
+        if stream_dict.has_key(k):
+            stream_dict[k][tcp_p.seq] = tcp_p
+    elif tcp_p.flags == 0x4: #rst
+        return
+    elif tcp_p.flags == 0x10 or tcp_p.flags == 0x18: # ack,psh or ack
+        if stream_dict.has_key(k):
+            stream_dict[k][tcp_p.seq] = tcp_p
+    elif tcp_p.flags == 0x11: # fin,ack
+        if stream_dict.has_key(k):
+            stream_dict[k][tcp_p.seq] = tcp_p
+            proc_stream_dict(stream_dict[k])
+            stream_dict.pop(k)
+            synpkt = None
+
+def read_block(infile):
+    buf = infile.read(8)
+    if not buf:
+        return (None,None)
+    block_type,block_len = struct.unpack('II',buf)
+    #print "blk type %d, blk len %d" %(block_type,block_len)
+    return (block_type,infile.read(block_len-8))
+    
+def Parse_Enhanced_Packet(stream_dict,buf):
+    ifaceid,timehigh,timelow,caplen,pktlen = struct.unpack('5I',buf[:20])
+    n = parse_raw_packet(buf[20:][:pktlen])
+    proc_http_packet(stream_dict,n)
+
+
+def Parse_Interface_Description(stream_dict,buf):
+    pass
+
+def Parse_Name_Resolution(stream_dict,buf):
+    pass
+
+
+
+def split_src_dst(src,dst,pkt):
     """区分源与目地"""
-    if pkt.segment:
-        if pkt.src_port == syn.src_port and pkt.src_ip == syn.src_ip:
+    global synpkt
+    if pkt.segment and synpkt:
+        if pkt.src_port == synpkt.src_port and pkt.src_ip == synpkt.src_ip:
             src.append(pkt.segment)
         else:
             dst.append(pkt.segment)
 
 
-def proc_stream(stream_dict,synpkt):
+def proc_stream_dict(d):
     src = []
     dst = []
-    [split_src_dst(src,dst,synpkt,x)  for x in collections.OrderedDict(sorted(stream_dict.items())).values()]
-    
+    [split_src_dst(src,dst,x)  for x in collections.OrderedDict(sorted(d.items())).values()]
     allrequest= re.split(r'(GET |POST )*',''.join(src))
     allreq  = [ x for x in allrequest if len(x) > 5]
     n = ''.join(dst)
@@ -113,7 +187,8 @@ def save_image(response):
         imgname = md5name+'.'+ext
         with open('%s/%s' % (outdir,imgname),'wb') as im:
             im.write(dlist[-1])
-            
+  
+
 
 def processing_in_memory(infile):
     data_head = infile.read(16)
@@ -124,6 +199,9 @@ def processing_in_memory(infile):
     seconds,unseconds = struct.unpack('!II',data_head[:8])
     packet_len,raw_len = struct.unpack('II',data_head[8:])
     packet_buf = infile.read(raw_len)
+    return parse_raw_packet(packet_buf)
+
+def parse_raw_packet(packet_buf):
     frame_type= struct.unpack('!H',packet_buf[12:14])[0]
     #print "link Type",link_packet[-1]
     if frame_type != 0x800: 
@@ -143,6 +221,8 @@ def processing_in_memory(infile):
         return
 
     verlen,dsf,iplen,ident,ff,tlive,ip_pro_type,chksum,src_ip,dst_ip= struct.unpack(IP_HEAD,packet_buf[14:34])
+    if dst_ip == ignore_ip or src_ip == ignore_ip:
+        return
     ip_headsize = ((iplen > 4 )&0xF)*4
     #print "ip version " + proto_v[0]
     #print "ip head size %d" % ip_headsize
@@ -183,24 +263,52 @@ def tcp_packet_parse(buf):
     return  tcp
 
 
+def check_file_format(infile):
+    magic_num = struct.unpack('!I',infile.read(4))[0]
+    if magic_num == 0x0a0d0d0a: # pcapng format
+        return fmt_pcapng
+    elif magic_num == 0xD4C3B2A1 or magic_num == 0xA1B2C3D4: # pcap format
+        return fmt_pcap
+    else:
+        return None
+
 def is_pcaphead(ghead):
     magic_num,major,minor,timezone,timestamp,max_package_len,link_type = struct.unpack(PCAP_HEAD,ghead)
     if magic_num == 0xD4C3B2A1 or magic_num == 0xA1B2C3D4:
         return True
     else:
         return False
+
+def is_pcapnghead(ghead):
+    pass
   
 
+
+proc_func = {fmt_pcap:proc_pcap ,fmt_pcapng:proc_pcapng}
+block_dict = {0x1:Parse_Interface_Description,
+              0x2:None,
+              0x3:None,
+              0x4:Parse_Name_Resolution,
+              0x5:None,
+              0x6:Parse_Enhanced_Packet,
+              0x0a0d0d0a:None
+              }
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description ='extract image from pcap')
     parser.add_argument('-f',metavar='in-file',type=argparse.FileType('rb'),dest='infile')
     parser.add_argument('-o',action="store",type=str,dest="outdir")
+    parser.add_argument('-e',action="store",type=str,dest="exclude_ip")
     args = parser.parse_args()
     if not args.infile:
         print args
         exit()
+    ignore_ip = 0
+    if args.exclude_ip:
+        ignore_ip = struct.unpack('!I',inet_aton(args.exclude_ip))[0]
+        print "ignore_ip",args.exclude_ip
+        print ignore_ip
     outdir = os.path.abspath('.')
     if args.outdir:
         outdir = os.path.abspath(args.outdir)
