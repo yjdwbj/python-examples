@@ -302,7 +302,7 @@ if __name__ == "__main__":
     parser.add_argument('-e',action="store",type=str,dest="exclude_ip")
     args = parser.parse_args()
     if not args.infile:
-        print args
+        parser.parse_args(['-h'])
         exit()
     ignore_ip = 0
     if args.exclude_ip:
