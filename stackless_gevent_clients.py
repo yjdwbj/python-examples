@@ -24,21 +24,21 @@ from datetime import datetime
 import hashlib
 from sockbasic import *
 from random import randint
-import gevent
-from gevent import monkey,socket
-from gevent.pool import Pool
-from gevent.queue import Queue,Empty
+#import gevent
+#from gevent import monkey,socket
+#from gevent.pool import Pool
+#from gevent.queue import Queue,Empty
 import multiprocessing
 from ftplib import FTP
 
 #from multiprocessing import Queue
 #from multiprocessing.queues import Empty
-monkey.patch_socket(dns=False,aggressive=False)
-monkey.patch_time()
-monkey.patch_os()
-monkey.patch_thread()
-monkey.patch_ssl()
-#monkey.patch_all(socket=True,dns=False,time=True,select=False,thread=True,os=True,ssl=False,httplib=False,subprocess=False,aggressive=True)
+#monkey.patch_socket(dns=False,aggressive=False)
+#monkey.patch_time()
+#monkey.patch_os()
+#monkey.patch_thread()
+#monkey.patch_ssl()
+##monkey.patch_all(socket=True,dns=False,time=True,select=False,thread=True,os=True,ssl=False,httplib=False,subprocess=False,aggressive=True)
 import threading
 
 #FTP_HOST='192.168.25.105'
@@ -136,6 +136,8 @@ class DevicesFunc():
                 break
         
         self.sbuf = self.device_struct_allocate()
+        print hexlify(self.sbuf)
+        exit()
         if self.write_sock():
             devreconn.put_nowait(self.uid)
             return
@@ -361,9 +363,9 @@ class DevicesFunc():
         #stun_init_command_str(STUN_METHOD_ALLOCATE,buf)
         od = stun_init_command_head(STUN_METHOD_ALLOCATE)
         stun_attr_append_str(od,STUN_ATTRIBUTE_UUID,self.uid)
-        filed = "%08x" % UCLIENT_SESSION_LIFETIME
-        stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,filed)
-        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify('testdata'))
+        #filed = UCLIENT_SESSION_LIFETIME
+        #stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,filed)
+        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,'testdata')
         stun_add_fingerprint(od)
         return ''.join(get_list_from_od(od))
     
@@ -374,15 +376,15 @@ class DevicesFunc():
         #buf[3] = '%08x' % self.srcsock
         #buf[4] = '%08x' % self.dstsock
         #buf[-1] = sequence
-        od['srcsock']= '%08x' % self.srcsock
-        od['dstsock']='%08x' % self.dstsock
+        od['srcsock']=  self.srcsock
+        od['dstsock']= self.dstsock
         od['sequence']=sequence
         #stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%d' % time.time()))
-        if not cmp(sequence[:2],'03'):
+        if (sequence >> 24) == 0x3:
             upfname = 'app_data.bin'
             upload_ftp(FTP_HOST,self.ftpuser,self.ftpwd,upfname)
             digest = get_md5_digest(upfname)
-            stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify('%.05f:ftp:%s:%s:%s:%s' % (time.time(),self.ftpuser,self.ftpwd,upfname,digest)))
+            stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,'%.05f:ftp:%s:%s:%s:%s' % (time.time(),self.ftpuser,self.ftpwd,upfname,digest))
         stun_add_fingerprint(od)
         for n in STUN_HEAD_KEY:
             if not od.has_key(n):
@@ -720,8 +722,7 @@ class APPfunc():
         obj.update(self.pwd)
         stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,obj.hexdigest())
         #filed = "%08x" % UCLIENT_SESSION_LIFETIME
-        filed = "%08x" % 30
-        stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,filed)
+        stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,0x23)
         del filed
         stun_add_fingerprint(od)
         return ''.join(get_list_from_od(od))

@@ -12,67 +12,54 @@ from multiprocessing  import Pool,Queue
 from multiprocessing.queues import Empty
 from select import epoll,EPOLLET,EPOLLIN,EPOLLOUT,EPOLLHUP,EPOLLERR
 
-from binascii import hexlify,unhexlify
+from binascii import hexlify,unhexlify,crc32
 from datetime import datetime
-#import MySQLdb
-#from sqlalchemy import *
-#from sqlalchemy.exc import *
-#from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,MetaData,DateTime,Boolean,SmallInteger,VARCHAR
-#from sqlalchemy import sql,and_
-#from sqlalchemy.dialects import postgresql as pgsql
-#from sqlalchemy.dialects import mysql
-#from sqlalchemy.pool import QueuePool
-#from sqlalchemy.orm import sessionmaker
 import sys
 import traceback
 
 
-STUN_METHOD_BINDING='0001'   # APP登录命令
-STUN_METHOD_ALLOCATE='0003'   #小机登录命令
-STUN_METHOD_REFRESH='0004'
-STUN_METHOD_SEND='0006'  # APP 给小机发数据
-STUN_METHOD_DATA='0007'  # 小机给APP发数据
-STUN_METHOD_INFO='0008'  # 服务器发出的通知命令
-STUN_METHOD_CHANNEL_BIND='0009' # APP 绑定小机的命令
-STUN_METHOD_MODIFY='0010' #修改绑定信息
-STUN_METHOD_DELETE='0011' #删除绑定项
-STUN_METHOD_PULL='0012'  # 从服务器上拉去数据
+STUN_METHOD_BINDING=0x1   # APP登录命令
+STUN_METHOD_ALLOCATE=0x3   #小机登录命令
+STUN_METHOD_REFRESH=0x4
+STUN_METHOD_SEND=0x6  # APP 给小机发数据
+STUN_METHOD_DATA=0x7  # 小机给APP发数据
+STUN_METHOD_INFO=0x8  # 服务器发出的通知命令
+STUN_METHOD_CHANNEL_BIND=0x9 # APP 绑定小机的命令
+STUN_METHOD_MODIFY=0x10 #修改绑定信息
+STUN_METHOD_DELETE=0x11 #删除绑定项
+STUN_METHOD_PULL=0x12  # 从服务器上拉去数据
 
-STUN_METHOD_CONNECT='000a'
-STUN_METHOD_CONNECTION_BIND='000b'
-STUN_METHOD_CONNECTION_ATTEMPT='000c'
+STUN_METHOD_CONNECT=0xa
+STUN_METHOD_CONNECTION_BIND=0xb
+STUN_METHOD_CONNECTION_ATTEMPT=0xc
 
-STUN_METHOD_CHECK_USER='000e'
-STUN_METHOD_REGISTER='000f' # App 注册用户命令
+STUN_METHOD_CHECK_USER=0xe
+STUN_METHOD_REGISTER=0xf # App 注册用户命令
 
 
 
 # RFC 6062 #
-STUN_ATTRIBUTE_MAPPED_ADDRESS='0001'
-STUN_ATTRIBUTE_CHANGE_REQUEST='0003'
-STUN_ATTRIBUTE_USERNAME='0006'
-STUN_ATTRIBUTE_MESSAGE_INTEGRITY='0008'
-STUN_ATTRIBUTE_MESSAGE_ERROR_CODE='0009'
-
-
-STUN_ATTRIBUTE_CHANNEL_NUMBER='000c'
-STUN_ATTRIBUTE_LIFETIME='000d'
-STUN_ATTRIBUTE_BANDWIDTH='0010'
-STUN_ATTRIBUTE_XOR_PEER_ADDRESS='0012'
-STUN_ATTRIBUTE_DATA='0013'
-
-STUN_ATTRIBUTE_FINGERPRINT='8028'
-STUN_ATTRIBUTE_UUID='8001'
-STUN_ATTRIBUTE_RUUID='8002'
-STUN_ATTRIBUTE_STATE='8003'
-STUN_ATTRIBUTE_MUUID='8004'
-STUN_ATTRIBUTE_MRUUID='8005'
+STUN_ATTRIBUTE_MAPPED_ADDRESS=0x1
+STUN_ATTRIBUTE_CHANGE_REQUEST=0x3
+STUN_ATTRIBUTE_USERNAME=0x6
+STUN_ATTRIBUTE_MESSAGE_INTEGRITY=0x8
+STUN_ATTRIBUTE_MESSAGE_ERROR_CODE=0x9
+STUN_ATTRIBUTE_CHANNEL_NUMBER=0xc
+STUN_ATTRIBUTE_LIFETIME=0xd
+STUN_ATTRIBUTE_BANDWIDTH=0x10
+STUN_ATTRIBUTE_XOR_PEER_ADDRESS=0x12
+STUN_ATTRIBUTE_DATA=0x13
+STUN_ATTRIBUTE_FINGERPRINT=0x8028
+STUN_ATTRIBUTE_UUID=0x8001
+STUN_ATTRIBUTE_RUUID=0x8002
+STUN_ATTRIBUTE_STATE=0x8003
+STUN_ATTRIBUTE_MUUID=0x8004
+STUN_ATTRIBUTE_MRUUID=0x8005
 
 
 #Lifetimes
 
 CRC_MASK=0xFFFFFFFF
-STUN_STRUCT_FMT='!HHI12s' # 固定20Byte的头， 类型，长度，魔数，SSID
 STUN_UUID_VENDOR='20sI'
 STUN_UVC='16s4sI' # uuireturn check_packet_crc32(buf)
 SOCK_BUFSIZE=4096
@@ -82,29 +69,31 @@ TUUID_SIZE=16
 REFRESH_TIME=50
 CRCMASK=0x5354554e
 CRCPWD=0x6a686369
-HEAD_MAGIC="4a4c0001"
-STUN_HEADER_FMT='!2sHHIIHI'
-STUN_HEADER_LENGTH=struct.calcsize(STUN_HEADER_FMT)*2
+HEAD_MAGIC=struct.pack('!HH',0x4a4c,0x1)
+
 UCLIENT_SESSION_LIFETIME=int(600)
 
-STUN_ERROR_UNKNOWN_ATTR='%08x' % 0x401
-STUN_ERROR_UNKNOWN_HEAD='%08x' % 0x402
-STUN_ERROR_UNKNOWN_PACKET='%08x' % 0x404
-STUN_ERROR_UNKNOWN_METHOD='%08x' %0x403
-STUN_ERROR_USER_EXIST='%08x' % 0x405
-STUN_ERROR_AUTH='%08x' % 0x406
-STUN_ERROR_DEVOFFLINE='%08x' % 0x407
-STUN_ERROR_FORMAT='%08x' % 0x408
-STUN_ERROR_OBJ_NOT_EXIST='%08x' % 0x410
+STUN_ERROR_UNKNOWN_ATTR=0x401
+STUN_ERROR_UNKNOWN_HEAD= 0x402
+STUN_ERROR_UNKNOWN_PACKET=0x404
+STUN_ERROR_UNKNOWN_METHOD=0x403
+STUN_ERROR_USER_EXIST= 0x405
+STUN_ERROR_AUTH= 0x406
+STUN_ERROR_DEVOFFLINE= 0x407
+STUN_ERROR_FORMAT=0x408
+STUN_ERROR_OBJ_NOT_EXIST=0x410
 STUN_ERROR_NONE=None
 
 
-STUN_ONLINE='00000001'
-STUN_OFFLINE='00000000'
+STUN_ONLINE=0x1
+STUN_OFFLINE=0x0
 
 LOG_SIZE=536870912
 LOG_COUNT=128
 HEXSEQ='0123456789abcdef'
+
+JL_PKT_HEAD ='!HHHIIHI' # magic,verion,length,srcsock,dstsock,method,sequence
+STUN_HEADER_LENGTH=struct.calcsize(JL_PKT_HEAD)
 
 STUN_HEAD_CUTS=(4,8,12,20,28,32,40) # 固定长度的包头
 STUN_HEAD_KEY=('magic','version','length','srcsock','dstsock','method','sequence') # 包头的格式的名称
@@ -130,20 +119,22 @@ class DictClass:
     def __init__(self,**kwargs):
         self.__dict__.update(kwargs)
 
-def get_crc32(s):
-    return binascii.crc32(binascii.unhexlify(s.lower()))
 
 def stun_is_success_response_str(mth):
-    n = int(mth,16) & 0xFFFF
+    n = mth & 0xFFFF
     return ((n & 0x1100) == 0x1000)
 
 def get_packet_head_list(buf):
-    tlist = list(STUN_HEAD_CUTS)
-    return [buf[i:j] for i,j in zip([0]+tlist,tlist+[None])]
+    n =  list(struct.unpack(JL_PKT_HEAD,buf))
+    print n
+    return n
+    #tlist = list(STUN_HEAD_CUTS)
+    #return [buf[i:j] for i,j in zip([0]+tlist,tlist+[None])]
 
 def get_packet_head_class(buf): # 把包头解析成可以识的类属性
-    hlist = filter(None,get_packet_head_list(buf))
+    hlist = get_packet_head_list(buf)
     if len(hlist) != len(STUN_HEAD_KEY):
+        print "head is wroing",hlist
         del hlist[:]
         del hlist
         return None
@@ -156,63 +147,56 @@ def get_packet_head_class(buf): # 把包头解析成可以识的类属性
     s= ('srcsock','dstsock')
     for k in d.keys():
         if k in s:
-            setattr(cc,k,int(d.get(k),16)) # 设置源地址，目地
-        else:
-            setattr(cc,k,d.get(k))
+            setattr(cc,k,d.get(k)) # 设置源地址，目地
 
     for n in STUN_HEAD_KEY:
         d.pop(n,None)
     del d
 
+    print "cc.method",cc.method
     if stun_get_type(cc.method) not in mthlist: #命令类形不能识别
+        print "method is wroing",cc.method
         return None
-    m = (STUN_METHOD_SEND,STUN_METHOD_DATA)
-    if cc.method in m:
-        if cc.sequence[0] in HEXSEQ and cc.sequence[1] in HEXSEQ:
-            return cc
-        else:
-            return None
-    else:
-        if cmp(cc.sequence,'00000000'):
-            return None
-        else:
-            return cc
+#    m = (STUN_METHOD_SEND,STUN_METHOD_DATA)
+#    if cc.method in m:
+#        if cc.sequence[0] in HEXSEQ and cc.sequence[1] in HEXSEQ:
+#            return cc
+#        else:
+#            return None
+#    else:
+#        if cc.sequence == 0:
+#            return None
+#        else:
+#            return cc
 
 def stun_make_success_response(method):
     #print "success response %04x" % ((stun_make_type(method) & 0xFEEF) | 0x0100)
-    return '%04x' % ((stun_make_type(method) & 0xFEFF) | 0x1000)
+    return ((stun_make_type(method) & 0xFEFF) | 0x1000)
 
 def stun_make_error_response(method):
-    return '%04x' % ((stun_make_type(method) & 0xFEFF) | 0x1100)
+    return ((stun_make_type(method) & 0xFEFF) | 0x1100)
 
 def stun_make_type(method):
-    t  = int(method,16) & 0xFFFF
+    t  = method & 0xFFFF
     #t = (( t & 0x000F) | ((t  & 0x0070) << 1) | ((t & 0x0380) << 2) | ((t & 0x0C00) << 2))
     t = ( t & 0x00FF) | ((t  & 0x0700) << 1) | ((t & 0x3800) << 2)
     return t
 
 def stun_get_type(method):
-    tt = int(method,16) & 0xFFFF
+    tt = method & 0xFFFF
     #t = (tt & 0x000F)| ((tt & 0x00E0) >> 1)|((tt & 0x0E00)>>2)|((tt & 0x3000)>>2)
     t = (tt & 0x00FF)| ((tt & 0x0E00) >> 1)|((tt & 0xEE00)>>2)
-    return '%04x' % t
+    return t
 
 def stun_attr_append_str(od,attr,add_value):
-    #buf[1] = "%04x" % (len(''.join(buf)) / 2 - STUN_HEADER_LENGTH)
-    # 属性名，属性长度，属性值
-    #buf.append(attr)
-    od['lst'].append(attr) 
-    alen = len(add_value) / 2
-    od['lst'].append("%04x" % alen)
-    tb = add_value
+    od['lst'].append(pack16(attr)) 
+    alen = len(add_value)
+    od['lst'].append(pack16(alen))
     # 4Byte 对齐
     rem4 = (alen & 0x0003)& 0xf
     if rem4:
         rem4 = alen+4-rem4
-    while (rem4 -alen) > 0:
-        tb += '00'
-        rem4 -= 1
-    od['lst'].append(tb)
+    od['lst'].append(struct.pack('!%ds' % (alen+rem4),add_value))
     #buf[2] ="%04x" % (len(''.join(buf)) / 2 )
 
 def get_list_from_od(od):
@@ -224,72 +208,60 @@ def get_list_from_od(od):
     return lst
 
 def stun_add_fingerprint(od):
-    #stun_attr_append_str(buf,STUN_ATTRIBUTE_FINGERPRINT,'00000000')
-    #buf.append('00000000')
-    #buf[2] = '%04x' % (int(buf[2],16)+4)
-    od['length'] = '%04x' %  (len(''.join(chain(od.values()[:-1],od['lst'])))/2+4) # 4Byte crc32
     crc_str = ''.join(chain(od.values()[:-1],od['lst']))
-    crcval = get_crc32(crc_str)
+    od['length'] = pack16(len(crc_str)+4) # 4Byte crc32
+    crc_str = ''.join(chain(od.values()[:-1],od['lst'])) # 这一次不要忘记了:
+    crcval = crc32(crc_str)
     del crc_str
-    crcstr = "%08x" % ((crcval  ^ CRCMASK) & 0xFFFFFFFF)
+    crcstr = struct.pack('!I', ((crcval  ^ CRCMASK) & 0xFFFFFFFF))
     #buf[-1] = crcstr.replace('-','')
-    od['lst'].append(crcstr.replace('-',''))
+    od['lst'].append(crcstr)
 
+def pack16(t):
+    return struct.pack('!H',t)
+
+def unpack16(t):
+    return struct.unpack('!H',t)
+
+def unpack32(t):
+    return struct.unpack('!I',t)
+
+def pack32(t):
+    return struct.pack('!I',t)
 
 def stun_init_command_head(msg_type):
     d = OrderedDict()
-    d['magic'] = '4a4c'
-    d['version'] = '0001'
-    d['length']='0014'
-    d['srcsock']='FFFFFFFF'
-    d['dstsock']='FFFFFFFF'
-    d['method'] = msg_type
-    d['sequence'] = '00000000'
+    d['magic'] = pack16(0x4a4c)
+    d['version'] = pack16(0x1)
+    d['length']=pack16(0x14)
+    d['srcsock']=pack32(0xFFFFFFFF)
+    d['dstsock']=pack32(0xFFFFFFFF)
+    d['method'] = pack16(msg_type)
+    d['sequence'] = pack32(0)
     d['lst'] = []
-#    setattr(d,'magic','4a4c')
-#    setattr(d,'version','0001')
-#    setattr(d,'length','0014')
-#    setattr(d,'srcsock','FFFFFFFF')
-#    setattr(d,'dstsock','FFFFFFFF')
-#    setattr(d,'method',msg_type)
-#    setattr(d,'sequence','00000000')
-#    setattr(d,'lst',[])
-#    #setattr(d,'crc32','0')
     return d
     
 
-def stun_init_command_str(msg_type,buf):
-    buf.append("4a4c") # 魔数字
-    buf.append("0001") # 版本号
-    buf.append("0014") # 长度
-    buf.append("FFFFFFFF") # SRC
-    buf.append("FFFFFFFF") # DST
-    buf.append(msg_type) # CMD
-    buf.append("00000000")  # 序列号
-
 def check_packet_crc32(buf): # 检查包的CRC
     #crc = struct.unpack('!HHI',binascii.unhexlify(buf[-16:]))
-    rcrc =(get_crc32(buf[:-8]) ^ CRCMASK) & 0xFFFFFFFF
-    return cmp(buf[-8:],'%08x' %  rcrc)
+    rcrc =(crc32(buf[:-4]) ^ CRCMASK) & 0xFFFFFFFF
+    return unpack32(buf[-4:])[0] == rcrc
+    #return cmp(buf[-8:],'%08x' %  rcrc)
 
 def check_packet_vaild(buf):
-    if cmp(buf[:8],HEAD_MAGIC) or check_packet_crc32(buf):
-        return True
-    else:
-        return False
+    return (buf[:4] == HEAD_MAGIC) and check_packet_crc32(buf)
     #return check_packet_crc32(buf)
 
 def stun_error_response(res):
     buf = []
-    #stun_init_command_str(stun_make_error_response(res.method),buf)
     od = stun_init_command_head(stun_make_error_response(res.method))
     stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,res.eattr)
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
 def get_jluuid_crc32(uhex):
-    ucrc = get_crc32(uhex)
-    return "%08x" % ((ucrc ^ CRCPWD) & 0xFFFFFFFF)
+    ucrc = crc32(uhex)
+    return (ucrc ^ CRCPWD) & 0xFFFFFFFF
 
 def check_uuid_format(uid):
     n = [ x for x in uid[:TUUID_SIZE*2] if x > 'f' or x < '0']
@@ -297,14 +269,14 @@ def check_uuid_format(uid):
 
 def check_uuid_valid(uhex):
     #print "my crc",crcstr,'rcrc',uhex[-8:]
-    return cmp(get_jluuid_crc32(uhex[:-8]),uhex[-8:])
+    return get_jluuid_crc32(uhex[:-4]) == uhex[-4:]
 
 def check_jluuid(huid): # 自定义24B的UUID
-    if check_uuid_valid(huid):
+    if get_jluuid_crc32(huid[:-4]) != huid[-4:]:
         return STUN_ERROR_UNKNOWN_PACKET
 
-    if check_uuid_format(huid):
-        return STUN_ERROR_UNKNOWN_PACKET
+    #if check_uuid_format(huid):
+    #    return STUN_ERROR_UNKNOWN_PACKET
     return None
 
 def check_dst_and_src(res):
@@ -334,43 +306,61 @@ def split_requests_buf(hbuf):
         return nlist[:-1]
     return nlist
 
+def read_attr_block(buf):
+    attr_name,attr_len = struct.unpack('!HH',buf[:8])
+    return (attr_name,attr_len,struct.unpack('%ds' % attr_len,buf[8:8+attr_len]))
 
-def read_attributes_from_buf(response):
-    attr_name = response[:4]
-    fmt = []
-    vfunc = lambda x: [4,8,int(x,16)]
-    if attr_name == STUN_ATTRIBUTE_LIFETIME:
-        fmt = vfunc(response[4:8])
-    #elif attr_name == STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:
-    #    fmt = '!HH2sHI'
-    elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
-        fmt = '!HHI'
-    elif attr_name == STUN_ATTRIBUTE_STATE:
-        fmt = vfunc(response[4:8])
-    elif attr_name == STUN_ATTRIBUTE_UUID:
-        fmt = vfunc(response[4:8])
-    elif attr_name == STUN_ATTRIBUTE_RUUID:
-        fmt = vfunc(response[4:8])
-    elif attr_name == STUN_ATTRIBUTE_MESSAGE_INTEGRITY:
-        fmt = vfunc(response[4:8])
-    elif attr_name == STUN_ATTRIBUTE_DATA:
-        fmt = vfunc(response[4:8])
-    elif attr_name == STUN_ATTRIBUTE_USERNAME:
-        fmt = vfunc(response[4:8])
-    elif attr_name == STUN_ATTRIBUTE_MESSAGE_ERROR_CODE:
-        fmt = vfunc(response[4:8])
-    elif attr_name == STUN_ATTRIBUTE_MUUID:
-        fmt = vfunc(response[4:8])
-        if fmt[-1] % UUID_SIZE:
-            return None # 不是UUID_SIZE的倍数，错误的格式
-    elif attr_name == STUN_ATTRIBUTE_MRUUID:
-        fmt = vfunc(response[4:8])
-        if fmt[-1] % (UUID_SIZE+4):
-            return None # 不是UUID_SIZE的倍数，错误的格式
-    else:
-        #print 'unkown attr_name',attr_name
-        return None
-    return (attr_name,fmt)
+#def read_attributes_from_buf(response):
+#    attr_name = response[:4]
+#    fmt = []
+#    vfunc = lambda x: [4,8,int(x,16)]
+#    if attr_name == STUN_ATTRIBUTE_LIFETIME:
+#        fmt = vfunc(response[4:8])
+#    #elif attr_name == STUN_ATTRIBUTE_XOR_MAPPED_ADDRESS:
+#    #    fmt = '!HH2sHI'
+#    elif attr_name == STUN_ATTRIBUTE_FINGERPRINT:
+#        fmt = '!HHI'
+#    elif attr_name == STUN_ATTRIBUTE_STATE:
+#        fmt = vfunc(response[4:8])
+#    elif attr_name == STUN_ATTRIBUTE_UUID:
+#        fmt = vfunc(response[4:8])
+#    elif attr_name == STUN_ATTRIBUTE_RUUID:
+#        fmt = vfunc(response[4:8])
+#    elif attr_name == STUN_ATTRIBUTE_MESSAGE_INTEGRITY:
+#        fmt = vfunc(response[4:8])
+#    elif attr_name == STUN_ATTRIBUTE_DATA:
+#        fmt = vfunc(response[4:8])
+#    elif attr_name == STUN_ATTRIBUTE_USERNAME:
+#        fmt = vfunc(response[4:8])
+#    elif attr_name == STUN_ATTRIBUTE_MESSAGE_ERROR_CODE:
+#        fmt = vfunc(response[4:8])
+#    elif attr_name == STUN_ATTRIBUTE_MUUID:
+#        fmt = vfunc(response[4:8])
+#        if fmt[-1] % UUID_SIZE:
+#            return None # 不是UUID_SIZE的倍数，错误的格式
+#    elif attr_name == STUN_ATTRIBUTE_MRUUID:
+#        fmt = vfunc(response[4:8])
+#        if fmt[-1] % (UUID_SIZE+4):
+#            return None # 不是UUID_SIZE的倍数，错误的格式
+#    else:
+#        #print 'unkown attr_name',attr_name
+#        return None
+#    return (attr_name,fmt)
+
+def parser_block_to_list(buf):
+    bl = len(buf)
+    pos = 0
+    mlist = []
+    while pos != bl:
+        one_attr = read_attr_block(buf[pos:])
+        l = one_attr[1]
+        rem4 = l & 0x3
+        if rem4:
+            rem4 = l +4-rem4
+        pos = pos+rem4+l
+        mlist.append(one_attr)
+    return mlist
+    
 
 def parser_buf_to_list(buf):
     mlist = []
@@ -396,7 +386,9 @@ def parser_buf_to_list(buf):
     return mlist
         
 def parser_stun_package(buf):
-    lst = parser_buf_to_list(buf)
+    #lst = parser_buf_to_list(buf)
+    lst = parser_block_to_list(buf)
+    print "parse packet",lst
     k = v = [] 
     try:
         k = [v[0] for v in lst]
@@ -461,15 +453,6 @@ def gen_random_jluuid(vendor):
     return ''.join([n,get_jluuid_crc32(n)])
 
 
-def stun_struct_refresh_request():
-    buf = []
-    #stun_init_command_str(STUN_METHOD_REFRESH,buf)
-    od = stun_init_command_head(STUN_METHOD_REFRESH)
-    filed = "%08x" % UCLIENT_SESSION_LIFETIME
-    stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,filed)
-    del filed
-    stun_add_fingerprint(od)
-    return get_list_from_od(od)
 
 def logger_worker(queue,logger):
     while 1:
@@ -526,372 +509,4 @@ class EpollReactor(object):
 
     def modify(self,fd,mode):
         self._poller.modify(fd,mode)
-
-class MySQLEngine():
-    def __init__(self):
-        self.engine = create_engine('mysql+mysqldb://lcy:lcy123@rdskc8ij3fyg5xklrhxj7public.mysql.rds.aliyuncs.com/nath')
-
-    def check_table(self,table):
-        return table.exists(self.engine)
-
-    def get_engine(self):
-        return self.engine
-
-    def get_dbconn(self):
-        return self.get_engine().connect()
-    
-    def execute(self,stmt):
-        return self.get_dbconn().execute(stmt)
-        
-
-    def create_table(self,sql_txt):
-        self.engine.connect().execute(sql_txt)
-
-    @staticmethod
-    def select(sql_txt):
-        #engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath')
-        engine = create_engine('mysql+mysqldb://lcy:lcy123@rdskc8ij3fyg5xklrhxj7public.mysql.rds.aliyuncs.com/nath')
-        conn = engine.connect()
-        
-        try:
-            result = conn.execute(sql_txt)
-        except ProgrammingError:
-            raise ProgrammingError
-        else:
-            conn.close()
-            return result
-
-
-    @staticmethod
-    def get_account_bind_table(name):
-        metadata = MetaData()
-        table = Table(name,metadata,
-                Column('uuid',mysql.VARCHAR(48),nullable=False,primary_key=True),
-                Column('pwd',mysql.BINARY(32)),
-                Column('reg_time',mysql.TIME,nullable=False)
-                )
-        return table
-
-    @staticmethod
-    def get_account_status_table():
-        metadata = MetaData()
-        table = Table('account_status',metadata,
-                Column('uname',mysql.VARCHAR(255)),
-                Column('is_login',mysql.BOOLEAN,nullable=False),
-                Column('last_login_time',mysql.TIME,nullable=False),
-                Column('chost',mysql.VARCHAR(22),nullable=False),
-                mysql_engine='InnoDB',
-                mysql_charset='utf8'
-                )
-        return table
-    
-    @staticmethod
-    def get_account_table():
-        metadata = MetaData()
-        account = Table('account',metadata,
-                #Column('uuid',mysql.UUID,primary_key=True),
-                Column('uname',mysql.VARCHAR(255),primary_key=True),
-                Column('pwd',mysql.BINARY(32)),
-                Column('is_active',mysql.BOOLEAN,nullable=False),
-                Column('reg_time',mysql.TIME,nullable=False),
-                mysql_engine='InnoDB',
-                mysql_charset='utf8'
-                )
-        return account
-
-    @staticmethod
-    def get_devices_table(tname):
-        metadata = MetaData()
-        mirco_devices = Table(tname,metadata,
-                Column('devid',mysql.BINARY(16),primary_key=True,unique=True),
-                Column('is_active',mysql.BOOLEAN,nullable=False),
-                Column('last_login_time',mysql.TIMESTAMP,nullable=False),
-                Column('is_online',mysql.BOOLEAN,nullable=False),
-                Column('chost',mysql.VARCHAR(22),nullable=False),
-                Column('data',mysql.BINARY),
-                mysql_engine='InnoDB',
-                mysql_charset='utf8'
-                )
-        return mirco_devices
-    
-    @staticmethod
-    def check_boot_tables():
-        engine = create_engine('mysql+mysqldb://lcy:lcy123@rdskc8ij3fyg5xklrhxj7public.mysql.rds.aliyuncs.com/nath')
-        atable = MySQLEngine.get_account_table()
-        conn = engine.connect()
-        if not atable.exists(engine):
-            conn.execute(""" 
-            CREATE TABLE account
-            (
-            uname character varying(255) NOT NULL,
-            pwd BINARY(32),
-            is_active boolean NOT NULL DEFAULT true,
-            reg_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP ,
-            CONSTRAINT uname_pkey PRIMARY KEY(uname),
-            CONSTRAINT uname_ukey UNIQUE(uname)
-            )
-            """)
-        stable = MySQLEngine.get_account_status_table()
-        if not stable.exists(engine):
-            conn.execute(""" 
-            CREATE TABLE account_status
-            (
-              uname character varying(255) NOT NULL ,
-              is_login boolean NOT NULL DEFAULT false,
-              last_login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              chost character varying(22) NOT NULL DEFAULT '',
-              CONSTRAINT account_status_uname_fkey FOREIGN KEY (uname)
-                  REFERENCES account (uname) MATCH SIMPLE
-                  ON UPDATE NO ACTION ON DELETE NO ACTION
-            )
-            """)
-
-#SQLDriver="postgresql+psycopg2cffi://postgres:lcy123@nath.cavxfx5fkqgx.us-west-2.rds.amazonaws.com:5432"
-#SQLDriver='postgresql+psycopg2cffi://postgres:lcy123@192.168.25.105:5432/nath'
-#
-#class PostgresSQLEngine():
-#    def __init__(self):
-#        #self.engine = create_engine('postgresql+psycopg2cffi://postgres:postgres@127.0.0.1:5432/nath',pool_size=8192,max_overflow=4096,\
-#        #        poolclass=QueuePool)
-#        self.engine = create_engine(SQLDriver,pool_size=8192,max_overflow=4096)
-#
-#    def check_table(self,table):
-#        return table.exists(self.engine)
-#
-#    def get_engine(self):
-#        return self.engine
-#
-#    def get_dbconn(self):
-#        return self.get_engine().connect()
-#
-#    def nexecute(self,stmt): #不做返回的查询
-#        self.get_dbconn().execute(stmt)
-#    
-#    def execute(self,stmt):
-#        result = self.get_dbconn().execute(stmt)
-#        res = []
-#        try:
-#            for row in result:
-#                res.append(str(row))
-#        except ResourceClosedError:
-#            res = []
-#        return res
-#        #return self.get_dbconn().execute(stmt)
-#        
-#
-#    def rawselect(self,stmt):
-#        self.get_engine().execute("select %s;" % stmt);
-#
-#    def create_table(self,sql_txt):
-#        self.engine.connect().execute(sql_txt)
-#        
-#    @staticmethod
-#    def get_vendor_table(): #记录厂商的名称
-#        metadata = MetaData()
-#        vtable = Table('vendor',metadata,
-#                Column('vname',pgsql.VARCHAR(8),nullable=False,primary_key=True,unique=True)
-#                )
-#        return vtable
-#
-#    def insert_vendor_dt(self,vendor_name,devid,host,data):
-#        dt = self.get_devices_table(vendor_name)
-#        sel = select([literal(devid),True,'now()',True,literal(host),literal(data)]).where(
-#                   ~exists([dt.c.devid]).where(dt.c.devid == literal(devid))
-#              )
-#        ins = dt.insert().from_select(['devid','is_active','last_login_time','is_online','chost','data','last_logout_time], sel)
-#        self.nexecute(ins)
-#
-#    def insert_vendor_table(self,vname):
-#        """
-#        INSERT INTO example_table
-#            (id, name)
-#        SELECT 1, 'John'
-#        WHERE
-#            NOT EXISTS (
-#                SELECT id FROM example_table WHERE id = 1
-#            );
-#        """
-#        
-#        vt = self.get_vendor_table()
-#        sel = select([literal(vname)]).where(
-#                   ~exists([vt.c.vname]).where(vt.c.vname == literal(vname))
-#              )
-#        
-#        ins = vt.insert().from_select(['vname'], sel)
-#        self.nexecute(ins)
-#
-#
-#    def insert_account_table(self,uname,pwd):
-#        at = self.get_account_table()
-#        sel = select([literal(uname),decode(pwd,'hex'),True,'now()']).where(
-#                ~exists([at.c.uname]).where(at.c.uname == literal(uname)))
-#        ins = at.insert().from_select(['uname','pwd','is_active','reg_time'],sel)
-#        self.nexecute(ins)
-#
-#
-#    @staticmethod
-#    def select(sql_txt):
-#        engine = create_engine(SQLDriver)
-#        #engine = create_engine('postgresql+psycopg2cffi://postgres:lcy123@127.0.0.1:5432/nath')
-#        conn = engine.connect()
-#        result = conn.execute(sql_txt)
-#        res = []
-#        try:
-#            for row in result:
-#                res.append(str(row))
-#        except ResourceClosedError:
-#            res = []
-#        conn.close()
-#        return res
-#
-#
-#
-#    @staticmethod
-#    def get_account_bind_table(name):
-#        metadata = MetaData()
-#        table = Table(name,metadata,
-#                Column('devid',pgsql.VARCHAR(48),nullable=False,primary_key=True),
-#                Column('pwd',pgsql.BYTEA),
-#                Column('reg_time',pgsql.TIME,nullable=False)
-#                )
-#        return table
-#
-#    @staticmethod
-#    def get_account_status_table():
-#        metadata = MetaData()
-#        table = Table('account_status',metadata,
-#                Column('uname',pgsql.VARCHAR(255)),
-#                Column('is_login',pgsql.BOOLEAN,nullable=False),
-#                Column('last_login_time',pgsql.TIME,nullable=False),
-#                Column('chost',pgsql.VARCHAR(22),nullable=False)
-#                )
-#        return table
-#    
-#    @staticmethod
-#    def get_account_table():
-#        metadata = MetaData()
-#        account = Table('account',metadata,
-#                #Column('uuid',pgsql.UUID,primary_key=True),
-#                Column('uname',pgsql.VARCHAR(255),primary_key=True),
-#                Column('pwd',pgsql.BYTEA),
-#                Column('is_active',pgsql.BOOLEAN,nullable=False),
-#                Column('reg_time',pgsql.TIME,nullable=False)
-#                )
-#        return account
-#
-#    @staticmethod
-#    def get_devices_table(vendor_name):
-#        metadata = MetaData()
-#        mirco_devices = Table(vendor_name,metadata,
-#                Column('devid',pgsql.UUID,primary_key=True,unique=True),
-#                Column('is_active',pgsql.BOOLEAN,nullable=False),
-#                Column('last_login_time',pgsql.TIMESTAMP,nullable=False),
-#                Column('is_online',pgsql.BOOLEAN,nullable=False),
-#                Column('chost',pgsql.VARCHAR(22),nullable=False),
-#                Column('data',pgsql.BYTEA)
-#                )
-#        return mirco_devices
-#
-#
-#    @staticmethod
-#    def check_boot_tables():
-#        engine = create_engine(SQLDriver)
-#        conn = engine.connect()
-#        atable = PostgresSQLEngine.get_account_table()
-#        if not atable.exists(engine):
-#            conn.execute("""
-#            CREATE TABLE account
-#            (
-#            uname character varying(255) NOT NULL,
-#            pwd BYTEA,
-#            is_active boolean NOT NULL DEFAULT true,
-#            reg_time timestamp with time zone DEFAULT now(),
-#            CONSTRAINT uname_pkey PRIMARY KEY(uname),
-#            CONSTRAINT uname_ukey UNIQUE(uname)
-#            )
-#            WITH (
-#              OIDS=FALSE
-#            );
-#            ALTER TABLE account
-#              OWNER TO postgres;
-#
-#            CREATE OR REPLACE FUNCTION add_bindtable() RETURNS TRIGGER AS $BODY$
-#            BEGIN
-#            EXECUTE format('
-#            CREATE TABLE IF NOT EXISTS "'||NEW.uname||'"  (
-#              devid VARCHAR(48) NOT NULL PRIMARY KEY,
-#              pwd BYTEA,
-#              reg_time timestamp with time zone DEFAULT now()
-#              );');
-#            RETURN NEW;
-#            END;
-#            $BODY$ LANGUAGE plpgsql;
-#
-#            
-#            CREATE TRIGGER add_bind BEFORE INSERT OR UPDATE ON account FOR EACH ROW EXECUTE PROCEDURE add_bindtable();
-#            """)
-#
-#        stable = PostgresSQLEngine.get_account_status_table()
-#        if not stable.exists(engine):
-#            conn.execute(""" 
-#            CREATE TABLE account_status
-#            (
-#              uname character varying(255) NOT NULL ,
-#              is_login boolean NOT NULL DEFAULT false,
-#              last_login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-#              chost character varying(22) NOT NULL DEFAULT '',
-#              CONSTRAINT account_status_uname_fkey FOREIGN KEY (uname)
-#                  REFERENCES account (uname) MATCH SIMPLE
-#                  ON UPDATE NO ACTION ON DELETE NO ACTION
-#            );
-#            
-#            CREATE OR REPLACE FUNCTION update_or_insert_table(name text,host text) RETURNS VOID AS
-#            $$
-#            BEGIN
-#                LOOP
-#                    UPDATE account_status SET last_login_time = NOW(),chost = host WHERE uname = name;
-#                    if found THEN
-#                        RETURN;
-#                    END IF;
-#                    BEGIN
-#                        INSERT INTO account_status(uname,is_login,last_login_time,chost) VALUES(name,True,'now',host);
-#                        RETURN;
-#                    EXCEPTION WHEN unique_violation THEN
-#                        NULL;
-#                    END;
-#                END LOOP;
-#            END;
-#            $$
-#            LANGUAGE plpgsql;
-#            """)
-#
-#        vtable = PostgresSQLEngine.get_vendor_table()
-#        if not vtable.exists(engine):
-#            #vtable.create(engine)
-#            """每插入一条新的厂商名到vendor表，就为这个名字新建一张表"""
-#            conn.execute("""
-#            CREATE FUNCTION add_vendor() RETURNS TRIGGER AS $$
-#            BEGIN
-#            EXECUTE format('
-#            CREATE TABLE IF NOT EXISTS "'||new.vname||'" (
-#              devid uuid NOT NULL PRIMARY KEY,
-#              is_active boolean NOT NULL,
-#              last_login_time timestamp without time zone NOT NULL,
-#              is_online boolean NOT NULL,
-#              chost character varying(22) NOT NULL,
-#              data bytea 
-#              );');
-#              RETURN NEW;
-#            END;
-#            $$LANGUAGE plpgsql;
-#
-#                
-#            CREATE TRIGGER insert_device BEFORE INSERT OR UPDATE ON vendor FOR EACH ROW EXECUTE PROCEDURE add_vendor();
-#            """)
-#        conn.close()
-        
-
-
-            
-
 
