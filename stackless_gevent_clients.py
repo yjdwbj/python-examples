@@ -60,23 +60,28 @@ def logger_worker(queue,logger):
 
 def upload_ftp(host,uname,pwd,fname):
     ftp = FTP(host)
-    print "upload name",uname
+    print "upload name",fname
     try:
         ftp.login(uname,pwd)
     except:
-        print ftp.getresp()
+        print "upload ftp login error",ftp.getresp()
     ftp.storbinary('STOR %s' % fname,open(fname,'rb'),2048)
     ftp.quit()
 
 def down_ftp(host,uname,pwd,fname):
     ftp = FTP(host)
-    print "uname",uname
     try:
         ftp.login(uname,pwd)
     except:
-        print ftp.getresp()
+        print "download ftp login error",ftp.getresp()
         return
-    ftp.retrbinary('RETR %s' % fname,open(fname,'wb').write)
+    try:
+        ftp.retrbinary('RETR %s' % fname,open(fname,'wb').write)
+    except:
+        print ftp.getresp()
+        print "fname",fname
+        ftp.quit()
+        return
     ftp.delete(fname)
     ftp.quit()
 
@@ -192,7 +197,6 @@ class DevicesFunc():
         else: # 找到一个标识，还不知在什么位置
             pos = self.recv.find(HEAD_MAGIC)
             self.recv = self.recv[pos:]
-            print "recv",hexlify(self.recv)
             #nlen = int(self.recv[8:12],16) *2
             nlen = unpack16(self.recv[4:6])
             if len(self.recv) < nlen:
@@ -206,6 +210,7 @@ class DevicesFunc():
 
 
     def process_loop(self,hbuf):
+        
         if  check_packet_vaild(hbuf): # 校验包头
            qdict.err.put(','.join(['sock','%d'% self.fileno,'check_packet_vaild',hexlify(hbuf)]))
            return False
@@ -217,6 +222,7 @@ class DevicesFunc():
             return False
     
         #retmethod = stun_get_type(hattr.method)
+        #print "dev recv forward",hattr.__dict__
         if  stun_get_type(hattr.method)==STUN_METHOD_SEND:
         #if  not cmp(retmethod,STUN_METHOD_SEND) or not cmp(retmethod,STUN_METHOD_DATA):
             if hattr.srcsock == 0xFFFFFFFF:
@@ -234,6 +240,7 @@ class DevicesFunc():
                 d = rdict[STUN_ATTRIBUTE_DATA]
                 if d.index('ftp'):
                     glist = d.split(':')
+                    print "dev recv ftp info",glist
                     down_ftp(FTP_HOST,glist[2],glist[3],glist[4])
                     self.ftpuser = glist[2]
                     self.ftpwd = glist[3]
@@ -243,6 +250,8 @@ class DevicesFunc():
                         print "digest error"
                 
                 sequence = ((0x2 << 24) ^ (hattr.sequence & 0xFFFFFF))
+                self.sbuf = self.send_data_to_app(sequence)
+                sequence = ((0x3 <<24) ^ self.mynum)
                 self.sbuf = self.send_data_to_app(sequence)
                 #qdict.send.put("send: sock %d,send confirm packet to app;data: %s" % (self.fileno,self.sbuf))
             #下面是我方主动发数据
@@ -278,7 +287,7 @@ class DevicesFunc():
     
         if not stun_is_success_response_str(hattr.method):
                 qdict.err.put(','.join(['sock','%d' % self.fileno,'server error sbuf',\
-                        'method,',hattr.method,hbuf]))
+                        'method %s' %hattr.method,hexlify(hbuf)]))
                 return False
     
         
@@ -292,6 +301,7 @@ class DevicesFunc():
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
                 self.srcsock = unpack32(stat[:4])
+                print "srcsock",self.srcsock
             except KeyError:
                 qdict.err.put('sock %d,login not my sock fileno,retry login' % self.fileno)
                 self.sbuf = self.device_struct_allocate()
@@ -456,7 +466,6 @@ class APPfunc():
                 break
         
         self.sbuf = self.stun_register_request()
-        print "register new ",hexlify(self.sbuf)
         if self.write_sock():
             appreconn.put_nowait(self.uid)
             return
@@ -475,7 +484,6 @@ class APPfunc():
                 qdict.err.put('sock %d, recv not data' % self.fileno)
                 break
             self.recv += data
-            print "recv data",hexlify(data)
             del data
             if self.process_handle_first():
                 break
@@ -519,7 +527,7 @@ class APPfunc():
 
 
     def process_loop(self,rbuf):
-        print "recv buf",hexlify(rbuf)
+        print "app recv ",hexlify(rbuf)
         if check_packet_vaild(rbuf): # 校验包头
             qdict.err.put(','.join(['sock','%d'% self.fileno,'check_packet_vaild',rbuf]))
             print 'pkt vaild',hexlify(rbuf)
@@ -538,13 +546,11 @@ class APPfunc():
             self.dstsock = hattr.srcsock
             if (hattr.sequence >> 24) == 0x3:
                 #qdict.recv.put("recv: %s,sock %d,recv from  dev  number of  hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],rbuf))
-                p  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-4]) # 去头去尾
-                if p is None:
+                rdict  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-4]) # 去头去尾
+                if rdict is None:
                     print "appfunc parser_stun_package is None",rbuf
                     return False
-                rdict = p[0]
-                del p
-                d = unhexlify(rdict[STUN_ATTRIBUTE_DATA])
+                d = rdict[STUN_ATTRIBUTE_DATA]
                 if d.index('ftp'):
                     glist = d.split(':')
                     down_ftp(FTP_HOST,self.user,self.ftpwd,glist[4])
@@ -598,7 +604,6 @@ class APPfunc():
         if hattr.method == STUN_METHOD_BINDING:
             stat = rdict[STUN_ATTRIBUTE_STATE]
             self.ftpwd = rdict[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
-            print "ftpwd",self.ftpwd
             #self.srcsock = int(stat[:8],16)
             self.srcsock,state = struct.unpack('!II',stat)
             # 下面绑定一些UUID
@@ -637,6 +642,7 @@ class APPfunc():
      
      
         elif hattr.method == STUN_METHOD_INFO:
+            print "app ,recv info"
             if not self.retry_t:
                 self.retry_t  = threading.Thread(target=self.retransmit_packet)
                 self.retry_t.start()
@@ -723,7 +729,7 @@ class APPfunc():
         #stun_init_command_str(STUN_METHOD_CHANNEL_BIND,buf)
         od = stun_init_command_head(STUN_METHOD_CHANNEL_BIND)
         stun_attr_append_str(od,STUN_ATTRIBUTE_UUID,unhexlify(self.uid.lower()))
-        stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,self.uid.lower())
+        stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,unhexlify(self.uid.lower()))
         stun_add_fingerprint(od)
         return ''.join(get_list_from_od(od))
     
@@ -768,7 +774,6 @@ class APPfunc():
             #stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,struct.pack('!%ds' % len(data),data))
             stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,data)
         stun_add_fingerprint(od)
-        print "send to dev buf",od
         for n in STUN_HEAD_KEY:
             if not od.has_key(n):
                 print 'app packet head miss key %s' % n

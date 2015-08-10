@@ -1,4 +1,5 @@
 #!/opt/stackless-279/bin/python
+#-*- coding:utf-8 -*-
 
 from datetime import datetime
 from sqlalchemy.exc import *

@@ -128,7 +128,6 @@ def stun_is_success_response_str(mth):
 def get_packet_head_class(buf): # 把包头解析成可以识的类属性
     hlist  =  list(struct.unpack(JL_PKT_HEAD,buf))
     if len(hlist) != len(STUN_HEAD_KEY):
-        print "head is wroing",hlist
         del hlist[:]
         del hlist
         return None
@@ -147,7 +146,6 @@ def get_packet_head_class(buf): # 把包头解析成可以识的类属性
     del d
 
     if stun_get_type(cc.method) not in mthlist: #命令类形不能识别
-        print "method is wroing",cc.method
         return None
     else:
         return cc
@@ -238,7 +236,7 @@ def check_packet_vaild(buf):
 def stun_error_response(res):
     buf = []
     od = stun_init_command_head(stun_make_error_response(res.method))
-    stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,res.eattr)
+    stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,pack16(res.eattr))
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
@@ -255,7 +253,7 @@ def check_uuid_valid(uhex):
     return get_jluuid_crc32(uhex[:-4]) == uhex[-4:]
 
 def check_jluuid(huid): # 自定义24B的UUID
-    if get_jluuid_crc32(huid[:-4]) != huid[-4:]:
+    if ((crc32(huid[:-4]) ^ CRCPWD) & 0xFFFFFFFF) != unpack32(huid[-4:]):
         return STUN_ERROR_UNKNOWN_PACKET
 
     #if check_uuid_format(huid):

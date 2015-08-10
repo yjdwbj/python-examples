@@ -83,7 +83,7 @@ def register_success(uname,ftpwd):
     #stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf)
     od = stun_init_command_head(stun_make_success_response(STUN_METHOD_REGISTER))
     stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,uname)
-    stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,hexlify(ftpwd))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,ftpwd)
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
@@ -91,7 +91,7 @@ def register_success(uname,ftpwd):
 def check_user_sucess(res):
     #stun_init_command_str(stun_make_success_response(res.method),buf,)
     od = stun_init_command_head(stun_make_success_response(res.method))
-    stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,hexlify(res.attrs[STUN_ATTRIBUTE_USERNAME]))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,res.attrs[STUN_ATTRIBUTE_USERNAME])
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
@@ -99,9 +99,10 @@ def app_user_auth_success(res,ftpwd):
     #stun_init_command_str(stun_make_success_response(res.method),buf)
     od= stun_init_command_head(stun_make_success_response(res.method))
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
-    stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
+    #stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,unhexlify('%08x%08x' % (res.fileno,STUN_ONLINE)))
     stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,res.attrs[STUN_ATTRIBUTE_USERNAME])
-    stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,hexlify(ftpwd))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,str(ftpwd))
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
@@ -110,9 +111,9 @@ def device_login_sucess(res,apps): # 客服端向服务器绑定自己的IP
     #stun_init_command_str(stun_make_success_response(res.method),buf)
     od = stun_init_command_head(stun_make_success_response(res.method))
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
-    stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,unhexlify('%08x%08x' %(res.fileno,STUN_ONLINE)))
     if apps: 
-        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify(apps))
+        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,apps)
     stun_add_fingerprint(od)
     lst = get_list_from_od(od)
     return lst
@@ -277,10 +278,8 @@ class EpollServer():
                         self.errqueue[current_process().name].put("%s no data,sock %d" % (hstr,fileno))
                         break
                 n = 5 # 重试读取5次
-                hdata = hexlify(recvbuf)
-                del recvbuf
                 try:
-                    self.requests[fileno] += hdata
+                    self.requests[fileno] += recvbuf
                 except KeyError:
                     self.errqueue[current_process().name].put("%s requests KeyError,sock %d" % (hstr,fileno))
                     break
@@ -347,7 +346,8 @@ class EpollServer():
             return
         else:
             try:
-                sock.send(unhexlify(''.join(self.responses[fileno])))
+                print "srv send buf",hexlify(''.join(self.responses[fileno]))
+                sock.send(''.join(self.responses[fileno]))
                 self.responses[fileno] = None
             except socket.error:
                 self.dealwith_peer_hup(fileno)
@@ -382,7 +382,7 @@ class EpollServer():
         else: # 找到一个标识，还不知在什么位置
             pos = self.requests[fileno].index(HEAD_MAGIC)
             self.requests[fileno] = self.requests[fileno][pos:]
-            nlen = int(self.requests[fileno][8:12],16) *2 #包头指法的长度
+            nlen = unpack16(self.requests[fileno][4:6] )#包头指法的长度
             if len(self.requests[fileno]) < nlen:
                 return
             onepack = self.requests[fileno][:nlen]
@@ -392,7 +392,7 @@ class EpollServer():
             
                     
     def handle_requests_buf(self,hbuf,fileno): # pair[0] == hbuf, pair[1] == fileno
-        if len(hbuf) % 2:
+        if not hbuf:
             return 
         res = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH])
         if not res:
@@ -509,16 +509,14 @@ class EpollServer():
         执行认证后的函数
         """
         hexpos = STUN_HEADER_LENGTH
-        trip =  parser_stun_package(hbuf[hexpos:-8])
-        if trip is None:
-            print "postfunc parser_stun_package is None buf: ",hbuf,res.__dict__,res.host
+        res.attrs =  parser_stun_package(hbuf[hexpos:-4])
+        if res.attrs is None:
+            print "postfunc parser_stun_package is None buf: ",hexlify(hbuf),res.__dict__,res.host
             res.eattr = STUN_ERROR_UNKNOWN_ATTR
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_ATTR,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             self.responses[res.fileno] = stun_error_response(res)
             self.write_to_sock(res.fileno)
         else:
-            res.attrs = trip[0]
-            res.reqlst = trip[1]
             try:
                self.responses[res.fileno]=  self.postfunc[res.method](res)
                self.write_to_sock(res.fileno)
@@ -541,18 +539,17 @@ class EpollServer():
             #self.epoll.modify(fileno,select.EPOLLOUT)
             #self.responses[fileno] = ''.join(stun_error_response(res))
             #tbuf = stun_error_response(res)
-            state_info = ''.join(['%08x' % res.dstsock,STUN_OFFLINE])
             od = stun_init_command_head(stun_make_success_response(STUN_METHOD_INFO))
-            stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,state_info)
-            od['srcsock'] = '%08x' % res.srcsock
-            od['dstsock'] = '%08x' % res.dstsock
+            stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,"%08x%08x" % (res.dstsock,STUN_OFFLINE))
+            od['srcsock'] = pack32(res.srcsock)
+            od['dstsock'] = pack32(res.dstsock)
             stun_add_fingerprint(od)
             self.responses[res.fileno] = get_list_from_od(od)
             self.write_to_sock(res.fileno)
 
     def handle_client_request_preauth(self,res,hbuf): # pair[0] == hbuf, pair[1] == fileno
-        if check_packet_crc32(hbuf):
-            self.errqueue[current_process().name].put(','.join([LOG_ERROR_PACKET,'sock %d,buf %s' % (res.fileno,hbuf),str(sys._getframe().f_lineno)]))
+        if not check_packet_crc32(hbuf):
+            self.errqueue[current_process().name].put(','.join([LOG_ERROR_PACKET,'sock %d,buf %s' % (res.fileno,hexlify(hbuf)),str(sys._getframe().f_lineno)]))
             self.delete_fileno(res.fileno)
             return 
 
@@ -569,18 +566,15 @@ class EpollServer():
             return
     
         hexpos = STUN_HEADER_LENGTH
-        trip = parser_stun_package(hbuf[hexpos:-8])
-        if trip is None:
+        res.attrs = parser_stun_package(hbuf[hexpos:-4])
+        if res.attrs is None:
             #print "preauth hbuf is wrong",hbuf,self.hosts[res.fileno]
-            print "preauth parser_stun_package is None buf: ",hbuf,res.__dict__
             res.eattr = STUN_ERROR_UNKNOWN_ATTR
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_ATTR,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return
     
-        res.attrs = trip[0]
-        res.reqlst = trip[1]
-        del trip
-        if res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and (len(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])/2) != 32:
+        #res.reqlst = trip[1]
+        if res.attrs.has_key(STUN_ATTRIBUTE_MESSAGE_INTEGRITY) and (len(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])) != 32:
             res.eattr = STUN_ERROR_AUTH
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_AUTH,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return
@@ -596,7 +590,7 @@ class EpollServer():
         ftpwd = None
         try:
             pwd = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
-            user = unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])
+            user = res.attrs[STUN_ATTRIBUTE_USERNAME]
             obj = hashlib.sha256()
             obj.update(user)
             obj.update(pwd)
@@ -630,7 +624,9 @@ class EpollServer():
         小机登录服务器的命令，必须要有uuid,data
         """
         try:
+            
             chk = check_jluuid(res.attrs[STUN_ATTRIBUTE_UUID])
+            print chk
             if chk:
                 res.eattr = chk
                 self.errqueue[current_process().name].put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
@@ -650,8 +646,8 @@ class EpollServer():
     #    else:
     #        update_refresh_time(res.fileno,UCLIENT_SESSION_LIFETIME)
     
-        res.vendor = huid[32:40]
-        res.tuid = huid[:32]
+        res.vendor = hexlify(huid[16:20])
+        res.tuid = hexlify(huid[:16])
         """检查是不是新的厂商名"""
         if res.vendor not in self.vendors:
             self.db.insert_vendor_table(res.vendor)
@@ -665,7 +661,7 @@ class EpollServer():
             data = res.attrs[STUN_ATTRIBUTE_DATA]
         except KeyError:
             pass
-        self.db.insert_devtable(vname=res.vendor,devid=res.tuid,chost="%s:%d" % (res.host[0],res.host[1]),data=data)
+        self.db.insert_devtable(vname=res.vendor,devid=res.tuid,chost="%s:%d" % (res.host[0],res.host[1]),data=str(data))
 
         #newdev = VendorDev(res.vendor)(devid=res.tuid,chost = "%s:%d" % (res.host[0],res.host[1]),last_login_time=datetime.now(),last_logout_time=datetime.now(),data='')
         #self.db.insert_vendor_dt(res.vendor,res.tuid,'%s:%d' % (res.host[0],res.host[1]),'')
@@ -681,7 +677,7 @@ class EpollServer():
 
     def handle_chkuser_request(self,res):
         """disable select db """
-        if self.db.check_user_exist(unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])):
+        if self.db.check_user_exist(res.attrs[STUN_ATTRIBUTE_USERNAME]):
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
         else:
@@ -690,7 +686,7 @@ class EpollServer():
     def handle_register_request(self,res):
         """disable select db """
         #if self.app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]):
-        user = unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])
+        user = res.attrs[STUN_ATTRIBUTE_USERNAME]
         if self.db.check_user_exist(user):
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
@@ -713,11 +709,12 @@ class EpollServer():
                 del chk
                 self.errqueue[current_process().name].put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
                 return stun_error_response(res)
-            self.bind_each_uuid((res.attrs[STUN_ATTRIBUTE_UUID],res.fileno))
+            uuid = hexlify(res.attrs[STUN_ATTRIBUTE_UUID])
+            self.bind_each_uuid((uuid,res.fileno))
             #self.handle_add_bind_to_user(res)
             user = self.users[res.fileno]
-            self.db.insert_bind_table(user,res.attrs[STUN_ATTRIBUTE_UUID],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])
-
+            self.db.insert_bind_table(user,uuid,res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])
+            del uuid
 #        elif res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
 #            mlist =  split_muuid(res.attrs[STUN_ATTRIBUTE_MUUID])
 #            p = mcore_handle(check_jluuid,mlist)
@@ -743,7 +740,7 @@ class EpollServer():
     def notify_peer_is_logout(self,pair): # pair[0] == fileno, pair[1] == dstsock
         fileno = pair[0]
         dstsock = pair[1]
-        self.responses[fileno] =  notify_peer(''.join(['%08x' % dstsock,STUN_OFFLINE]))
+        self.responses[fileno] =  notify_peer('%08x%08x' % (dstsock,STUN_OFFLINE))
         #self.statqueue[current_process().name].put('socket %d logout send info to socket %d' % (dstsock,fileno))
         try:
             self.write_to_sock(fileno)
@@ -763,7 +760,7 @@ class EpollServer():
         vendor = devid[32:40]
         mtable = QueryDB.get_devices_table(vendor)
         #ss = mtable.update().values(is_online=False).where(mtable.c.devid == hexlify(suid[0]))
-        ss = mtable.update().values(is_online=False).where(mtable.c.devid == devid[:32])
+        ss = mtable.update().values(is_online=False).where(mtable.c.devid == hexlify(devid[:16]))
         del vendor
         try:
             #QueryDB.select(ss)
@@ -834,12 +831,9 @@ class EpollServer():
         try:
             #self.mirco_devices_logout(self.devsock[fileno].uuid)
             uuid = self.devsock[fileno].uuid
-            vendor = uuid[32:40]
-            self.db.devtable_logout(vendor,uuid[:32])
-
-
+            vendor = hexlify(uuid[16:20])
+            self.db.devtable_logout(vendor,hexlify(uuid[:16]))
             #dt = dtclass(devid=uuid[:32],is_online=False)
-            
         except KeyError:
             pass
     
@@ -906,8 +900,7 @@ class EpollServer():
         try:
             dstsock = self.devuuid[ustr]
             self.appbinds[fileno][ustr]= dstsock
-            b = '%08x' % fileno
-            self.responses[dstsock] = notify_peer(''.join([b,STUN_ONLINE]))
+            self.responses[dstsock] = notify_peer('%08x%08x' % (fileno,STUN_ONLINE))
             #self.statqueue[current_process().name].put("info dev %d , %s, data : %s" % (dstsock,str(self.hosts[dstsock]),list(self.responses[dstsock])))
             try:
                 self.write_to_sock(dstsock)
@@ -933,8 +926,7 @@ class EpollServer():
             stun_attr_append_str(od,STUN_ATTRIBUTE_MRUUID,''.join(joint))
         else:
             jluid = res.attrs[STUN_ATTRIBUTE_UUID]
-            stun_attr_append_str(od,STUN_ATTRIBUTE_RUUID,\
-                     ''.join([jluid,'%08x' %self.appbinds[res.fileno][jluid]]))
+            stun_attr_append_str(od,STUN_ATTRIBUTE_RUUID,'%s%08x' % (jluid,self.appbinds[res.fileno][jluid]))
         stun_add_fingerprint(od)
         return (get_list_from_od(od))
 
@@ -967,7 +959,7 @@ class EpollServer():
         vendor = uid[32:40]
         #print "find uuid is",uid,"vendor is",vendor
         mirco_devices = QueryDB.get_devices_table(vendor)
-        s = sql.select([mirco_devices]).where(mirco_devices.c.devid == uid[:32] )
+        s = sql.select([mirco_devices]).where(mirco_devices.c.devid == hexlify(uid[:16]) )
         result = QueryDB.select(s)
     
     
