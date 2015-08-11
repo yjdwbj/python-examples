@@ -18,7 +18,7 @@ import sys
 import traceback
 
 
-STUN_METHOD_BINDING=0x1   # APP登录命令
+STUN_METHOD_APPLOGIN=0x1   # APP登录命令
 STUN_METHOD_ALLOCATE=0x3   #小机登录命令
 STUN_METHOD_REFRESH=0x4
 STUN_METHOD_SEND=0x6  # APP 给小机发数据
@@ -97,7 +97,7 @@ STUN_HEADER_LENGTH=struct.calcsize(JL_PKT_HEAD)
 
 #STUN_HEAD_CUTS=(4,8,12,20,28,32,40) # 固定长度的包头
 STUN_HEAD_KEY=('magic','version','length','srcsock','dstsock','method','sequence') # 包头的格式的名称
-mthlist=(STUN_METHOD_BINDING,\
+mthlist=(STUN_METHOD_APPLOGIN,\
         STUN_METHOD_ALLOCATE,\
         STUN_METHOD_REFRESH,\
         STUN_METHOD_SEND,\

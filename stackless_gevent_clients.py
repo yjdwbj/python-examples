@@ -60,26 +60,18 @@ def logger_worker(queue,logger):
 
 def upload_ftp(host,uname,pwd,fname):
     ftp = FTP(host)
-    print "upload name",fname
-    try:
-        ftp.login(uname,pwd)
-    except:
-        print "upload ftp login error",ftp.getresp()
+    print "upload ",uname,pwd
+    ftp.login(uname,pwd)
     ftp.storbinary('STOR %s' % fname,open(fname,'rb'),2048)
     ftp.quit()
 
 def down_ftp(host,uname,pwd,fname):
     ftp = FTP(host)
+    ftp.login(uname,pwd)
+    print "down_ftp",uname,pwd
     try:
-        ftp.login(uname,pwd)
+        ftp.retrbinary('RETR %s' % fname,open("%s.ftp" % fname,'wb').write)
     except:
-        print "download ftp login error",ftp.getresp()
-        return
-    try:
-        ftp.retrbinary('RETR %s' % fname,open(fname,'wb').write)
-    except:
-        print ftp.getresp()
-        print "fname",fname
         ftp.quit()
         return
     ftp.delete(fname)
@@ -384,7 +376,7 @@ class DevicesFunc():
         #buf = []
         #stun_init_command_str(STUN_METHOD_ALLOCATE,buf)
         od = stun_init_command_head(STUN_METHOD_ALLOCATE)
-        stun_attr_append_str(od,STUN_ATTRIBUTE_UUID,unhexlify(self.uid))
+        stun_attr_append_str(od,STUN_ATTRIBUTE_UUID,self.uid)
         #filed = UCLIENT_SESSION_LIFETIME
         #stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,filed)
         stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,'testdata')
@@ -601,7 +593,7 @@ class APPfunc():
         if rdict is None:
             print "appfunc parser_stun_package is None",rbuf
             return False
-        if hattr.method == STUN_METHOD_BINDING:
+        if hattr.method == STUN_METHOD_APPLOGIN:
             stat = rdict[STUN_ATTRIBUTE_STATE]
             self.ftpwd = rdict[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
             #self.srcsock = int(stat[:8],16)
@@ -630,6 +622,8 @@ class APPfunc():
                 self.retry_t.start()
             try:
                 self.dstsock = unpack32(rdict[STUN_ATTRIBUTE_RUUID][-4:])
+                print "bind dstsock",hex(self.dstsock)
+                
                 if self.dstsock != 0xFFFFFFFF:
                    sequence = ((0x3 <<24) ^ self.mynum)
                    self.sbuf = self.stun_send_data_to_devid(sequence)
@@ -642,12 +636,12 @@ class APPfunc():
      
      
         elif hattr.method == STUN_METHOD_INFO:
-            print "app ,recv info"
             if not self.retry_t:
                 self.retry_t  = threading.Thread(target=self.retransmit_packet)
                 self.retry_t.start()
             try:
                 self.dstsock = unpack32(rdict[STUN_ATTRIBUTE_RUUID][-4:])
+                print "info ruuid dstsock",hex(self.dstsock)
                 sequence = ((0x3 <<24) ^ self.mynum)
                 self.sbuf = self.stun_send_data_to_devid(sequence)
                 #self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
@@ -655,7 +649,7 @@ class APPfunc():
                 self.add_queue.put(0) 
             except KeyError:
                 self.dstsock = unpack32(rdict[STUN_ATTRIBUTE_STATE][:4])  # 这里是对应的sock的下线了
-                print "self.dstsock",self.dstsock
+                print "state dstsock",hex(self.dstsock)
                 qdict.err.put('sock %d,recv server info not RUUID,may be dev logout ,buf %s' % (self.fileno,rbuf))
                 if self.dstsock:
                     sequence = ((0x3 <<24) ^ self.mynum)
@@ -731,7 +725,9 @@ class APPfunc():
         stun_attr_append_str(od,STUN_ATTRIBUTE_UUID,unhexlify(self.uid.lower()))
         stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,unhexlify(self.uid.lower()))
         stun_add_fingerprint(od)
-        return ''.join(get_list_from_od(od))
+        buf = ''.join(get_list_from_od(od))
+        print "bind buf",hexlify(buf)
+        return buf
     
     def stun_register_request(self):
         od = stun_init_command_head(STUN_METHOD_REGISTER)
@@ -746,11 +742,11 @@ class APPfunc():
     def stun_login_request(self):
         #buf = []
         #stun_init_command_str(STUN_METHOD_BINDING,buf)
-        od = stun_init_command_head(STUN_METHOD_BINDING)
+        od = stun_init_command_head(STUN_METHOD_APPLOGIN)
         stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,self.user)
         obj = hashlib.sha256()
         obj.update(self.pwd)
-        stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,unhexlify(obj.hexdigest()))
+        stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,obj.hexdigest())
         #filed = "%08x" % UCLIENT_SESSION_LIFETIME
         stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,'%08x' % 30)
         #del filed

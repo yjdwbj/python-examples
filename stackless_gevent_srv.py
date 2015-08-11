@@ -100,7 +100,7 @@ def app_user_auth_success(res,ftpwd):
     od= stun_init_command_head(stun_make_success_response(res.method))
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
     #stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
-    stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,unhexlify('%08x%08x' % (res.fileno,STUN_ONLINE)))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,struct.pack('!II',res.fileno,STUN_ONLINE))
     stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,res.attrs[STUN_ATTRIBUTE_USERNAME])
     stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,str(ftpwd))
     stun_add_fingerprint(od)
@@ -111,7 +111,9 @@ def device_login_sucess(res,apps): # 客服端向服务器绑定自己的IP
     #stun_init_command_str(stun_make_success_response(res.method),buf)
     od = stun_init_command_head(stun_make_success_response(res.method))
     #stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
-    stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,unhexlify('%08x%08x' %(res.fileno,STUN_ONLINE)))
+    #stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,unhexlify('%08x%08x' %(res.fileno,STUN_ONLINE)))
+
+    stun_attr_append_str(od,STUN_ATTRIBUTE_STATE, struct.pack('!II',res.fileno,STUN_ONLINE))
     if apps: 
         stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,apps)
     stun_add_fingerprint(od)
@@ -172,7 +174,7 @@ class EpollServer():
               STUN_METHOD_ALLOCATE:self.handle_allocate_request, # 小机登录方法
               STUN_METHOD_CHECK_USER:self.handle_chkuser_request,
               STUN_METHOD_REGISTER:self.handle_register_request,
-              STUN_METHOD_BINDING:self.handle_app_login_request  # app端登录方法
+              STUN_METHOD_APPLOGIN:self.handle_app_login_request  # app端登录方法
               }
 
         #认证后的处理
@@ -198,8 +200,9 @@ class EpollServer():
         self.errlog = {}
         self.fwdlog = {}
         self.startime = time.time()
-        for i in xrange(mp.cpu_count()-1):
-            Process(target=self.start_srv).start()
+        #for i in xrange(mp.cpu_count()-1):
+        #for i in xrange(1):
+        Process(target=self.start_srv).start()
         #self.server.serve_forever()
 
     def report_status(self):
@@ -346,7 +349,7 @@ class EpollServer():
             return
         else:
             try:
-                print "srv send buf",hexlify(''.join(self.responses[fileno]))
+                #print "srv send buf",hexlify(''.join(self.responses[fileno]))
                 sock.send(''.join(self.responses[fileno]))
                 self.responses[fileno] = None
             except socket.error:
@@ -517,14 +520,17 @@ class EpollServer():
             self.responses[res.fileno] = stun_error_response(res)
             self.write_to_sock(res.fileno)
         else:
+            #self.responses[res.fileno]=  self.postfunc[res.method](res)
+            self.responses[res.fileno]=  self.postfunc[res.method](res)
             try:
-               self.responses[res.fileno]=  self.postfunc[res.method](res)
                self.write_to_sock(res.fileno)
             except KeyError:
+                print "from postauth error to preauth"
                 self.handle_client_request_preauth(res,hbuf)
     
                 
     def handle_forward_packet(self,hbuf,res,dst):
+        #print "fwd, dstsock",hex(res.dstsock)
         try:
             s = dst[res.dstsock]
             # 转发到时目地
@@ -540,7 +546,7 @@ class EpollServer():
             #self.responses[fileno] = ''.join(stun_error_response(res))
             #tbuf = stun_error_response(res)
             od = stun_init_command_head(stun_make_success_response(STUN_METHOD_INFO))
-            stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,"%08x%08x" % (res.dstsock,STUN_OFFLINE))
+            stun_attr_append_str(od,STUN_ATTRIBUTE_STATE, struct.pack('!II',res.dstsock,STUN_OFFLINE))
             od['srcsock'] = pack32(res.srcsock)
             od['dstsock'] = pack32(res.dstsock)
             stun_add_fingerprint(od)
@@ -554,7 +560,7 @@ class EpollServer():
             return 
 
         if not (res.method == STUN_METHOD_ALLOCATE or\
-                res.method == STUN_METHOD_BINDING or\
+                res.method == STUN_METHOD_APPLOGIN or\
                 res.method == STUN_METHOD_CHECK_USER or\
                 res.method == STUN_METHOD_REGISTER):
                     # 非法请求
@@ -623,22 +629,19 @@ class EpollServer():
         """
         小机登录服务器的命令，必须要有uuid,data
         """
-        try:
-            
-            chk = check_jluuid(res.attrs[STUN_ATTRIBUTE_UUID])
-            print chk
-            if chk:
-                res.eattr = chk
-                self.errqueue[current_process().name].put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
-                del chk
-                return stun_error_response(res)
-        except KeyError:
-            #res.eattr= hexlify("Not Found UUID")
+        uuid = res.attrs.get(STUN_ATTRIBUTE_UUID,None)
+        if not uuid:
             res.eattr=STUN_ERROR_UNKNOWN_PACKET
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
-    
-        huid = res.attrs[STUN_ATTRIBUTE_UUID]
+        chk = check_jluuid(uuid)
+        if chk:
+            res.eattr = chk
+            self.errqueue[current_process().name].put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
+            del chk
+            return stun_error_response(res)
+
+        huid =hexlify(uuid)
         apps = self.device_login_notify_app(huid,res.fileno)+','
         
     #    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
@@ -646,8 +649,8 @@ class EpollServer():
     #    else:
     #        update_refresh_time(res.fileno,UCLIENT_SESSION_LIFETIME)
     
-        res.vendor = hexlify(huid[16:20])
-        res.tuid = hexlify(huid[:16])
+        res.vendor = hexlify(uuid[16:20])
+        res.tuid = hexlify(uuid[:16])
         """检查是不是新的厂商名"""
         if res.vendor not in self.vendors:
             self.db.insert_vendor_table(res.vendor)
@@ -668,7 +671,7 @@ class EpollServer():
 
         self.devsock[res.fileno] = tcs = ComState()
         self.devuuid[huid] = res.fileno
-        tcs.uuid = huid
+        tcs.uuid = uuid
         #print "login devid is",tcs.uuid
         #self.statqueue[current_process().name].put('device login uuid is %s,socket is %d, host %s:%d' % (huid,res.fileno,res.host[0],res.host[1]))
         #self.cluster.send_to_mcast(1,0,res.host,huid,res.fileno)
@@ -701,31 +704,26 @@ class EpollServer():
     def handle_app_bind_device(self,res):
         """
         绑定小机的命的命令包
-        """
+        """   
+        uuid = None
         try:
-            chk = check_jluuid(res.attrs[STUN_ATTRIBUTE_UUID])
-            if chk:
-                res.eattr = chk
-                del chk
-                self.errqueue[current_process().name].put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
-                return stun_error_response(res)
-            uuid = hexlify(res.attrs[STUN_ATTRIBUTE_UUID])
-            self.bind_each_uuid((uuid,res.fileno))
+            uuid = res.attrs[STUN_ATTRIBUTE_UUID]
+        except KeyError:
+            return stun_error_response(res)
+        chk = check_jluuid(uuid)
+        if chk:
+            res.eattr = chk
+            del chk
+            self.errqueue[current_process().name].put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
+            return stun_error_response(res)
+        uuid = hexlify(uuid)
+        self.bind_each_uuid((uuid,res.fileno))
+        try:
             #self.handle_add_bind_to_user(res)
             user = self.users[res.fileno]
-            self.db.insert_bind_table(user,uuid,res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])
+            pwd =hexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])
+            self.db.insert_bind_table(user,uuid,pwd)
             del uuid
-#        elif res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
-#            mlist =  split_muuid(res.attrs[STUN_ATTRIBUTE_MUUID])
-#            p = mcore_handle(check_jluuid,mlist)
-#            #p = [check_jluuid(n) for n in mlist]
-#            e = [ x for x in p if x]
-#            if len(e):
-#                res.eattr = STUN_ERROR_UNKNOWN_PACKET
-#                self.errqueue[current_process().name].put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
-#                return stun_error_response(res)
-#            #multiprocessing_handle(bind_each_uuid,[(res.fileno,n) for n in mlist])
-#            [self.bind_each_uuid((n,res.fileno)) for n in mlist]
         except KeyError:
             res.eattr = STUN_ERROR_UNKNOWN_PACKET 
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
@@ -740,7 +738,7 @@ class EpollServer():
     def notify_peer_is_logout(self,pair): # pair[0] == fileno, pair[1] == dstsock
         fileno = pair[0]
         dstsock = pair[1]
-        self.responses[fileno] =  notify_peer('%08x%08x' % (dstsock,STUN_OFFLINE))
+        self.responses[fileno] =  notify_peer(struct.pack('!II',dstsock,STUN_OFFLINE))
         #self.statqueue[current_process().name].put('socket %d logout send info to socket %d' % (dstsock,fileno))
         try:
             self.write_to_sock(fileno)
@@ -889,30 +887,24 @@ class EpollServer():
     def bind_each_uuid(self,pair): # pair[0] == ustr,pair[1] == fileno
         ustr = pair[0]
         fileno = pair[1]
-        try:
-            self.appbinds[fileno] is dict
-        except KeyError:
-            self.appbinds[fileno]={}
-    
+        if not self.appbinds.get(fileno,None):
+            self.appbinds[fileno] = {}
             """
             通知在线的小机，有APP要绑定它
             """
-        try:
-            dstsock = self.devuuid[ustr]
+        dstsock = self.devuuid.get(ustr,None)
+        if dstsock:
             self.appbinds[fileno][ustr]= dstsock
-            self.responses[dstsock] = notify_peer('%08x%08x' % (fileno,STUN_ONLINE))
-            #self.statqueue[current_process().name].put("info dev %d , %s, data : %s" % (dstsock,str(self.hosts[dstsock]),list(self.responses[dstsock])))
+            self.responses[dstsock] = notify_peer(struct.pack('!II',fileno,STUN_ONLINE))
             try:
                 self.write_to_sock(dstsock)
             except IOError:
                 self.errqueue[current_process().name].put(','.join(['dstsock %d has closed' % dstsock,'host is ',str(self.hosts[dstsock])]))  
                 self.dealwith_peer_hup(dstsock)
-        except KeyError:
+        else:
             self.appbinds[fileno][ustr]=0xFFFFFFFF
         del ustr
-        fileno = None
-    
-    
+        del fileno
     
     def stun_bind_devices_ok(self,res):
         """
@@ -925,13 +917,14 @@ class EpollServer():
             joint = [''.join([k,'%08x' % self.appbinds[res.fileno][k]]) for k in self.appbinds[res.fileno].keys()]
             stun_attr_append_str(od,STUN_ATTRIBUTE_MRUUID,''.join(joint))
         else:
-            jluid = res.attrs[STUN_ATTRIBUTE_UUID]
-            stun_attr_append_str(od,STUN_ATTRIBUTE_RUUID,'%s%08x' % (jluid,self.appbinds[res.fileno][jluid]))
+            jluid = hexlify(res.attrs[STUN_ATTRIBUTE_UUID])
+            stun_attr_append_str(od,STUN_ATTRIBUTE_RUUID,'%s%s' % (jluid,pack32(self.appbinds[res.fileno][jluid])))
         stun_add_fingerprint(od)
-        return (get_list_from_od(od))
+        buf = get_list_from_od(od)
+        return buf
 
     def noify_app_uuid_just_login(self,appsock,uuidstr,devsock):
-        self.responses[appsock] = notify_app_bind_islogin(''.join([uuidstr,'%08x' % devsock]))
+        self.responses[appsock] = notify_app_bind_islogin('%s%s' % (uuidstr,pack32(devsock)))
         #self.statqueue[current_process().name].put("info app  %d , %s , data : %s" % (appsock,str(self.hosts[appsock]),list(self.responses[appsock])))
         self.write_to_sock(appsock)
     

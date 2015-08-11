@@ -207,7 +207,6 @@ class PostgresSQLEngine():
         n = conn.execute(ins)
         ftpwd = None
         if n != None:
-            print n
             ftpwd = n.fetchone()
         #if n and n.fetchone():
             ast = get_account_status_table()
