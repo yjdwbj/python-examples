@@ -60,18 +60,24 @@ def logger_worker(queue,logger):
 
 def upload_ftp(host,uname,pwd,fname):
     ftp = FTP(host)
-    print "upload ",uname,pwd
-    ftp.login(uname,pwd)
+    try:
+        ftp.login(uname,pwd)
+    except:
+        print "upload ftp login error",ftp.getresp()
     ftp.storbinary('STOR %s' % fname,open(fname,'rb'),2048)
     ftp.quit()
 
 def down_ftp(host,uname,pwd,fname):
     ftp = FTP(host)
-    ftp.login(uname,pwd)
-    print "down_ftp",uname,pwd
     try:
-        ftp.retrbinary('RETR %s' % fname,open("%s.ftp" % fname,'wb').write)
+        ftp.login(uname,pwd)
     except:
+        print "download ftp login error",ftp.getresp()
+        return
+    try:
+        ftp.retrbinary('RETR %s' % fname,open(fname,'wb').write)
+    except:
+        print ftp.getresp()
         ftp.quit()
         return
     ftp.delete(fname)
@@ -232,7 +238,6 @@ class DevicesFunc():
                 d = rdict[STUN_ATTRIBUTE_DATA]
                 if d.index('ftp'):
                     glist = d.split(':')
-                    print "dev recv ftp info",glist
                     down_ftp(FTP_HOST,glist[2],glist[3],glist[4])
                     self.ftpuser = glist[2]
                     self.ftpwd = glist[3]
@@ -293,7 +298,6 @@ class DevicesFunc():
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
                 self.srcsock = unpack32(stat[:4])
-                print "srcsock",self.srcsock
             except KeyError:
                 qdict.err.put('sock %d,login not my sock fileno,retry login' % self.fileno)
                 self.sbuf = self.device_struct_allocate()
@@ -358,7 +362,6 @@ class DevicesFunc():
     
     def write_sock(self):
         if self.sbuf:
-            print "send buf",hexlify(self.sbuf)
             nbyte = self.sock.send(self.sbuf)
             return False
             try:
@@ -376,7 +379,7 @@ class DevicesFunc():
         #buf = []
         #stun_init_command_str(STUN_METHOD_ALLOCATE,buf)
         od = stun_init_command_head(STUN_METHOD_ALLOCATE)
-        stun_attr_append_str(od,STUN_ATTRIBUTE_UUID,self.uid)
+        stun_attr_append_str(od,STUN_ATTRIBUTE_UUID,unhexlify(self.uid))
         #filed = UCLIENT_SESSION_LIFETIME
         #stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,filed)
         stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,'testdata')
@@ -405,8 +408,6 @@ class DevicesFunc():
         del lst[:]
         del lst
         n = unpack16(b[4:6])
-        if len(b) != n:
-            print "len is wrong some msg lost",b
         return b
 
 
@@ -519,10 +520,8 @@ class APPfunc():
 
 
     def process_loop(self,rbuf):
-        print "app recv ",hexlify(rbuf)
         if check_packet_vaild(rbuf): # 校验包头
             qdict.err.put(','.join(['sock','%d'% self.fileno,'check_packet_vaild',rbuf]))
-            print 'pkt vaild',hexlify(rbuf)
             qdict.err.put(rbuf)
             return False
     
@@ -604,7 +603,6 @@ class APPfunc():
             #else:
             #qdict.state.put('sock %d,uname %s login' % (self.fileno,self.user))
             self.sbuf= self.stun_bind_single_uuid()
-            print "app bind dev",hexlify(self.sbuf)
         elif hattr.method == STUN_METHOD_REGISTER:
             self.sbuf = self.stun_login_request()
         elif hattr.method  == STUN_METHOD_REFRESH:
@@ -622,8 +620,6 @@ class APPfunc():
                 self.retry_t.start()
             try:
                 self.dstsock = unpack32(rdict[STUN_ATTRIBUTE_RUUID][-4:])
-                print "bind dstsock",hex(self.dstsock)
-                
                 if self.dstsock != 0xFFFFFFFF:
                    sequence = ((0x3 <<24) ^ self.mynum)
                    self.sbuf = self.stun_send_data_to_devid(sequence)
@@ -641,7 +637,6 @@ class APPfunc():
                 self.retry_t.start()
             try:
                 self.dstsock = unpack32(rdict[STUN_ATTRIBUTE_RUUID][-4:])
-                print "info ruuid dstsock",hex(self.dstsock)
                 sequence = ((0x3 <<24) ^ self.mynum)
                 self.sbuf = self.stun_send_data_to_devid(sequence)
                 #self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
@@ -649,7 +644,6 @@ class APPfunc():
                 self.add_queue.put(0) 
             except KeyError:
                 self.dstsock = unpack32(rdict[STUN_ATTRIBUTE_STATE][:4])  # 这里是对应的sock的下线了
-                print "state dstsock",hex(self.dstsock)
                 qdict.err.put('sock %d,recv server info not RUUID,may be dev logout ,buf %s' % (self.fileno,rbuf))
                 if self.dstsock:
                     sequence = ((0x3 <<24) ^ self.mynum)
@@ -677,7 +671,6 @@ class APPfunc():
     
     def write_sock(self):
         if self.sbuf:
-            print "send buf",hexlify(self.sbuf)
             nbyte = self.sock.send(self.sbuf)
             return False
             try:
@@ -726,7 +719,6 @@ class APPfunc():
         stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,unhexlify(self.uid.lower()))
         stun_add_fingerprint(od)
         buf = ''.join(get_list_from_od(od))
-        print "bind buf",hexlify(buf)
         return buf
     
     def stun_register_request(self):
@@ -746,7 +738,7 @@ class APPfunc():
         stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,self.user)
         obj = hashlib.sha256()
         obj.update(self.pwd)
-        stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,obj.hexdigest())
+        stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,unhexlify(obj.hexdigest()))
         #filed = "%08x" % UCLIENT_SESSION_LIFETIME
         stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,'%08x' % 30)
         #del filed

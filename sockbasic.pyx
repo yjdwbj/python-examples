@@ -234,7 +234,6 @@ def check_packet_vaild(buf):
     #return check_packet_crc32(buf)
 
 def stun_error_response(res):
-    buf = []
     od = stun_init_command_head(stun_make_error_response(res.method))
     stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_ERROR_CODE,pack16(res.eattr))
     stun_add_fingerprint(od)

@@ -79,8 +79,6 @@ def notify_app_bind_islogin(bindinfo):
     return get_list_from_od(od)
 
 def register_success(uname,ftpwd):
-    buf = []
-    #stun_init_command_str(stun_make_success_response(STUN_METHOD_REGISTER),buf)
     od = stun_init_command_head(stun_make_success_response(STUN_METHOD_REGISTER))
     stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,uname)
     stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,ftpwd)
@@ -89,17 +87,13 @@ def register_success(uname,ftpwd):
 
 
 def check_user_sucess(res):
-    #stun_init_command_str(stun_make_success_response(res.method),buf,)
     od = stun_init_command_head(stun_make_success_response(res.method))
     stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,res.attrs[STUN_ATTRIBUTE_USERNAME])
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
 def app_user_auth_success(res,ftpwd):
-    #stun_init_command_str(stun_make_success_response(res.method),buf)
     od= stun_init_command_head(stun_make_success_response(res.method))
-    #stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
-    #stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
     stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,struct.pack('!II',res.fileno,STUN_ONLINE))
     stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,res.attrs[STUN_ATTRIBUTE_USERNAME])
     stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,str(ftpwd))
@@ -107,12 +101,7 @@ def app_user_auth_success(res,ftpwd):
     return get_list_from_od(od)
 
 def device_login_sucess(res,apps): # 客服端向服务器绑定自己的IP
-    buf = []
-    #stun_init_command_str(stun_make_success_response(res.method),buf)
     od = stun_init_command_head(stun_make_success_response(res.method))
-    #stun_attr_append_str(buf,STUN_ATTRIBUTE_LIFETIME,'%08x' % UCLIENT_SESSION_LIFETIME)
-    #stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,unhexlify('%08x%08x' %(res.fileno,STUN_ONLINE)))
-
     stun_attr_append_str(od,STUN_ATTRIBUTE_STATE, struct.pack('!II',res.fileno,STUN_ONLINE))
     if apps: 
         stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,apps)
@@ -122,7 +111,6 @@ def device_login_sucess(res,apps): # 客服端向服务器绑定自己的IP
 
 def app_user_pull_table(res,data):
     buf = []
-    #stun_init_command_str(stun_make_success_response(res.method),buf)
     od = stun_init_command_head(stun_make_success_response(res.method))
     stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,data)
     stun_add_fingerprint(od)
@@ -130,18 +118,13 @@ def app_user_pull_table(res,data):
 
 def refresh_sucess(ntime): # 刷新成功
     buf = []
-    #stun_init_command_str(stun_make_success_response(STUN_METHOD_REFRESH),buf)
     od = stun_init_command_head(stun_make_success_response(STUN_METHOD_REFRESH))
     stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,ntime)
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
 def stun_return_same_package(res):
-    buf =[]
-    #stun_init_command_str(stun_make_success_response(res.method),buf)
     od = stun_init_command_head(stun_make_success_response(res.method))
-    t = sum([(od['lst'].extend(v),len(v[-1])+8)[1] for v in res.reqlst])
-    od['length']="%04x" % (t/2 +20)
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
@@ -151,7 +134,6 @@ def stun_return_same_package(res):
 
 class EpollServer():
     def __init__(self,port,cluster_eth):
-        #statqueue = statqueue
         """创建多个engine让它平均到多个进程上，性能问题要进一步调试"""
         self.maxbuffer = ''
         [setattr(self,x,{}) for x in store]
@@ -161,13 +143,6 @@ class EpollServer():
         self.mcastrqueue = Queue()
         #self.cluster = ClusterSRV(cluster_eth)
         print "start cluster multicast"
-#        vendor = QueryDB.get_vendor_table()
-#        s = sql.select([vendor])
-#        rn = self.db.execute(s)
-#        self.vendors = set()
-#        for n in rn:
-#            self.vendors.add(n[3:11])
-        #devlist = [''.join([n.devid,n.chost]) for n in  session.query(type(devclass)).all()]
         self.vendors = self.db.get_vendor_to_set()
         self.lock = Lock()
         self.prefunc= {
@@ -241,19 +216,6 @@ class EpollServer():
         server.StreamServer(self.listener,self.handle_new_accept).serve_forever()
 
 
-#    def run(self):
-#        while True:
-#            try:
-#                nsock,addr = self.srvsocket.accept()
-#                nf = nsock.fileno()
-#                self.clients[nf] = nsock
-#                self.hosts[nf] = addr
-#                self.requests[nf] =''
-#                self.gpool.spawn_n(self.handle_new_accept,nsock)
-#            except (SystemExit,KeyboardInterrupt):
-#                print "Server exit"
-#                break
-
     def handle_new_accept(self,nsock,addr):
         fileno = nsock.fileno()
         self.clients[fileno] = nsock
@@ -275,7 +237,7 @@ class EpollServer():
                 if not recvbuf:
                     if n:
                         n -= 1
-                        gevent.sleep(0.02)
+                        gevent.sleep(0)
                         continue
                     else:
                         self.errqueue[current_process().name].put("%s no data,sock %d" % (hstr,fileno))
@@ -294,14 +256,22 @@ class EpollServer():
 
     def handle_modify_bind_item(self,res):
         #btable = QueryDB.get_account_bind_table(self.users[res.fileno])
-        user = self.users[res.fileno]
-        self.db.update_bind_table(user,res.attrs[STUN_ATTRIBUTE_UUID],unhexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]))
+        uname = self.users.get(res.fileno,None)
+        uids = res.attrs.get(STUN_ATTRIBUTE_UUID,None)
+        pwd = res.attrs.get(STUN_ATTRIBUTE_MESSAGE_INTEGRITY,None)
+        if not uname or not uids or not pwd:
+            res.eattr = STUN_ERROR_UNKNOWN_ATTR
+            return  stun_error_response(res)
+        self.db.update_bind_table(user,uids,pwd)
         return stun_return_same_package(res)
 
 
     def handle_delete_bind_item(self,res):
-        uname = self.users[res.fileno]
-        uids = res.attrs[STUN_ATTRIBUTE_UUID]
+        uname = self.users.get(res.fileno,None)
+        uids = res.attrs.get(STUN_ATTRIBUTE_UUID,None)
+        if not uname or not uids:
+            res.eattr = STUN_ERROR_UNKNOWN_ATTR
+            return  stun_error_response(res)
         try:
             n = [ n for n in self.appbinds.values if n.has_key(uids)]
             popfunc = lambda d,v: d.pop(v)
@@ -356,13 +326,11 @@ class EpollServer():
                 self.dealwith_peer_hup(fileno)
 
     def handle_cluster(self,data,addr):
-        
         pass
         
 
     def handle_refresh_request(self,res):
         pass
-        #return refresh_sucess(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1])
 
     def process_handle_first(self,fileno):
         l = self.requests[fileno].count(HEAD_MAGIC) #没有找到JL关键字
@@ -371,8 +339,6 @@ class EpollServer():
             return
         plen = len(self.requests[fileno])
         if l > 1:
-            #self.errqueue[current_process().name].put('sock %d,recv unkown msg %s' % (fileno,self.requests[:l])
-            #self.statqueue[current_process().name].put("sock %d,recv multi buf,len %d, buf: %s" % (fileno,plen,self.requests[fileno]))
             self.maxbuffer = str(plen)
             #hbuf = hbuf[l:] # 从找到标识头开始处理
             mulist = split_requests_buf(self.requests[fileno])
@@ -504,8 +470,6 @@ class EpollServer():
         for n in STUN_HEAD_KEY:
             res.__dict__.pop(n,None)
         del res
-        #gc.set_threshold(0,1,1)
-        #gc.collect()
 
     def handle_postauth_process(self,res,hbuf):
         """
@@ -520,9 +484,8 @@ class EpollServer():
             self.responses[res.fileno] = stun_error_response(res)
             self.write_to_sock(res.fileno)
         else:
-            #self.responses[res.fileno]=  self.postfunc[res.method](res)
-            self.responses[res.fileno]=  self.postfunc[res.method](res)
             try:
+               self.responses[res.fileno]=  self.postfunc[res.method](res)
                self.write_to_sock(res.fileno)
             except KeyError:
                 print "from postauth error to preauth"
@@ -594,35 +557,26 @@ class EpollServer():
 
     def handle_app_login_request(self,res):
         ftpwd = None
-        try:
-            pwd = res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
-            user = res.attrs[STUN_ATTRIBUTE_USERNAME]
-            obj = hashlib.sha256()
-            obj.update(user)
-            obj.update(pwd)
-            ftpwd = self.db.user_login(user,obj.digest(),'%s:%d' % (res.host[0],res.host[1]))
-            if not ftpwd:
-                res.eattr = STUN_ERROR_AUTH
-                return  stun_error_response(res)
+        user = res.attrs.get(STUN_ATTRIBUTE_USERNAME,None)
+        pwd = res.attrs.get(STUN_ATTRIBUTE_MESSAGE_INTEGRITY,None)
+        if not user or not pwd:
+            res.eattr = STUN_ERROR_AUTH
+            return  stun_error_response(res)
 
-        except KeyError:
-           res.eattr = STUN_ERROR_AUTH
-           return  stun_error_response(res)# APP端必须带用认证信息才能发起连接.
+        obj = hashlib.sha256()
+        obj.update(user)
+        obj.update(pwd)
+        ftpwd = self.db.user_login(user,obj.digest(),'%s:%d' % (res.host[0],res.host[1]))
+        if not ftpwd:
+            res.eattr = STUN_ERROR_AUTH
+            return  stun_error_response(res)
+
     
         self.appsock[res.fileno] = tcs = ComState()
-        #tcs.name = result[0][0]
         tcs.name = user
         """disable select db """
-        n = time.time()
-        #print "app update status start QueryDB",n
-        #self.app_user_update_status(res.attrs[STUN_ATTRIBUTE_USERNAME],res.host)
         """改用pgsql语言简化处理"""
-        #self.db.rawselect("update_or_insert_table('%s','%s');" % (unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME]),"%s:%d" % (res.host[0],res.host[1])))
-        #astatus = AccountStatus(uname=user,last_login_time=datetime.now(),is_login=True,chost="%s:%d" % (res.host[0],res.host[1]))
-        #print "app update status end QueryDB",time.time() -n
-        #self.statqueue[current_process().name].put('user %s login,socket is %d,host %s:%d' % (tcs.name,res.fileno,res.host[0],res.host[1]))
         self.users[res.fileno] = user
-        #self.cluster.send_to_mcast(1,1,res.host,user,res.fileno)
         return app_user_auth_success(res,ftpwd)
 
     def handle_allocate_request(self,res):
@@ -644,11 +598,6 @@ class EpollServer():
         huid =hexlify(uuid)
         apps = self.device_login_notify_app(huid,res.fileno)+','
         
-    #    if res.attrs.has_key(STUN_ATTRIBUTE_LIFETIME):
-    #        update_refresh_time(res.fileno,int(res.attrs[STUN_ATTRIBUTE_LIFETIME][-1],16))
-    #    else:
-    #        update_refresh_time(res.fileno,UCLIENT_SESSION_LIFETIME)
-    
         res.vendor = hexlify(uuid[16:20])
         res.tuid = hexlify(uuid[:16])
         """检查是不是新的厂商名"""
@@ -658,7 +607,6 @@ class EpollServer():
             self.vendors.add(res.vendor)
             self.lock.release()
 
-        #self.update_newdevice(res)
         data = ''
         try:
             data = res.attrs[STUN_ATTRIBUTE_DATA]
@@ -666,21 +614,21 @@ class EpollServer():
             pass
         self.db.insert_devtable(vname=res.vendor,devid=res.tuid,chost="%s:%d" % (res.host[0],res.host[1]),data=str(data))
 
-        #newdev = VendorDev(res.vendor)(devid=res.tuid,chost = "%s:%d" % (res.host[0],res.host[1]),last_login_time=datetime.now(),last_logout_time=datetime.now(),data='')
-        #self.db.insert_vendor_dt(res.vendor,res.tuid,'%s:%d' % (res.host[0],res.host[1]),'')
-
         self.devsock[res.fileno] = tcs = ComState()
         self.devuuid[huid] = res.fileno
         tcs.uuid = uuid
-        #print "login devid is",tcs.uuid
-        #self.statqueue[current_process().name].put('device login uuid is %s,socket is %d, host %s:%d' % (huid,res.fileno,res.host[0],res.host[1]))
-        #self.cluster.send_to_mcast(1,0,res.host,huid,res.fileno)
         del huid
         return device_login_sucess(res,apps)
 
     def handle_chkuser_request(self,res):
         """disable select db """
-        if self.db.check_user_exist(res.attrs[STUN_ATTRIBUTE_USERNAME]):
+        
+        user = res.attrs.get(STUN_ATTRIBUTE_USERNAME,None)
+        if not user:
+            res.eattr = STUN_ERROR_UNKNOWN_PACKET
+            return stun_error_response(res)
+    
+        if self.db.check_user_exist(user):
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
         else:
@@ -689,17 +637,23 @@ class EpollServer():
     def handle_register_request(self,res):
         """disable select db """
         #if self.app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]):
-        user = res.attrs[STUN_ATTRIBUTE_USERNAME]
+        user = res.attrs.get(STUN_ATTRIBUTE_USERNAME,None)
+        pwd = res.attrs.get(STUN_ATTRIBUTE_MESSAGE_INTEGRITY,None)
+        if not user or not pwd:
+            res.eattr = STUN_ERROR_UNKNOWN_PACKET
+            return stun_error_response(res)
+
         if self.db.check_user_exist(user):
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
+
         obj = hashlib.sha256()
         obj.update(user)
-        obj.update(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])
+        obj.update(pwd)
         ftpwd = pwd_generator()
         self.db.insert_account_table(user,obj.digest(),ftpwd,"%s:%d" % (res.host[0],res.host[1]))
         #self.statqueue[current_process().name].put('register success %s' % res.attrs[STUN_ATTRIBUTE_USERNAME])
-        return register_success(res.attrs[STUN_ATTRIBUTE_USERNAME],ftpwd)
+        return register_success(user,ftpwd)
 
     def handle_app_bind_device(self,res):
         """
@@ -748,25 +702,6 @@ class EpollServer():
         del fileno
         del dstsock
     
-    def clean_timeout_sock(self,fileno): # 清除超时的连接
-        if self.timer.has_key(fileno):
-            if self.timer[fileno] < time.time():
-                #self.statqueue[current_process().name].put("Client %d life time is end,close it" % fileno )
-                self.dealwith_peer_hup(fileno)
-    
-    def mirco_devices_logout(self,devid):
-        vendor = devid[32:40]
-        mtable = QueryDB.get_devices_table(vendor)
-        #ss = mtable.update().values(is_online=False).where(mtable.c.devid == hexlify(suid[0]))
-        ss = mtable.update().values(is_online=False).where(mtable.c.devid == hexlify(devid[:16]))
-        del vendor
-        try:
-            #QueryDB.select(ss)
-            self.db.nexecute(ss)
-        except IOError:
-            self.errqueue[current_process().name].put(','.join([LOG_ERROR_DB,devid,str(sys._getframe().f_lineno)]))
-            return 0
-
     
     
     def dealwith_peer_hup(self,fileno):
@@ -786,12 +721,9 @@ class EpollServer():
         except KeyError:
             pass
         else:
-            #self.statqueue[current_process().name].put('dev %s logout info app,self fileno %d' % (uuid,fileno))
-        #print "devid",devid,"has logout"
             binds = [k for k in self.appbinds.keys() if self.appbinds[k].has_key(uuid)]
             [self.notify_peer_is_logout((n,fileno)) for n in binds if self.appsock.has_key(n)]
 
-        #multiprocessing_handle(notify_peer_is_logout,[(n,fileno) for n in binds if self.appsock.has_key(n)])
             alist = [n for n in binds if self.appsock.has_key(n)]
             for n in alist:
                 self.appbinds[n][uuid]=0xFFFFFFFF
@@ -827,13 +759,13 @@ class EpollServer():
         #return
 
         try:
-            #self.mirco_devices_logout(self.devsock[fileno].uuid)
             uuid = self.devsock[fileno].uuid
+        except KeyError:
+            pass
+        else:
             vendor = hexlify(uuid[16:20])
             self.db.devtable_logout(vendor,hexlify(uuid[:16]))
             #dt = dtclass(devid=uuid[:32],is_online=False)
-        except KeyError:
-            pass
     
     
     def dealwith_sock_close_update_binds(self,fileno):
@@ -855,20 +787,6 @@ class EpollServer():
     
     def sock_send_fail(self,fileno):
         # 要检查一下是不是转发失败了，要通知发送方
-#        phead = get_packet_head_class(hbuf)
-#        if phead.method == STUN_METHOD_SEND or phead.method == STUN_METHOD_DATA:
-#            phead.eattr = STUN_ERROR_DEVOFFLINE
-#            srcsock = int(phead.srcsock,16)
-#            tbuf = stun_error_response(phead)
-#            tbuf[3]=phead.srcsock
-#            tbuf[4]=phead.dstsock
-#            tbuf.pop()
-#            tbuf[2] = '%04x' % (int(tbuf[2],16)-4)
-#            stun_add_fingerprint(tbuf)
-#            self.responses[srcsock] = ''.join(tbuf)
-#            self.epoll.modify(srcsock,select.EPOLLOUT | select.EPOLLET)
-#    
-        # sock 关闭时产生的异常处理
         self.dealwith_peer_hup(fileno)
     
     def sock_recv_fail(self,fileno):
@@ -944,28 +862,16 @@ class EpollServer():
                 pass
             
         return ','.join(apps)  # 邦定过这个小机的用户群。
-    
 
     
-    
-    def find_device_state(self,uid):
-        vendor = uid[32:40]
-        #print "find uuid is",uid,"vendor is",vendor
-        mirco_devices = QueryDB.get_devices_table(vendor)
-        s = sql.select([mirco_devices]).where(mirco_devices.c.devid == hexlify(uid[:16]) )
-        result = QueryDB.select(s)
-    
-    
-
 def logger_worker(queue,logger):
     while 1:
-        for x in xrange(60):
-            try:
-                msg = queue.get_nowait()
-                logger.log(msg)
-                del msg
-            except:
-                break
+        try:
+            msg = queue.get_nowait()
+            logger.log(msg)
+            del msg
+        except:
+            pass
         gevent.sleep(0)
 
     
