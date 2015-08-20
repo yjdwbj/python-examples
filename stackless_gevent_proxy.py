@@ -31,10 +31,10 @@ from gevent.server import StreamServer,_tcp_listener,DatagramServer
 from gevent import server,event,socket,monkey
 from gevent.pool import Group
 from gevent.queue import Queue
+from multiprocessing import Process,current_process,Lock,Manager
+import multiprocessing as mp
 monkey.patch_all(thread=False)
 
-from multiprocessing import Process,current_process,Lock
-import multiprocessing as mp
 
 from sqlalchemy import *
 from sqlalchemy.exc import *
@@ -128,19 +128,30 @@ def stun_return_same_package(res):
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
+class GClass():
+    def __init__(self,name):
+        self.__name__ = name
+        self.n = {}
 
+    def get(self,key):
+        return self.n.get(key,None)
 
+    def set(self,k,v):
+        self.n[k] = v
 
 
 class EpollServer():
     def __init__(self,port,cluster_eth):
         """创建多个engine让它平均到多个进程上，性能问题要进一步调试"""
         self.maxbuffer = ''
-        [setattr(self,x,{}) for x in store]
+        #m = Manager()
+        [setattr(self,x,Manager().dict()) for x in store]
+        b = ABC()
         """取得厂商数量，避免每次去查询"""
         self.db = PostgresSQLEngine()
         self.mcastsqueue = Queue()
         self.mcastrqueue = Queue()
+        self.glock = Lock()
         #self.cluster = ClusterSRV(cluster_eth)
         print "start cluster multicast"
         self.vendors = self.db.get_vendor_to_set()
@@ -175,9 +186,9 @@ class EpollServer():
         self.errlog = {}
         self.fwdlog = {}
         self.startime = time.time()
-        #for i in xrange(mp.cpu_count()-1):
+        for i in xrange(mp.cpu_count()-1):
         #for i in xrange(1):
-        Process(target=self.start_srv).start()
+            Process(target=self.start_srv).start()
         #self.server.serve_forever()
 
     def report_status(self):
@@ -192,6 +203,7 @@ class EpollServer():
             self.fwdqueue[current_process().name].put("time %.5f,fwd counter %d, app online %d, dev online %d, fwd rate avg 30 seconds %.5f,max buffer size %s" \
                     % (time.time(),self.fwdcounter[current_process().name],len(self.appsock),len(self.devsock),rate,self.maxbuffer))
             ltime = time.time()
+            print "20 self.appbinds",self.appbinds.keys()
             gevent.sleep(30)
 
     def start_srv(self):
@@ -220,6 +232,7 @@ class EpollServer():
         fileno = nsock.fileno()
         self.clients[fileno] = nsock
         self.hosts[fileno] = addr
+        print "new accept()",addr
         self.requests[fileno] =''
         hstr = str(addr)
         #recvqueue.put('new accept %s, sock %d' % (str(addr),fileno))
@@ -229,27 +242,32 @@ class EpollServer():
                 recvbuf = nsock.recv(SOCK_BUFSIZE)
             except IOError:
                 self.errqueue[current_process().name].put('sock %d, IOError ,%s' % (fileno,hstr))
+                print "sock",fileno,"IO Error",hstr
                 break
             except socket.error:
                 self.errqueue[current_process().name].put("%s socket.error,sock %d" % (hstr,fileno))
+                print "sock",fileno,"socket Error",hstr
                 break
             else:
                 if not recvbuf:
                     if n:
                         n -= 1
-                        gevent.sleep(0)
+                        gevent.sleep(2)
                         continue
                     else:
                         self.errqueue[current_process().name].put("%s no data,sock %d" % (hstr,fileno))
+                        print "not data, sock ",hstr,fileno
                         break
                 n = 5 # 重试读取5次
                 try:
                     self.requests[fileno] += recvbuf
                 except KeyError:
                     self.errqueue[current_process().name].put("%s requests KeyError,sock %d" % (hstr,fileno))
+                    print "sock",fileno,"STUN_HEAD_KEY Error",hstr
                     break
                 self.process_handle_first(fileno)
             gevent.sleep(0) #让出CPU
+        print "exit me",nsock,addr
         self.dealwith_peer_hup(fileno)
         """退出本线程"""
     
@@ -484,12 +502,11 @@ class EpollServer():
             self.responses[res.fileno] = stun_error_response(res)
             self.write_to_sock(res.fileno)
         else:
-            try:
-               self.responses[res.fileno]=  self.postfunc[res.method](res)
-               self.write_to_sock(res.fileno)
-            except KeyError:
-                print "from postauth error to preauth"
-                self.handle_client_request_preauth(res,hbuf)
+            self.responses[res.fileno]=  self.postfunc[res.method](res)
+            self.write_to_sock(res.fileno)
+
+            #print "from postauth error to preauth"
+            #self.handle_client_request_preauth(res,hbuf)
     
                 
     def handle_forward_packet(self,hbuf,res,dst):
@@ -596,7 +613,8 @@ class EpollServer():
             return stun_error_response(res)
 
         huid =hexlify(uuid)
-        apps = self.device_login_notify_app(huid,res.fileno)+','
+        apps = self.device_login_notify_app(uuid,res.fileno)+','
+        print "notify apps",apps
         
         res.vendor = hexlify(uuid[16:20])
         res.tuid = hexlify(uuid[:16])
@@ -670,13 +688,13 @@ class EpollServer():
             del chk
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
-        uuid = hexlify(uuid)
+        #uuid = hexlify(uuid)
         self.bind_each_uuid((uuid,res.fileno))
         try:
             #self.handle_add_bind_to_user(res)
             user = self.users[res.fileno]
             pwd =hexlify(res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY])
-            self.db.insert_bind_table(user,uuid,pwd)
+            self.db.insert_bind_table(user,hexlify(uuid),pwd)
             del uuid
         except KeyError:
             res.eattr = STUN_ERROR_UNKNOWN_PACKET 
@@ -744,19 +762,17 @@ class EpollServer():
         # socket 关闭，更新数据库
         try:
             name = self.appsock[fileno].name
-            del self.appsock[fileno]
+            self.appsock.pop(fileno)
             #self.statqueue[current_process().name].put('app %s logout info dev,self fileno %d' % (name,fileno))
             """disable select db """
             #self.app_user_logout(name)
-            self.db.user_logout(name)
-            
-            del name
         except KeyError:
             pass
         else:
+            self.db.user_logout(name)
+            del name
             return
         """disable select db """
-        #return
 
         try:
             uuid = self.devsock[fileno].uuid
@@ -772,12 +788,12 @@ class EpollServer():
         try:
             binds = self.appbinds[fileno].values()
             self.appbinds.pop(fileno,None)
-            [self.notify_peer_is_logout((n,fileno)) for n in binds if self.devsock.has_key(n)]
         except KeyError:
             pass
             #nl = [notify_peer_is_logout(n,fileno) for n in binds if self.devsock.has_key(n)]
             #multiprocessing_handle(notify_peer_is_logout,nl)
         else:
+            [self.notify_peer_is_logout((n,fileno)) for n in binds if self.devsock.has_key(n)]
             return
 
         """
@@ -795,6 +811,7 @@ class EpollServer():
     
     def remove_fileno_resources(self,fileno):
         m = [(getattr(self,n),fileno) for n in store]
+        print "map is",m
         group = Group()
         group.map(clean_dict,m)
         del m[:]
@@ -806,13 +823,16 @@ class EpollServer():
         ustr = pair[0]
         fileno = pair[1]
         if not self.appbinds.get(fileno,None):
-            self.appbinds[fileno] = {}
+            with self.glock:
+                self.appbinds[fileno] = {}
             """
             通知在线的小机，有APP要绑定它
             """
         dstsock = self.devuuid.get(ustr,None)
         if dstsock:
-            self.appbinds[fileno][ustr]= dstsock
+            print "info dev uuid",ustr,dstsock
+            with self.glock:
+                self.appbinds[fileno][ustr]= dstsock
             self.responses[dstsock] = notify_peer(struct.pack('!II',fileno,STUN_ONLINE))
             try:
                 self.write_to_sock(dstsock)
@@ -820,7 +840,9 @@ class EpollServer():
                 self.errqueue[current_process().name].put(','.join(['dstsock %d has closed' % dstsock,'host is ',str(self.hosts[dstsock])]))  
                 self.dealwith_peer_hup(dstsock)
         else:
-            self.appbinds[fileno][ustr]=0xFFFFFFFF
+            with self.glock:
+                self.appbinds[fileno][ustr]=0xFFFFFFFF
+        print "self.appbinds",self.appbinds.keys()
         del ustr
         del fileno
     
@@ -831,12 +853,22 @@ class EpollServer():
         buf = []
         #stun_init_command_str(stun_make_success_response(res.method),buf)
         od = stun_init_command_head(stun_make_success_response(res.method))
+        #print "res.attrs",hexlify(res.attrs.get(STUN_ATTRIBUTE_UUID,None))
         if res.attrs.has_key(STUN_ATTRIBUTE_MUUID):
             joint = [''.join([k,'%08x' % self.appbinds[res.fileno][k]]) for k in self.appbinds[res.fileno].keys()]
             stun_attr_append_str(od,STUN_ATTRIBUTE_MRUUID,''.join(joint))
         else:
-            jluid = hexlify(res.attrs[STUN_ATTRIBUTE_UUID])
-            stun_attr_append_str(od,STUN_ATTRIBUTE_RUUID,'%s%s' % (jluid,pack32(self.appbinds[res.fileno][jluid])))
+            jluid = res.attrs.get(STUN_ATTRIBUTE_UUID,None)
+            if not jluid:
+                res.eattr = STUN_ERROR_UNKNOWN_ATTR
+                return  stun_error_response(res)
+            try:
+                sock = pack32(self.appbinds[res.fileno][hexlify(jluid)])
+            except KeyError:
+                sock = pack32(0xFFFFFFFF)
+                stun_attr_append_str(od,STUN_ATTRIBUTE_RUUID,'%s%s' % (jluid,sock))
+            else:
+                stun_attr_append_str(od,STUN_ATTRIBUTE_RUUID,'%s%s' % (jluid,sock))
         stun_add_fingerprint(od)
         buf = get_list_from_od(od)
         return buf
@@ -851,6 +883,7 @@ class EpollServer():
         绑定过的小机现在登录了，通知它的用户群,再收集用户群返回给小机
         """
         apps = []
+        print "appbinds",self.appbinds.keys()
         
         for fk in self.appbinds.keys():
             try:

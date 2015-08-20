@@ -59,13 +59,17 @@ def logger_worker(queue,logger):
         gevent.sleep(0)
 
 def upload_ftp(host,uname,pwd,fname):
-    ftp = FTP(host)
-    try:
-        ftp.login(uname,pwd)
-    except:
-        print "upload ftp login error",ftp.getresp()
-    ftp.storbinary('STOR %s' % fname,open(fname,'rb'),2048)
-    ftp.quit()
+    n = 5
+    while (n>0):
+        ftp = FTP(host)
+        try:
+            ftp.login(uname,pwd)
+            ftp.storbinary('STOR %s' % fname,open(fname,'rb'),2048)
+        except:
+            print "upload ftp login error",ftp.getresp()
+            continue
+        else:
+            ftp.quit()
 
 def down_ftp(host,uname,pwd,fname):
     ftp = FTP(host)
@@ -167,6 +171,7 @@ class DevicesFunc():
                 qdict.err.put('sock %d,recv not data ' % self.fileno)
                 break
             self.recv += data
+            print "recv data",hexlify(self.recv)
             del data
             if self.process_handle_first():
                 break
@@ -313,6 +318,7 @@ class DevicesFunc():
                 qdict.err.put("sock %d,recv not state,%s,rdict %s" % (self.fileno,str(self.sock.getsockname()),hbuf))
             else:
                 self.dstsock =  unpack32(stat[:4])
+                print "self.dstsock",self.dstsock
                 sequence = ((0x3 <<24) ^ self.mynum)
                 self.sbuf = self.send_data_to_app(sequence)
                 #qdict.send.put("send: sock %d,start send packet to app;data: %s" % (self.fileno,self.sbuf))
@@ -363,6 +369,7 @@ class DevicesFunc():
     def write_sock(self):
         if self.sbuf:
             nbyte = self.sock.send(self.sbuf)
+            print "dev send",hexlify(self.sbuf)
             return False
             try:
                 nbyte = self.sock.send(self.sbuf)
@@ -520,14 +527,17 @@ class APPfunc():
 
 
     def process_loop(self,rbuf):
+        print "recv buf",hexlify(rbuf)
         if check_packet_vaild(rbuf): # 校验包头
             qdict.err.put(','.join(['sock','%d'% self.fileno,'check_packet_vaild',rbuf]))
             qdict.err.put(rbuf)
+            print "invalid head"
             return False
     
         hattr = get_packet_head_class(rbuf[:STUN_HEADER_LENGTH])
         if not hattr:
             qdict.err.put('sock %d,recv wrong head , %s' % (self.fileno,rbuf))
+            print "wrong head"
             return False
      
         if stun_get_type(hattr.method) == STUN_METHOD_DATA: # 小机回应
@@ -613,54 +623,45 @@ class APPfunc():
             return False
         elif hattr.method == STUN_METHOD_CHANNEL_BIND:
             # 绑定小机命令o
-
             # 开启重传线程
             if not self.retry_t:
                 self.retry_t  = threading.Thread(target=self.retransmit_packet)
                 self.retry_t.start()
             try:
                 self.dstsock = unpack32(rdict[STUN_ATTRIBUTE_RUUID][-4:])
+            except KeyError:
+                qdict.err.put('sock %d,recv server bind not RUUID ,buf %s' % (self.fileno,rbuf))
+            else:
                 if self.dstsock != 0xFFFFFFFF:
+                   print "recv bind sock",self.dstsock
                    sequence = ((0x3 <<24) ^ self.mynum)
                    self.sbuf = self.stun_send_data_to_devid(sequence)
                    #qdict.send.put('sock %d,start send packet to dev %d;buf %s' % (self.fileno,self.dstsock,self.sbuf))
                    self.add_queue.put(0) 
                 else:
                     return False
-            except KeyError:
-                qdict.err.put('sock %d,recv server bind not RUUID ,buf %s' % (self.fileno,rbuf))
-     
-     
+
         elif hattr.method == STUN_METHOD_INFO:
             if not self.retry_t:
                 self.retry_t  = threading.Thread(target=self.retransmit_packet)
                 self.retry_t.start()
             try:
                 self.dstsock = unpack32(rdict[STUN_ATTRIBUTE_RUUID][-4:])
-                sequence = ((0x3 <<24) ^ self.mynum)
-                self.sbuf = self.stun_send_data_to_devid(sequence)
-                #self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
-                #qdict.send.put('sock %d,start send packet to dev %d;buf: %s' % (self.fileno,self.dstsock,self.sbuf))
-                self.add_queue.put(0) 
             except KeyError:
                 self.dstsock = unpack32(rdict[STUN_ATTRIBUTE_STATE][:4])  # 这里是对应的sock的下线了
                 qdict.err.put('sock %d,recv server info not RUUID,may be dev logout ,buf %s' % (self.fileno,rbuf))
+                print "recv info dstsockt",self.dstsock
                 if self.dstsock:
                     sequence = ((0x3 <<24) ^ self.mynum)
                     self.sbuf = self.stun_send_data_to_devid(sequence)
                     #self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
                 else:
                     return False
+            else:
+                sequence = ((0x3 <<24) ^ self.mynum)
+                self.sbuf = self.stun_send_data_to_devid(sequence)
+                self.add_queue.put(0) 
      
-     
-        elif hattr.method == STUN_METHOD_PULL:
-            pass
-        elif hattr.method == STUN_METHOD_MODIFY:
-            pass
-        elif hattr.method == STUN_METHOD_DELETE:
-            pass
-        else:
-            pass
         rdict.clear()
         del rdict
         for m in STUN_HEAD_KEY:
@@ -672,6 +673,7 @@ class APPfunc():
     def write_sock(self):
         if self.sbuf:
             nbyte = self.sock.send(self.sbuf)
+            print "send buf",hexlify(self.sbuf)
             return False
             try:
                 nbyte = self.sock.send(self.sbuf)
@@ -766,7 +768,9 @@ class APPfunc():
             if not od.has_key(n):
                 print 'app packet head miss key %s' % n
 
-        return ''.join(get_list_from_od(od))
+        n = ''.join(get_list_from_od(od))
+        print "send to dev",n
+        return n
 
     
 def make_argument_parser():

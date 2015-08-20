@@ -46,7 +46,7 @@ copy_to_srv(){
     echo "copy files to srv"
 srvfile="$modsrc $proxy run_node.sh $modsetup"
 rsync  $srvfile  $srvhost$srvdir
-parallel-ssh -i -H root@srv " cd /home/lcy/srv_dir ; /opt/stackless-279/bin/python $modsetup build_ext && chown lcy:lcy -R *"
+parallel-ssh -i -H root@srv " cd /home/lcy/srv_dir ; LD_LIBRARY_PATH=/opt/stackless-279/lib /opt/stackless-279/bin/python $modsetup build_ext && chown lcy:lcy -R *"
 }
 
 copyt_to_cluster(){
