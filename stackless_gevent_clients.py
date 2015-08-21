@@ -59,17 +59,11 @@ def logger_worker(queue,logger):
         gevent.sleep(0)
 
 def upload_ftp(host,uname,pwd,fname):
-    n = 5
-    while (n>0):
-        ftp = FTP(host)
-        try:
-            ftp.login(uname,pwd)
-            ftp.storbinary('STOR %s' % fname,open(fname,'rb'),2048)
-        except:
-            print "upload ftp login error",ftp.getresp()
-            continue
-        else:
-            ftp.quit()
+    ftp = FTP(host)
+    ftp.login(uname,pwd)
+    ftp.cwd('/')
+    ftp.storbinary('STOR %s' % fname,open(fname,'rb'),8192)
+    ftp.quit()
 
 def down_ftp(host,uname,pwd,fname):
     ftp = FTP(host)
@@ -79,7 +73,7 @@ def down_ftp(host,uname,pwd,fname):
         print "download ftp login error",ftp.getresp()
         return
     try:
-        ftp.retrbinary('RETR %s' % fname,open(fname,'wb').write)
+        ftp.retrbinary('RETR %s' % fname,open('%s.bak' % fname,'wb').write)
     except:
         print ftp.getresp()
         ftp.quit()
@@ -171,7 +165,6 @@ class DevicesFunc():
                 qdict.err.put('sock %d,recv not data ' % self.fileno)
                 break
             self.recv += data
-            print "recv data",hexlify(self.recv)
             del data
             if self.process_handle_first():
                 break
@@ -234,30 +227,36 @@ class DevicesFunc():
             dstsock = hattr.srcsock
             self.dstsock = hattr.srcsock
             if (hattr.sequence >> 24) == 0x3:
+                print "ask",hattr.sequence
                 #qdict.recv.put("recv: %s,sock %d,recv from app number of hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],hbuf))
                 rdict  = parser_stun_package(hbuf[STUN_HEADER_LENGTH:-4]) # 去头去尾
                 if rdict is None:
                     print "appfunc parser_stun_package is None",hbuf
                     return False
                 #print "data",rdict[STUN_ATTRIBUTE_DATA]
-                d = rdict[STUN_ATTRIBUTE_DATA]
-                if d.index('ftp'):
-                    glist = d.split(':')
-                    down_ftp(FTP_HOST,glist[2],glist[3],glist[4])
-                    self.ftpuser = glist[2]
-                    self.ftpwd = glist[3]
-                    if not cmp_md5_digest(glist[4],glist[5]):
-                        print glist[5]
-                    else:
-                        print "digest error"
+                #d = rdict[STUN_ATTRIBUTE_DATA]
+#                if d.index('ftp'):
+#                    glist = d.split(':')
+#                    down_ftp(FTP_HOST,glist[2],glist[3],glist[4])
+#                    self.ftpuser = glist[2]
+#                    self.ftpwd = glist[3]
+#                    if not cmp_md5_digest(glist[4],glist[5]):
+#                        print glist[5]
+#                    else:
+#                       print "digest error"
                 
+                print "send ack to app"
                 sequence = ((0x2 << 24) ^ (hattr.sequence & 0xFFFFFF))
                 self.sbuf = self.send_data_to_app(sequence)
+                self.write_sock()
+                gevent.sleep(0)
+                print "send ask to app",self.mynum
                 sequence = ((0x3 <<24) ^ self.mynum)
                 self.sbuf = self.send_data_to_app(sequence)
                 #qdict.send.put("send: sock %d,send confirm packet to app;data: %s" % (self.fileno,self.sbuf))
             #下面是我方主动发数据
             elif (hattr.sequence >> 24)  == 0x2:
+                print "ack",hattr.sequence
                 rnum = hattr.sequence & 0xFFFFFF
                 if self.mynum > 0xFFFFFF:
                     self.mynum = 0
@@ -282,7 +281,6 @@ class DevicesFunc():
 
         rdict = parser_stun_package(hbuf[STUN_HEADER_LENGTH:-4])
         if not rdict:
-            print "devfunc parser_stun_package is None",hbuf
             qdict.state.put(','.join(['sock','%d' % self.fileno,'server packet is wrong,rdict is empty']))
             return False # 出错了
     
@@ -401,11 +399,11 @@ class DevicesFunc():
         od['dstsock']= pack32(self.dstsock)
         od['sequence']=pack32(sequence)
         #stun_attr_append_str(buf,STUN_ATTRIBUTE_DATA,hexlify('%d' % time.time()))
-        if (sequence >> 24) == 0x3:
-            upfname = 'app_data.bin'
-            upload_ftp(FTP_HOST,self.ftpuser,self.ftpwd,upfname)
-            digest = get_md5_digest(upfname)
-            stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,'%.05f:ftp:%s:%s:%s:%s' % (time.time(),self.ftpuser,self.ftpwd,upfname,digest))
+        #if (sequence >> 24) == 0x3:
+        #    upfname = 'app_data.bin'
+        #    upload_ftp(FTP_HOST,self.ftpuser,self.ftpwd,upfname)
+        #    digest = get_md5_digest(upfname)
+        #    stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,'%.05f:ftp:%s:%s:%s:%s' % (time.time(),self.ftpuser,self.ftpwd,upfname,digest))
         stun_add_fingerprint(od)
         for n in STUN_HEAD_KEY:
             if not od.has_key(n):
@@ -546,24 +544,25 @@ class APPfunc():
                 return False
             self.dstsock = hattr.srcsock
             if (hattr.sequence >> 24) == 0x3:
+                print "ask",hattr.sequence
                 #qdict.recv.put("recv: %s,sock %d,recv from  dev  number of  hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],rbuf))
                 rdict  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-4]) # 去头去尾
                 if rdict is None:
-                    print "appfunc parser_stun_package is None",rbuf
                     return False
-                d = rdict[STUN_ATTRIBUTE_DATA]
-                if d.index('ftp'):
-                    glist = d.split(':')
-                    down_ftp(FTP_HOST,self.user,self.ftpwd,glist[4])
-                    if not cmp_md5_digest(glist[4],glist[5]):
-                        print glist[5]
-                    else:
-                        print "digest is error"
-                
+#                d = rdict[STUN_ATTRIBUTE_DATA]
+#                if d.index('ftp'):
+#                    glist = d.split(':')
+#                    down_ftp(FTP_HOST,self.user,self.ftpwd,glist[4])
+#                    if not cmp_md5_digest(glist[4],glist[5]):
+#                        print glist[5]
+#                    else:
+#                        print "digest is error"
+#                
                 sequence = ((0x2 << 24) ^ (hattr.sequence & 0xffffff))
                 self.sbuf = self.stun_send_data_to_devid(sequence)
                 #qdict.send.put("send: sock %d,send confirm packet to dev,data %s" % (self.fileno,self.sbuf))
             elif (hattr.sequence >>24) == 0x2:
+                print "ack",hattr.sequence
                 n = hattr.sequence & 0xFFFFFF
                 if n > 0xFFFFFF:
                     self.mynum = 0
@@ -577,7 +576,7 @@ class APPfunc():
                     """收到的包序错了，直接返回"""
                     self.rm_queue.put(0)
                     #return False
-                sequence = ((0x3 <<24) & self.mynum)
+                sequence = ((0x3 <<24) ^ self.mynum)
                 self.sbuf = self.stun_send_data_to_devid(sequence)
                 #self.sbuf = self.stun_send_data_to_devid('03%06x' % self.mynum)
                 self.add_queue.put(0)
@@ -600,7 +599,6 @@ class APPfunc():
         hattr.method = stun_get_type(hattr.method)
         rdict  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-4]) # 去头去尾
         if rdict is None:
-            print "appfunc parser_stun_package is None",rbuf
             return False
         if hattr.method == STUN_METHOD_APPLOGIN:
             stat = rdict[STUN_ATTRIBUTE_STATE]
@@ -631,9 +629,10 @@ class APPfunc():
                 self.dstsock = unpack32(rdict[STUN_ATTRIBUTE_RUUID][-4:])
             except KeyError:
                 qdict.err.put('sock %d,recv server bind not RUUID ,buf %s' % (self.fileno,rbuf))
+                print "bind not RUUID"
             else:
                 if self.dstsock != 0xFFFFFFFF:
-                   print "recv bind sock",self.dstsock
+                   print "bind sock %d ok" % self.dstsock
                    sequence = ((0x3 <<24) ^ self.mynum)
                    self.sbuf = self.stun_send_data_to_devid(sequence)
                    #qdict.send.put('sock %d,start send packet to dev %d;buf %s' % (self.fileno,self.dstsock,self.sbuf))
@@ -650,7 +649,6 @@ class APPfunc():
             except KeyError:
                 self.dstsock = unpack32(rdict[STUN_ATTRIBUTE_STATE][:4])  # 这里是对应的sock的下线了
                 qdict.err.put('sock %d,recv server info not RUUID,may be dev logout ,buf %s' % (self.fileno,rbuf))
-                print "recv info dstsockt",self.dstsock
                 if self.dstsock:
                     sequence = ((0x3 <<24) ^ self.mynum)
                     self.sbuf = self.stun_send_data_to_devid(sequence)
@@ -659,6 +657,7 @@ class APPfunc():
                     return False
             else:
                 sequence = ((0x3 <<24) ^ self.mynum)
+                print "send to devid",self.dstsock
                 self.sbuf = self.stun_send_data_to_devid(sequence)
                 self.add_queue.put(0) 
      
@@ -673,7 +672,6 @@ class APPfunc():
     def write_sock(self):
         if self.sbuf:
             nbyte = self.sock.send(self.sbuf)
-            print "send buf",hexlify(self.sbuf)
             return False
             try:
                 nbyte = self.sock.send(self.sbuf)
@@ -756,20 +754,20 @@ class APPfunc():
         od['dstsock']= pack32(self.dstsock)
         od['sequence']= pack32(sequence)
         
-        if (sequence >> 24) == 0x3:
-            upfname = 'disk_data.bin'
-            upload_ftp(FTP_HOST,self.user,self.ftpwd,upfname)
-            digest = get_md5_digest(upfname)
-            data = '%.05f:ftp:%s:%s:%s:%s' % (time.time(),self.user,self.ftpwd,upfname,digest)
+        print "sequence",sequence
+        #if (sequence >> 24) == 0x3:
+        #    upfname = 'disk_data.bin'
+        #    upload_ftp(FTP_HOST,self.user,self.ftpwd,upfname)
+        #    digest = get_md5_digest(upfname)
+        #    data = '%.05f:ftp:%s:%s:%s:%s' % (time.time(),self.user,self.ftpwd,upfname,digest)
             #stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,struct.pack('!%ds' % len(data),data))
-            stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,data)
+        #    stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,data)
         stun_add_fingerprint(od)
         for n in STUN_HEAD_KEY:
             if not od.has_key(n):
                 print 'app packet head miss key %s' % n
 
         n = ''.join(get_list_from_od(od))
-        print "send to dev",n
         return n
 
     
