@@ -31,7 +31,7 @@ from gevent.server import StreamServer,_tcp_listener,DatagramServer
 from gevent import server,event,socket,monkey
 from gevent.pool import Group
 from gevent.queue import Queue
-from multiprocessing import Process,current_process,Lock,Manager
+from multiprocessing import Process,current_process
 import multiprocessing as mp
 monkey.patch_all(thread=False)
 
@@ -128,33 +128,19 @@ def stun_return_same_package(res):
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
-class GClass():
-    def __init__(self,name):
-        self.__name__ = name
-        self.n = {}
-
-    def get(self,key):
-        return self.n.get(key,None)
-
-    def set(self,k,v):
-        self.n[k] = v
-
 
 class EpollServer():
     def __init__(self,port,cluster_eth):
         """创建多个engine让它平均到多个进程上，性能问题要进一步调试"""
         self.maxbuffer = ''
-        #m = Manager()
         [setattr(self,x,{}) for x in store]
         """取得厂商数量，避免每次去查询"""
         self.db = PostgresSQLEngine()
         self.mcastsqueue = Queue()
         self.mcastrqueue = Queue()
-        self.glock = Lock()
         #self.cluster = ClusterSRV(cluster_eth)
         print "start cluster multicast"
         self.vendors = self.db.get_vendor_to_set()
-        self.lock = Lock()
         self.prefunc= {
               STUN_METHOD_ALLOCATE:self.handle_allocate_request, # 小机登录方法
               STUN_METHOD_CHECK_USER:self.handle_chkuser_request,
@@ -394,8 +380,6 @@ class EpollServer():
         except KeyError: 
             """如果是多台主机分布式负载，这里要查一下其它主机"""
             #self.cluster.get_user_info(self.users[fileno])
-            
-
             pass
         else:
             if res.method == STUN_METHOD_REFRESH: # 刷新就可以步过了
@@ -420,7 +404,6 @@ class EpollServer():
             res.__dict__.pop('eattr',None)
             res.__dict__.pop('fileno',None)
             res.__dict__.pop('host',None)
-            res.__dict__.pop('reqlst',None)
             res.__dict__.pop('attrs',None)
             for n in STUN_HEAD_KEY:
                 res.__dict__.pop(n,None)
@@ -457,7 +440,6 @@ class EpollServer():
             res.__dict__.pop('eattr',None)
             res.__dict__.pop('fileno',None)
             res.__dict__.pop('host',None)
-            res.__dict__.pop('reqlst',None)
             res.__dict__.pop('attrs',None)
             for n in STUN_HEAD_KEY:
                 res.__dict__.pop(n,None)
@@ -472,7 +454,6 @@ class EpollServer():
         res.__dict__.pop('eattr',None)
         res.__dict__.pop('fileno',None)
         res.__dict__.pop('host',None)
-        res.__dict__.pop('reqlst',None)
         res.__dict__.pop('attrs',None)
         for n in STUN_HEAD_KEY:
             res.__dict__.pop(n,None)
@@ -620,9 +601,7 @@ class EpollServer():
         """检查是不是新的厂商名"""
         if res.vendor not in self.vendors:
             self.db.insert_vendor_table(res.vendor)
-            self.lock.acquire()
             self.vendors.add(res.vendor)
-            self.lock.release()
 
         data = ''
         try:
@@ -924,7 +903,8 @@ def make_argument_parser():
 
 
 
-store = ['clients','hosts','responses','appbinds','appsock','devsock','devuuid','users','requests','logfaild']
+store = ['clients','hosts','responses','appbinds','appsock','devsock',
+         'devuuid','users','requests','logfaild']
 if __name__ == '__main__':
     __version__ = '0.1.2'
     options = make_argument_parser().parse_args()
