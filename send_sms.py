@@ -18,6 +18,7 @@ import argparse
 import errno
 import string
 import redis
+from redis import ResponseError
 import random
 from binascii import unhexlify,hexlify
 from datetime import datetime
@@ -153,6 +154,11 @@ class SMSServer():
         self.db = PostgresSQLEngine()
         self.redis = redis.Redis(host=redis_ip,port=redis_port,db=0,\
                 password=redis_pass)
+        try:
+            type(self.redis.info())
+        except ResponseError:
+            print u"连接Redis服务器出错,不能连接程"
+            return
         self.app_secret = secret
         self.app_id = appid
         server.StreamServer(self.listener,self.handle_new_accept).serve_forever()
@@ -260,8 +266,9 @@ class SMSServer():
             if not send_sms(telnumber,rcode):
                 sendok = 1
                 """ send ok,在redis中插入记录"""
-                d = {'code':rcode,'host':addr[0],'expire':None}
-                self.redis.set(telnumber,json.dumps(d))
+                #d = {'code':rcode,'host':addr[0],'expire':None}
+                pcode = "%s:%s" % (telnumber,rcode)
+                self.redis.setex(pcode,addr[0],60 * SMS_EXPIRE)
                 self.redis.set(loghost,1) # 把这一状态置1，还可以注册其它的手机.
                 break
             else:

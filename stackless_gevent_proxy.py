@@ -42,6 +42,9 @@ from sqlalchemy import Table,Column,BigInteger,Integer,String,ForeignKey,Date,Me
 from sqlalchemy import sql,and_
 from sqlalchemy.dialects import postgresql as pgsql
 
+import redis
+from redis import ResponseError
+
 try:
     import cPickle as pickle
 except:
@@ -130,7 +133,8 @@ def stun_return_same_package(res):
 
 
 class EpollServer():
-    def __init__(self,port,cluster_eth):
+    def __init__(self,srv_ip='0.0.0.0',srv_port=3478,cluster_eth,redis_ip,\
+            redis_port=6379,redis_pass=None):
         """创建多个engine让它平均到多个进程上，性能问题要进一步调试"""
         self.maxbuffer = ''
         [setattr(self,x,{}) for x in store]
@@ -138,6 +142,13 @@ class EpollServer():
         self.db = PostgresSQLEngine()
         self.mcastsqueue = Queue()
         self.mcastrqueue = Queue()
+        self.redis = redis.Redis(host=redis_ip,port=redis_port,db=0,\
+                password=redis_pass)
+        try:
+            type(self.redis.info())
+        except ResponseError:
+            print u"连接Redis服务器出错,不能连接程"
+            return
         #self.cluster = ClusterSRV(cluster_eth)
         print "start cluster multicast"
         self.vendors = self.db.get_vendor_to_set()
@@ -156,7 +167,7 @@ class EpollServer():
                 STUN_METHOD_DELETE:self.handle_delete_bind_item, #删除现有的绑定
                 STUN_METHOD_PULL:self.handle_app_pull
                 }
-        self.listener = _tcp_listener(('0.0.0.0',3478),65536,1)
+        self.listener = _tcp_listener((srv_ip,srv_port),65536,1)
         self.fwdcounter = None
         self.errqueue =None
         #self.statqueue = {}
@@ -564,9 +575,6 @@ class EpollServer():
                 self.logfailed[uq] = 1
             else:
                 self.logfailed[uq] +=1
-
-            
-
             return  stun_error_response(res)
 
     
@@ -635,13 +643,26 @@ class EpollServer():
         #if self.app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]):
         user = res.attrs.get(STUN_ATTRIBUTE_USERNAME,None)
         pwd = res.attrs.get(STUN_ATTRIBUTE_MESSAGE_INTEGRITY,None)
-        if not user or not pwd:
+        sms_code = res.attrs.get(STUN_ATTRIBUTE_DATA,None)
+        if not user or not pwd or not sms_code:
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
             return stun_error_response(res)
 
+        sms_data = hexlify(self.redis.get("%s:%s" % (user,sms_code)))
+        if not sms_data:
+            """验证码不正确"""
+            res.eattr = STUN_ERROR_CODE_ERROR
+            return stun_error_response(res)
+        elif cmp(sms_data,res.host):
+            """IP 地址不匹配"""
+            res.eattr = STUN_ERROR_CODE_ERROR
+            return stun_error_response(res)
+
+        """
         if self.db.check_user_exist(user):
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
+        """
 
         obj = hashlib.sha256()
         obj.update(user)
@@ -892,9 +913,22 @@ def make_argument_parser():
     parser = argparse.ArgumentParser(
         formatter_class = argparse.ArgumentDefaultsHelpFormatter
         )
-    parser.add_argument('-p',action='store',dest='srv_port',type=int,help='Set Services Port')
-    parser.add_argument('-B',action='store',dest='bind_eth',type=str,help='Set Bind Server on interface')
+    parser.add_argument('--port',action='store',dest='srv_port',\
+            default=3478,type=int,help='Set Services Port')
+    parser.add_argument('--ip',action='store',dest='srv_ip',\
+            default='0.0.0.0',type=str,help='Set Bind Server on interface')
     parser.add_argument('-I',action='store',dest='cluster_interface',type=str,help='cluster communicate interface')
+    parser.add_argument('--redis_ip',action='store',dest='redis_ip',\
+            type=str,help=u'redis 服务器地址')
+    parser.add_argument('--redis_port',action='store',dest='redis_port',\
+            type=int,default=6379,help=u'redis 服务器端口')
+    parser.add_argument('--redis_pass',action='store',dest='redis_pass',\
+            type=str,default=None,help=u'redis 连接认证密码')
+
+    args = parser.parse_args()
+    if not args.redis_ip:
+        print u'缺少运行必须参数 --redis_ip',
+        sys.exit(1);
     parser.add_argument('--version',action='version',version=__version__)
     return parser
 
@@ -907,9 +941,9 @@ store = ['clients','hosts','responses','appbinds','appsock','devsock',
          'devuuid','users','requests','logfaild']
 if __name__ == '__main__':
     __version__ = '0.1.2'
-    options = make_argument_parser().parse_args()
-    port = options.srv_port if options.srv_port else 3478
+    args = make_argument_parser().parse_args()
     cluster_eth = options.cluster_interface if options.cluster_interface else None
     QueryDB.check_boot_tables() # 检查数据库
-    EpollServer(port,cluster_eth)
+    EpollServer(args.srv_ip,args.srv_port,cluster_eth,args.redis_ip,\
+            args.redis_port,args.redis_pass)
     #srv.run()
