@@ -88,6 +88,18 @@ STUN_ERROR_OVER_TIME=0x412
 STUN_ERROR_CODE_ERROR=0x413
 STUN_ERROR_NONE=None
 
+LOG_ERROR_UUID='UUID Format Error'
+LOG_ERROR_AUTH='Guest Authentication error'
+LOG_ERROR_METHOD='Unkown Method command'
+LOG_ERROR_SOCK='Socket pipe was broke'
+LOG_ERROR_REGISTER='Register user occur error'
+LOG_ERROR_DB='Operator db occur error'
+LOG_ERROR_PACKET='Unkown packet format'
+LOG_ERROR_ATTR='Unkown packet Attribute'
+LOG_ERROR_FILENO='Too many fileno opened'
+LOG_ERROR_IILAGE_CLIENT='Iilega Client request'
+
+
 
 STUN_ONLINE=0x1
 STUN_OFFLINE=0x0
@@ -228,12 +240,16 @@ def stun_init_command_head(msg_type):
     
 
 def check_packet_crc32(buf): # 检查包的CRC
+    if len(buf) < (STUN_HEADER_LENGTH + 4):
+        return False
     #crc = struct.unpack('!HHI',binascii.unhexlify(buf[-16:]))
     rcrc =(crc32(buf[:-4]) ^ CRCMASK) & 0xFFFFFFFF
     return unpack32(buf[-4:]) == rcrc
     #return cmp(buf[-8:],'%08x' %  rcrc)
 
 def check_packet_vaild(buf):
+    if len(buf) < (STUN_HEADER_LENGTH + 4):
+        return False
     return not ((buf[:4] == HEAD_MAGIC) and check_packet_crc32(buf))
     #return check_packet_crc32(buf)
 

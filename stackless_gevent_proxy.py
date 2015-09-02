@@ -13,16 +13,23 @@ import struct
 import uuid
 import sys
 import os
+import errno
 import unittest
 import argparse
-import errno
+
+from signal import signal,SIGTERM
+import atexit
+from sys import exit
+
 from binascii import unhexlify,hexlify
 from datetime import datetime
 import hashlib
-import gc
+
+# 自定义模块
 from sockbasic import *
 from pg_driver import *
 from cluster_mod import *
+
 #from sockbasic import MySQLEngine as QueryDB
 from pg_driver import PostgresSQLEngine as QueryDB
 import threading
@@ -44,6 +51,10 @@ from sqlalchemy.dialects import postgresql as pgsql
 
 import redis
 from redis import ResponseError
+
+RE_ALLOW_TIME = 7200
+ACCESS_COUNT='access_count'
+DENY_HOST='deny_host'
 
 try:
     import cPickle as pickle
@@ -133,7 +144,7 @@ def stun_return_same_package(res):
 
 
 class EpollServer():
-    def __init__(self,srv_ip='0.0.0.0',srv_port=3478,cluster_eth,redis_ip,\
+    def __init__(self,srv_ip='0.0.0.0',srv_port=3478,redis_ip='127.0.0.1',\
             redis_port=6379,redis_pass=None):
         """创建多个engine让它平均到多个进程上，性能问题要进一步调试"""
         self.maxbuffer = ''
@@ -142,10 +153,12 @@ class EpollServer():
         self.db = PostgresSQLEngine()
         self.mcastsqueue = Queue()
         self.mcastrqueue = Queue()
-        self.redis = redis.Redis(host=redis_ip,port=redis_port,db=0,\
+        self.redis_sms = redis.Redis(host=redis_ip,port=redis_port,db=0,\
+                password=redis_pass)
+        self.redis_log = redis.Redis(host=redis_ip,port=redis_port,db=1,\
                 password=redis_pass)
         try:
-            type(self.redis.info())
+            type(self.redis_sms.info())
         except ResponseError:
             print u"连接Redis服务器出错,不能连接程"
             return
@@ -218,38 +231,56 @@ class EpollServer():
         threading.Thread(target=self.report_status).start()
         server.StreamServer(self.listener,self.handle_new_accept).serve_forever()
 
+    def handle_check_access_count(self,addr):
+        loghost = self.redis_log.hget(ACCESS_COUNT,addr)
+        if not oldaddr:
+            self.redis_log.hset(ACCESS_COUNT,addr,1)
+        elif int(loghost) == 15:
+            self.redis_log.hset(DENY_HOST,addr,time.time())
+            self.redis_log.hdel(ACCESS_COUNT,addr)
+        else:
+            self.redis_log.hincrby(ACCESS_COUNT,addr,1)
 
     def handle_new_accept(self,nsock,addr):
         fileno = nsock.fileno()
         self.clients[fileno] = nsock
         self.hosts[fileno] = addr
+        denytime = self.redis_log.hget(DENY_HOST,addr[0])
+        if denytime:
+            seconds = time.time() - float(deny)
+            if seconds < RE_ALLOW_TIME:
+                """还在禁止时间里"""
+                return 
+            else:
+                self.redis_log.hdel(DENY_HOST,addr[0])
+
+
         #print "new accept()",addr
         self.requests[fileno] =''
         #hstr = str(addr)
         #recvqueue.put('new accept %s, sock %d' % (str(addr),fileno))
-        n = 5
+        #n = 5
         while 1:
             try:
                 recvbuf = nsock.recv(SOCK_BUFSIZE)
             except IOError:
+                self.handle_check_access_count(addr[0])
                 self.errqueue.put('sock %d, IOError ,%s' % (fileno,hstr))
                 break
             except socket.error:
+                self.handle_check_access_count(addr[0])
                 self.errqueue.put("%s socket.error,sock %d" % (hstr,fileno))
                 break
             else:
                 if not recvbuf:
-                    if n:
-                        n -= 1
-                        gevent.sleep(0)
-                        continue
-                    else:
-                        self.errqueue.put("%s no data,sock %d" % (hstr,fileno))
-                        break
-                n = 5 # 重试读取5次
+                   self.handle_check_access_count(addr[0])
+                   self.errqueue.put("%s no data,sock %d" % (hstr,fileno))
+                   break
+                #n  5 # 重试读取5次
                 try:
                     self.requests[fileno] += recvbuf
                 except KeyError:
+                    self.handle_check_access_count(addr[0])
                     self.errqueue.put("%s requests KeyError,sock %d" % (hstr,fileno))
                     break
                 self.process_handle_first(fileno)
@@ -340,6 +371,7 @@ class EpollServer():
         l = self.requests[fileno].count(HEAD_MAGIC) #没有找到JL关键字
         if not l:
             self.errqueue.put('sock %d, recv no HEAD_MAGIC packet %s' % (fileno,self.requests[fileno]))
+            self.handle_check_access_count(self.hosts[fileno][0])
             return
         plen = len(self.requests[fileno])
         if l > 1:
@@ -369,6 +401,7 @@ class EpollServer():
             return 
         res = get_packet_head_class(hbuf[:STUN_HEADER_LENGTH])
         if not res:
+            self.handle_check_access_count(self.hosts[fileno][0])
             if fileno in self.appsock:
                 self.errqueue.put('get jl head error,appsock ,sock %d,%s,buf %s' % (fileno,self.hosts[fileno],hbuf))
             else:
@@ -394,6 +427,7 @@ class EpollServer():
             pass
         else:
             if res.method == STUN_METHOD_REFRESH: # 刷新就可以步过了
+                self.redis_log.hset(ACCESS_COUNT,self.hosts[fileno][0],1)
                 for n in STUN_HEAD_KEY:
                     res.__dict__.pop(n,None)
                 res.__dict__.pop('fileno',None)
@@ -406,6 +440,7 @@ class EpollServer():
                     """
                      直接转发了
                     """
+                    self.redis_log.hset(ACCESS_COUNT,self.hosts[fileno][0],1)
                     self.handle_forward_packet(hbuf,res,self.devsock)
             else:
                 self.handle_postauth_process(res,hbuf)
@@ -430,6 +465,7 @@ class EpollServer():
             pass
         else:
             if res.method == STUN_METHOD_REFRESH:
+                self.redis_log.hset(ACCESS_COUNT,self.hosts[fileno][0],1)
                 for n in STUN_HEAD_KEY:
                     res.__dict__.pop(n,None)
                 res.__dict__.pop('fileno',None)
@@ -442,6 +478,7 @@ class EpollServer():
                     """
                      直接转发了
                     """
+                    self.redis_log.hset(ACCESS_COUNT,self.hosts[fileno][0],1)
                     self.handle_forward_packet(hbuf,res,self.appsock)
             else:
                 self.handle_postauth_process(res,hbuf)
@@ -476,7 +513,7 @@ class EpollServer():
         """
         hexpos = STUN_HEADER_LENGTH
         res.attrs =  parser_stun_package(hbuf[hexpos:-4])
-        if res.attrs is None:
+        if not res.attrs:
             print "postfunc parser_stun_package is None buf: ",hexlify(hbuf),res.__dict__,res.host
             res.eattr = STUN_ERROR_UNKNOWN_ATTR
             self.errqueue.put(','.join([LOG_ERROR_ATTR,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
@@ -518,6 +555,7 @@ class EpollServer():
         if not check_packet_crc32(hbuf):
             self.errqueue.put(','.join([LOG_ERROR_PACKET,'sock %d,buf %s' % (res.fileno,hexlify(hbuf)),str(sys._getframe().f_lineno)]))
             self.delete_fileno(res.fileno)
+            handle_check_access_count(res.host[0])
             return 
 
         if not (res.method == STUN_METHOD_ALLOCATE or\
@@ -530,6 +568,7 @@ class EpollServer():
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
             self.errqueue.put(','.join([LOG_ERROR_IILAGE_CLIENT,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             self.delete_fileno(res.fileno)
+            handle_check_access_count(res.host[0])
             return
     
         hexpos = STUN_HEADER_LENGTH
@@ -648,15 +687,19 @@ class EpollServer():
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
             return stun_error_response(res)
 
-        sms_data = hexlify(self.redis.get("%s:%s" % (user,sms_code)))
-        if not sms_data:
-            """验证码不正确"""
+        reqsms = self.redis_sms.get(res.host[0])
+        sms_data = "%s:%s" % (hexlify(user),hexlify(sms_code))
+        #sms_data = hexlify(self.redis_sms.get("%s:%s" % (user,sms_code)))
+        if not reqsms:
+            """IP 地址不匹配,没有收到这个ip的记录"""
             res.eattr = STUN_ERROR_CODE_ERROR
             return stun_error_response(res)
-        elif cmp(sms_data,res.host):
-            """IP 地址不匹配"""
-            res.eattr = STUN_ERROR_CODE_ERROR
-            return stun_error_response(res)
+        else:
+            if cmp(sms_data,reqsms):
+                """验证码不正确"""
+                res.eattr = STUN_ERROR_CODE_ERROR
+                return stun_error_response(res)
+        self.redis_sms.delete(res.host[0]) # 验证通过，清除它，防止盗用
 
         """
         if self.db.check_user_exist(user):
@@ -897,6 +940,10 @@ class EpollServer():
             
         return ','.join(apps)  # 邦定过这个小机的用户群。
 
+    def handle_exit(self):
+        """ 退出要处理的一些数据保存"""
+        pass
+
     
 def logger_worker(queue,logger):
     while 1:
@@ -937,6 +984,7 @@ def make_argument_parser():
 
 
 
+
 store = ['clients','hosts','responses','appbinds','appsock','devsock',
          'devuuid','users','requests','logfaild']
 if __name__ == '__main__':
@@ -944,6 +992,10 @@ if __name__ == '__main__':
     args = make_argument_parser().parse_args()
     cluster_eth = options.cluster_interface if options.cluster_interface else None
     QueryDB.check_boot_tables() # 检查数据库
-    EpollServer(args.srv_ip,args.srv_port,cluster_eth,args.redis_ip,\
+    proxy_srv = EpollServer(args.srv_ip,args.srv_port,args.redis_ip,\
             args.redis_port,args.redis_pass)
+    atexit.register(proxy_srv.handle_exit)
+
+    signal(SIGTERM,lambda signum,stack_frame:exit(1))
+    time.sleep(10)
     #srv.run()
