@@ -28,7 +28,7 @@ STUN_METHOD_CHANNEL_BIND=0x9 # APP 绑定小机的命令
 STUN_METHOD_MODIFY=0x10 #修改绑定信息
 STUN_METHOD_DELETE=0x11 #删除绑定项
 STUN_METHOD_PULL=0x12  # 从服务器上拉去数据
-STUN_METHON_SMS=0x13  # 请求短信验证码
+STUN_METHOD_SMS=0x13  # 请求短信验证码
 
 STUN_METHOD_CONNECT=0xa
 STUN_METHOD_CONNECTION_BIND=0xb
@@ -83,9 +83,10 @@ STUN_ERROR_AUTH= 0x406
 STUN_ERROR_DEVOFFLINE= 0x407
 STUN_ERROR_FORMAT=0x408
 STUN_ERROR_OBJ_NOT_EXIST=0x410
-STUN_ERROR_SRV_ERR=0x411
+STUN_ERROR_SRV_ERROR=0x411
 STUN_ERROR_OVER_TIME=0x412
 STUN_ERROR_CODE_ERROR=0x413
+STUN_ERROR_OVER_CONUT=0x414
 STUN_ERROR_NONE=None
 
 LOG_ERROR_UUID='UUID Format Error'
@@ -127,7 +128,8 @@ mthlist=(STUN_METHOD_APPLOGIN,\
         STUN_METHOD_CONNECTION_BIND,\
         STUN_METHOD_CONNECTION_ATTEMPT,\
         STUN_METHOD_CHECK_USER,\
-        STUN_METHOD_REGISTER)
+        STUN_METHOD_REGISTER,\
+        STUN_METHOD_SMS)
 
 __author__ = 'liuchunyang'
 
@@ -153,7 +155,7 @@ def get_packet_head_class(buf): # 把包头解析成可以识的类属性
     del hlist
     
     cc = DictClass()
-    s= ('srcsock','dstsock')
+    #s= ('srcsock','dstsock')
     for k in d.keys():
         setattr(cc,k,d.get(k)) # 设置源地址，目地
 

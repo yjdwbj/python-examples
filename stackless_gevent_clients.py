@@ -22,6 +22,7 @@ from collections import OrderedDict
 from binascii import unhexlify,hexlify
 from datetime import datetime
 import hashlib
+import socket
 from sockbasic import *
 from random import randint
 import gevent
@@ -33,15 +34,16 @@ from ftplib import FTP
 
 #from multiprocessing import Queue
 #from multiprocessing.queues import Empty
-monkey.patch_socket(dns=False,aggressive=False)
-monkey.patch_time()
-monkey.patch_os()
-monkey.patch_thread()
-monkey.patch_ssl()
+#monkey.patch_socket(socket=False,dns=False,aggressive=False)
+#monkey.patch_time()
+#monkey.patch_os()
+#monkey.patch_thread()
+#monkey.patch_ssl()
 ##monkey.patch_all(socket=True,dns=False,time=True,select=False,thread=True,os=True,ssl=False,httplib=False,subprocess=False,aggressive=True)
 import threading
 
 FTP_HOST='192.168.25.105'
+SMS_HOST=('192.168.25.100',8743)
 #FTP_HOST='ftp.jieli.net'
 
 def logger_worker(queue,logger):
@@ -102,8 +104,7 @@ def cmp_md5_digest(fname,digest):
 
 
 class DevicesFunc():
-    global host
-    def __init__(self,uid):
+    def __init__(self,uid,host):
         self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
         #self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
@@ -420,8 +421,7 @@ class DevicesFunc():
 
 
 class APPfunc():
-    global host
-    def __init__(self,uid):
+    def __init__(self,uid,host):
         self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
         #self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
@@ -444,9 +444,13 @@ class APPfunc():
         self.uid= uid
         self.addr = host
         self.retry = 50
-        self.start()
+        self.smscode =None
+        self.connect()
 
-    def start(self):
+    def reconnect(self):
+        self.connect()
+
+    def connect(self):
         while 1:
             n = time.time()
             #rt = randint(5,120)
@@ -462,33 +466,30 @@ class APPfunc():
                 continue
             else:
                 break
-        
+
+    def send_register_request(self):
+        if not self.smscode:
+            print "not smscode"
+            self.get_sms_request(SMS_HOST)
+            return 
         self.sbuf = self.stun_register_request()
         if self.write_sock():
             appreconn.put_nowait(self.uid)
             return
-        while 1:
-            try:
-                data = self.sock.recv(SOCK_BUFSIZE)
-            except IOError:
-                if n:
-                    n -=1
-                    gevent.sleep(0.1)
-                    continue
-                else:
-                    qdict.err.put('sock %d, recv IOerror' % self.fileno)
-                    break
-            if not data:
-                qdict.err.put('sock %d, recv not data' % self.fileno)
-                break
-            self.recv += data
-            del data
-            if self.process_handle_first():
-                break
-            gevent.sleep(0)
+        try:
+            data = self.sock.recv(SOCK_BUFSIZE)
+        except IOError:
+            return self.reconnect()
+        if not data:
+            qdict.err.put('sock %d, recv not data' % self.fileno)
+            return
+        self.recv += data
+        del data
+        self.process_handle_first()
         #qdict.err.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
-        self.sock.close()
-        appreconn.put_nowait(self.uid)
+        #self.sock.close()
+        #appreconn.put_nowait(self.uid)
+
 
 
     def process_handle_first(self):
@@ -525,6 +526,27 @@ class APPfunc():
 
 
     def process_loop(self,rbuf):
+        hattr = self.handle_packet_head(rbuf)
+        if not hattr:
+            qdict.err.put('sock %d,recv wrong head , %s' % (self.fileno,rbuf))
+            print "wrong head"
+            return False
+        if hattr.method == STUN_METHOD_DATA: # 小机回应
+            return ack_device_ask(self,hattr,rbuf)
+
+        hattr.method = stun_get_type(hattr.method)
+        rdict  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-4]) # 去头去尾
+        if rdict is None:
+            return False
+        handle_next_command(hattr,rdict,rbuf)
+        rdict.clear()
+        del rdict
+        for m in STUN_HEAD_KEY:
+            hattr.__dict__.pop(m,None)
+        del hattr
+        return  self.write_sock()
+
+    def handle_packet_head(self,rbuf):
         print "recv buf",hexlify(rbuf)
         if check_packet_vaild(rbuf): # 校验包头
             qdict.err.put(','.join(['sock','%d'% self.fileno,'check_packet_vaild',rbuf]))
@@ -532,13 +554,15 @@ class APPfunc():
             print "invalid head"
             return False
     
-        hattr = get_packet_head_class(rbuf[:STUN_HEADER_LENGTH])
-        if not hattr:
-            qdict.err.put('sock %d,recv wrong head , %s' % (self.fileno,rbuf))
-            print "wrong head"
-            return False
-     
-        if stun_get_type(hattr.method) == STUN_METHOD_DATA: # 小机回应
+        #if not stun_is_success_response_str(hattr.method):
+            """回复不正确出错了"""
+        #    return False
+        return get_packet_head_class(rbuf[:STUN_HEADER_LENGTH])
+
+
+
+    def ack_device_ask(self,hattr,rbuf):
+        if hattr.method == STUN_METHOD_DATA: # 小机回应
             if hattr.srcsock == 0xFFFFFFFF:
                 qdict.err.put('sock %d, recv forward packet not srcsock,buf %s' % (self.fileno,rbuf))
                 return False
@@ -546,9 +570,9 @@ class APPfunc():
             if (hattr.sequence >> 24) == 0x3:
                 print "ask",hattr.sequence
                 #qdict.recv.put("recv: %s,sock %d,recv from  dev  number of  hex(%s); buf: %s" % (str(self.sock.getsockname()),self.fileno,hattr.sequence[2:],rbuf))
-                rdict  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-4]) # 去头去尾
-                if rdict is None:
-                    return False
+                #rdict  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-4]) # 去头去尾
+                #if rdict is None:
+                #    return False
 #                d = rdict[STUN_ATTRIBUTE_DATA]
 #                if d.index('ftp'):
 #                    glist = d.split(':')
@@ -586,20 +610,16 @@ class APPfunc():
             del hattr
             return self.write_sock()
 
-    
-        if not stun_is_success_response_str(hattr.method):
-            if  (hattr.method & 0xff) != (STUN_METHOD_REGISTER & 0xff):
-                qdict.err.put(','.join(['sock','%d'% self.fileno,'recv server error',\
-                        'method',str(hattr.method),rbuf]))
-                return False
-            else:
-                self.sbuf = self.stun_login_request()
-                return self.write_sock()
-    
-        hattr.method = stun_get_type(hattr.method)
-        rdict  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-4]) # 去头去尾
-        if rdict is None:
-            return False
+#        if not stun_is_success_response_str(hattr.method):
+#            if  (hattr.method & 0xff) != (STUN_METHOD_REGISTER & 0xff):
+#                #qdict.err.put(','.join(['sock','%d'% self.fileno,'recv server error',\
+#                #        'method',str(hattr.method),rbuf]))
+#                return False
+#            else:
+#                self.sbuf = self.stun_login_request()
+#                return self.write_sock()
+#    
+    def handle_next_command(self,hattr,rdict,rbuf):
         if hattr.method == STUN_METHOD_APPLOGIN:
             stat = rdict[STUN_ATTRIBUTE_STATE]
             self.ftpwd = rdict[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
@@ -661,12 +681,6 @@ class APPfunc():
                 self.sbuf = self.stun_send_data_to_devid(sequence)
                 self.add_queue.put(0) 
      
-        rdict.clear()
-        del rdict
-        for m in STUN_HEAD_KEY:
-            hattr.__dict__.pop(m,None)
-        del hattr
-        return  self.write_sock()
     
     
     def write_sock(self):
@@ -720,6 +734,35 @@ class APPfunc():
         stun_add_fingerprint(od)
         buf = ''.join(get_list_from_od(od))
         return buf
+
+    def get_sms_request(self,host):
+        od = stun_init_command_head(STUN_METHOD_SMS)
+        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,self.user)
+        stun_add_fingerprint(od)
+        buf = ''.join(get_list_from_od(od))
+        print 'sms buf',hexlify(buf)
+
+        smsock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+        smsock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
+        smsock.connect(host)
+        smsock.send(buf)
+        while 1:
+            buf = smsock.recv(SOCK_BUFSIZE)
+            if not buf:
+                break
+            hattr = self.handle_packet_head(buf)
+            if not hattr:
+                break
+            hattr.method = stun_get_type(hattr.method)
+            if hattr.method == STUN_METHOD_SMS:
+                rdict  = parser_stun_package(buf[STUN_HEADER_LENGTH:-4]) # 去头去尾
+                if rdict:
+                    self.smscode = rdict.get(STUN_ATTRIBUTE_DATA)
+            print hexlify(buf)
+            gevent.sleep(0)
+        smsock.close()
+
+
     
     def stun_register_request(self):
         od = stun_init_command_head(STUN_METHOD_REGISTER)
@@ -727,6 +770,7 @@ class APPfunc():
         nmac = hashlib.sha256()
         nmac.update(self.pwd)
         stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,unhexlify(nmac.hexdigest()))
+        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,self.smscode[:6])
         stun_add_fingerprint(od)
         olist = get_list_from_od(od)
         return ''.join(olist)
