@@ -143,9 +143,11 @@ def stun_return_same_package(res):
     return get_list_from_od(od)
 
 
-class EpollServer():
+class EpollServer(StreamServer):
     def __init__(self,srv_ip='0.0.0.0',srv_port=3478,redis_ip='127.0.0.1',\
             redis_port=6379,redis_pass=None):
+        listener = _tcp_listener((srv_ip,srv_port),65536,1)
+        StreamServer.__init__(self,listener,handle=self.handle_new_accept)
         """创建多个engine让它平均到多个进程上，性能问题要进一步调试"""
         self.maxbuffer = ''
         [setattr(self,x,{}) for x in store]
@@ -180,7 +182,6 @@ class EpollServer():
                 STUN_METHOD_DELETE:self.handle_delete_bind_item, #删除现有的绑定
                 STUN_METHOD_PULL:self.handle_app_pull
                 }
-        self.listener = _tcp_listener((srv_ip,srv_port),65536,1)
         self.fwdcounter = None
         self.errqueue =None
         #self.statqueue = {}
@@ -193,7 +194,8 @@ class EpollServer():
         #for i in xrange(1):
         #    Process(target=self.start_srv).start()
         #self.server.serve_forever()
-        Process(target=self.start_srv)
+        self.start_srv()
+        #Process(target=self.start_srv)
 
     def report_status(self):
         ltime = time.time()
@@ -229,13 +231,15 @@ class EpollServer():
         #recvworker= threading.Thread(target=logger_worker,args=(recvqueue,recvlog))
         #recvworker.start()
         threading.Thread(target=self.report_status).start()
-        server.StreamServer(self.listener,self.handle_new_accept).serve_forever()
+        #server.StreamServer(self.listener,self.handle_new_accept).serve_forever()#
+        self.start()
+        gevent.wait()
 
     def handle_check_access_count(self,addr):
-        loghost = self.redis_log.hget(ACCESS_COUNT,addr)
+        oldaddr = self.redis_log.hget(ACCESS_COUNT,addr)
         if not oldaddr:
             self.redis_log.hset(ACCESS_COUNT,addr,1)
-        elif int(loghost) == 15:
+        elif int(oldaddr) == 15:
             self.redis_log.hset(DENY_HOST,addr,time.time())
             self.redis_log.hdel(ACCESS_COUNT,addr)
         else:
@@ -257,7 +261,7 @@ class EpollServer():
 
         #print "new accept()",addr
         self.requests[fileno] =''
-        #hstr = str(addr)
+        hstr = str(addr)
         #recvqueue.put('new accept %s, sock %d' % (str(addr),fileno))
         #n = 5
         while 1:
@@ -555,7 +559,7 @@ class EpollServer():
         if not check_packet_crc32(hbuf):
             self.errqueue.put(','.join([LOG_ERROR_PACKET,'sock %d,buf %s' % (res.fileno,hexlify(hbuf)),str(sys._getframe().f_lineno)]))
             self.delete_fileno(res.fileno)
-            handle_check_access_count(res.host[0])
+            self.handle_check_access_count(res.host[0])
             return 
 
         if not (res.method == STUN_METHOD_ALLOCATE or\
@@ -568,7 +572,7 @@ class EpollServer():
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
             self.errqueue.put(','.join([LOG_ERROR_IILAGE_CLIENT,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             self.delete_fileno(res.fileno)
-            handle_check_access_count(res.host[0])
+            self.handle_check_access_count(res.host[0])
             return
     
         hexpos = STUN_HEADER_LENGTH
@@ -608,12 +612,7 @@ class EpollServer():
             """用户信息不正确所以不能取得ftpwd"""
             res.eattr = STUN_ERROR_AUTH
             """对与同一IP同一用户登录多次失败的记录"""
-            uq = "%s:%s" % (res.host[0],user)
-            flist = self.logfailed.get(uq,None)
-            if not flist:
-                self.logfailed[uq] = 1
-            else:
-                self.logfailed[uq] +=1
+            self.handle_check_access_count(res.host[0])
             return  stun_error_response(res)
 
     
@@ -688,7 +687,7 @@ class EpollServer():
             return stun_error_response(res)
 
         reqsms = self.redis_sms.get(res.host[0])
-        sms_data = "%s:%s" % (hexlify(user),hexlify(sms_code))
+        sms_data = "%s:%s" % (user,sms_code)
         #sms_data = hexlify(self.redis_sms.get("%s:%s" % (user,sms_code)))
         if not reqsms:
             """IP 地址不匹配,没有收到这个ip的记录"""
@@ -700,6 +699,8 @@ class EpollServer():
                 res.eattr = STUN_ERROR_CODE_ERROR
                 return stun_error_response(res)
         self.redis_sms.delete(res.host[0]) # 验证通过，清除它，防止盗用
+        self.redis_sms.delete('send:%s' % res.host[0])
+        self.redis_sms.delete('now:%s' % res.host[0])
 
         """
         if self.db.check_user_exist(user):
@@ -966,15 +967,16 @@ def make_argument_parser():
             default='0.0.0.0',type=str,help='Set Bind Server on interface')
     parser.add_argument('-I',action='store',dest='cluster_interface',type=str,help='cluster communicate interface')
     parser.add_argument('--redis_ip',action='store',dest='redis_ip',\
-            type=str,help=u'redis 服务器地址')
+            type=str,help=u'redis server addr')
     parser.add_argument('--redis_port',action='store',dest='redis_port',\
-            type=int,default=6379,help=u'redis 服务器端口')
+            type=int,default=6379,help=u'redis port ,default 6379')
     parser.add_argument('--redis_pass',action='store',dest='redis_pass',\
-            type=str,default=None,help=u'redis 连接认证密码')
+            type=str,default=None,help=u'redis auth password')
 
     args = parser.parse_args()
     if not args.redis_ip:
-        print u'缺少运行必须参数 --redis_ip',
+        print u'缺少运行必须参数 --redis_ip'.encode('utf-8')
+        parser.print_help()
         sys.exit(1);
     parser.add_argument('--version',action='version',version=__version__)
     return parser
@@ -990,7 +992,7 @@ store = ['clients','hosts','responses','appbinds','appsock','devsock',
 if __name__ == '__main__':
     __version__ = '0.1.2'
     args = make_argument_parser().parse_args()
-    cluster_eth = options.cluster_interface if options.cluster_interface else None
+    cluster_eth = args.cluster_interface if args.cluster_interface else None
     QueryDB.check_boot_tables() # 检查数据库
     proxy_srv = EpollServer(args.srv_ip,args.srv_port,args.redis_ip,\
             args.redis_port,args.redis_pass)

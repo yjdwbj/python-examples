@@ -473,6 +473,7 @@ class APPfunc():
             self.get_sms_request(SMS_HOST)
             return 
         self.sbuf = self.stun_register_request()
+        print 'send buf',hexlify(self.sbuf)
         if self.write_sock():
             appreconn.put_nowait(self.uid)
             return
@@ -538,7 +539,7 @@ class APPfunc():
         rdict  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-4]) # 去头去尾
         if rdict is None:
             return False
-        handle_next_command(hattr,rdict,rbuf)
+        self.handle_next_command(hattr,rdict,rbuf)
         rdict.clear()
         del rdict
         for m in STUN_HEAD_KEY:
