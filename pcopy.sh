@@ -12,6 +12,7 @@ modsetup="library_setup.py"
 srv="stackless_gevent_srv.py"
 proxy="stackless_gevent_proxy.py"
 sms_srv="send_sms.py"
+code_srv="generate_code.py"
 rexe="run_test.sh"
 srvhost="root@srv:"
 srvdir="/home/lcy/srv_dir"
@@ -45,7 +46,7 @@ parallel-ssh -i -h $vhostfile /opt/client_test/make_lib.sh
 
 copy_to_srv(){
     echo "copy files to srv"
-srvfile="$modsrc $proxy run_node.sh $modsetup $sms_srv"
+srvfile="$modsrc $proxy run_node.sh $modsetup $sms_srv $code_srv"
 rsync  $srvfile  $srvhost$srvdir
 parallel-ssh -i -H root@srv " cd /home/lcy/srv_dir ; LD_LIBRARY_PATH=/opt/stackless-279/lib /opt/stackless-279/bin/python $modsetup build_ext && chown lcy:lcy -R *"
 }
