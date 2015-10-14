@@ -88,6 +88,8 @@ def get_account_table():
             )
     return account
 
+
+
 def get_vendor_table(): #记录厂商的名称
     metadata = MetaData()
     vtable = Table('vendor',metadata,
@@ -95,10 +97,15 @@ def get_vendor_table(): #记录厂商的名称
             )
     return vtable
 
-def get_account_bind_table(name):
+def get_account_bind_table():
     metadata = MetaData()
-    table = Table(name,metadata,
-            Column('devid',pgsql.VARCHAR(48),nullable=False,primary_key=True),
+    t = get_account_table()
+    cmeta = t.tometadata(metadata)
+    devtable = get_devices_table()
+    cmeta = devtable.tometadata(metadata)
+    table = Table('binds',metadata,
+            Column('uname',ForeignKey('account.uname'),nullable=False),
+            Column('devid',ForeignKey('mirco_devices.devid'),nullable=False),
             Column('pwd',pgsql.BYTEA,default='',nullable=False),
             Column('bind_time',pgsql.TIMESTAMP,nullable=False,default='now()')
             )
@@ -109,7 +116,7 @@ def get_account_status_table():
     t = get_account_table()
     cmeta = t.tometadata(metadata)
     table = Table('account_status',metadata,
-            Column('uname',pgsql.VARCHAR(255),ForeignKey("account.uname")),
+            Column('uname',ForeignKey("account.uname"),nullable=False),
             Column('is_login',pgsql.BOOLEAN,nullable=False,default=False),
             Column('last_login_time',pgsql.TIMESTAMP,default ='now()'),
             Column('last_logout_time',pgsql.TIMESTAMP,default='now()'),
@@ -117,16 +124,28 @@ def get_account_status_table():
             )
     return table
 
-
-def get_devices_table(vendor_name):
+def get_device_status_table():
     metadata = MetaData()
-    mirco_devices = Table(vendor_name,metadata,
-            Column('devid',pgsql.UUID,primary_key=True,unique=True),
-            Column('is_active',pgsql.BOOLEAN,nullable=False,default=True),
+    devtable = get_devices_table()
+    cmeta = devtable.tometadata(metadata)
+    st = Table('devices_status',metadata,
+            Column('devid',ForeignKey('mirco_devices.devid'),nullable=False),
             Column('last_login_time',pgsql.TIMESTAMP,nullable=False,default='now()'),
             Column('last_logout_time',pgsql.TIMESTAMP,nullable=False,default='now()'),
             Column('is_online',pgsql.BOOLEAN,nullable=False,default=False),
-            Column('chost',pgsql.VARCHAR(22),nullable=False,default=''),
+            Column('chost',pgsql.VARCHAR(22),nullable=False,default='')
+            )
+
+    return st
+
+
+
+def get_devices_table():
+    metadata = MetaData()
+    mirco_devices = Table('mirco_devices',metadata,
+            Column('vendor',pgsql.VARCHAR(8),nullable=False),
+            Column('devid',pgsql.UUID,primary_key=True,unique=True),
+            Column('is_active',pgsql.BOOLEAN,nullable=False,default=True),
             Column('data',pgsql.BYTEA,nullable=False,default='')
             )
     return mirco_devices
@@ -219,18 +238,18 @@ class PostgresSQLEngine():
         return ftpwd if ftpwd is None else ftpwd[1]
 
     def update_bind_table(self,uname,devid,pwd):
-        bt = get_account_bind_table(uname)
+        bt = get_account_bind_table()
         ins = bt.update().values(pwd=pwd,bind_time = 'now()').where(bt.c.devid == literal(devid))
         return self.run_trans(ins)
 
     def delete_bind_table(self,uname,devid):
-        bt = get_account_bind_table(uname)
+        bt = get_account_bind_table()
         ins = bt.delete().where(bt.c.devid == devid)
         return self.run_trans(ins)
 
     def pull_bind_table(self,uname):
-        bt = get_account_bind_table(uname)
-        ins  = sql.select([bt.c.devid,bt.c.pwd])
+        bt = get_account_bind_table()
+        ins  = sql.select([bt.c.devid,bt.c.pwd]).where(bt.c.uname == literal(uname))
         result = None
         conn = GetConn(self.engine)
         result = conn.execute(ins).fetchall()
@@ -246,7 +265,7 @@ class PostgresSQLEngine():
 
 
     def insert_bind_table(self,uname,devid,pwd):
-        bt = get_account_bind_table(uname)
+        bt = get_account_bind_table()
         sel = sql.select([literal(devid),literal(pwd)]).where(~exists([bt.c.devid]).where(bt.c.devid == literal(devid)))
         ins = bt.insert().from_select(['devid','pwd'],sel)
         return self.run_trans(ins)
@@ -263,15 +282,35 @@ class PostgresSQLEngine():
 
     """ 小机表的操作"""
     def devtable_logout(self,vname,devid):
-        dt = get_devices_table(vname)
+        #dt = get_devices_table()
+        dt = get_device_status_table()
         ins = dt.update().values(last_logout_time='now()',is_online=False).where(dt.c.devid == literal(devid))
         return self.run_trans(ins)
 
     def insert_devtable(self,vname,devid,chost,data):
-        dt = get_devices_table(vname)
-        sel = sql.select([literal(devid),True,text('CURRENT_TIMESTAMP'),True,literal(chost),literal(data)]).where(~exists([dt.c.devid]).where(dt.c.devid == literal(devid)))
-        ins = dt.insert().from_select(['devid','is_active','last_login_time','is_online','chost','data'],sel)
+        dt = get_devices_table()
+        n = check_device_exist(devid)
+        if not n:
+            sel = sql.select([literal(vname),literal(devid),True,literal(data)]).where(~exists([dt.c.devid]).where(dt.c.devid == literal(devid)))
+            ins = dt.insert().from_select(['vendor','devid','is_active','data'],sel)
+            self.run_trans(ins)
+            
+        dst = get_device_status_table()
+        #sel = sql.select([literal(devid),text('CURRENT_TIMESTAMP'),True,literal(chost)]).where(~exists([dt.c.devid]).where(dt.c.devid == literal(devid)))
+        ins = dst.insert().from_select(['devid','last_login_time','is_online','chost'],sel)
+        ins = dst.insert().values(devid = literal(devid),last_login_time =literal('now()'),is_online = True,chost = literal(chost))
         return self.run_trans(ins)
+
+    def check_device_exist(self,devid):
+        dt = get_devices_table()
+        s = sql.select([dt.c.devid]).where(dt.c.devid == literal(devid)).limit(1)
+        n = None
+        conn = GetConn(self.engine)
+        result = conn.execute(s)
+        conn.close()
+
+        return None if n is None else n.fetchone()
+
 
 
 
@@ -305,34 +344,34 @@ class PostgresSQLEngine():
         atable = get_account_table()
         if not atable.exists(engine):
             atable.create(engine)
-            conn.execute("""
-            CREATE OR REPLACE FUNCTION add_bindtable() RETURNS TRIGGER AS $BODY$
-            BEGIN
-            EXECUTE format('
-            CREATE TABLE IF NOT EXISTS "'||NEW.uname||'"  (
-              devid VARCHAR(48) NOT NULL PRIMARY KEY,
-              pwd BYTEA ,
-              bind_time timestamp with time zone DEFAULT now()
-              );');
-            RETURN NEW;
-            END;
-            $BODY$ LANGUAGE plpgsql;
-
-            
-            DROP TRIGGER IF EXISTS add_bind ON account;
-            CREATE TRIGGER add_bind BEFORE INSERT OR UPDATE ON account FOR EACH ROW EXECUTE PROCEDURE add_bindtable();
----           CREATE OR REPLACE FUNCTION insert_account_status() RETURNS TRIGGER as ---
----               $$---
----           BEGIN---
----           EXECUTE format('---
----           INSERT into account_status (uname,chost) VALUES(quote_ident('||NEW.uname||'),quote_ident('||NEW.chost||'));');---
----           RETURN NEW;---
----           END;---
----           $$ LANGUAGE plpgsql;---
-------
----           DROP TRIGGER IF EXISTS insert_account ON account;---
----           CREATE TRIGGER insert_account AFTER INSERT  ON account FOR EACH ROW EXECUTE PROCEDURE insert_account_status();---
-            """)
+#            conn.execute("""
+#            CREATE OR REPLACE FUNCTION add_bindtable() RETURNS TRIGGER AS $BODY$
+#            BEGIN
+#            EXECUTE format('
+#            CREATE TABLE IF NOT EXISTS "'||NEW.uname||'"  (
+#              devid VARCHAR(48) NOT NULL PRIMARY KEY,
+#              pwd BYTEA ,
+#              bind_time timestamp with time zone DEFAULT now()
+#              );');
+#            RETURN NEW;
+#            END;
+#            $BODY$ LANGUAGE plpgsql;
+#
+#            
+#            DROP TRIGGER IF EXISTS add_bind ON account;
+#            CREATE TRIGGER add_bind BEFORE INSERT OR UPDATE ON account FOR EACH ROW EXECUTE PROCEDURE add_bindtable();
+#---           CREATE OR REPLACE FUNCTION insert_account_status() RETURNS TRIGGER as ---
+#---               $$---
+#---           BEGIN---
+#---           EXECUTE format('---
+#---           INSERT into account_status (uname,chost) VALUES(quote_ident('||NEW.uname||'),quote_ident('||NEW.chost||'));');---
+#---           RETURN NEW;---
+#---           END;---
+#---           $$ LANGUAGE plpgsql;---
+#------
+#---           DROP TRIGGER IF EXISTS insert_account ON account;---
+#---           CREATE TRIGGER insert_account AFTER INSERT  ON account FOR EACH ROW EXECUTE PROCEDURE insert_account_status();---
+#            """)
 
         stable = get_account_status_table()
         if not stable.exists(engine):
@@ -349,29 +388,41 @@ class PostgresSQLEngine():
 #            LANGUAGE plpgsql;
 #            """)
 
-        vtable = get_vendor_table()
-        if not vtable.exists(engine):
-            vtable.create(engine)
-            """每插入一条新的厂商名到vendor表，就为这个名字新建一张表"""
-            conn.execute("""
-            CREATE FUNCTION add_vendor() RETURNS TRIGGER AS $$
-            BEGIN
-            EXECUTE format('
-            CREATE TABLE IF NOT EXISTS "'||new.vname||'" (
-              devid uuid NOT NULL PRIMARY KEY,
-              is_active boolean NOT NULL DEFAULT true,
-              last_login_time timestamp without time zone NOT NULL DEFAULT now(),
-              last_logout_time timestamp without time zone NOT NULL DEFAULT now(),
-              is_online boolean NOT NULL default False,
-              chost character varying(22) NOT NULL ,
-              data bytea NOT NULL 
-              );');
-              RETURN NEW;
-            END;
-            $$LANGUAGE plpgsql;
+        devtable = get_devices_table()
+        if not devtable.exists(engine):
+            devtable.create(engine)
 
-            DROP TRIGGER IF EXISTS insert_vendor ON vendor;
-            CREATE TRIGGER insert_vendor AFTER INSERT OR UPDATE ON vendor FOR EACH ROW EXECUTE PROCEDURE add_vendor();
-            """)
+
+        abt = get_account_bind_table()
+        if not abt.exists(engine):
+            abt.create(engine)
+
+        dst = get_device_status_table()
+        if not dst.exists(engine):
+            dst.create(engine)
+        #vtable = get_vendor_table()
+        #if not vtable.exists(engine):
+        #    vtable.create(engine)
+            """每插入一条新的厂商名到vendor表，就为这个名字新建一张表"""
+#            conn.execute("""
+#            CREATE FUNCTION add_vendor() RETURNS TRIGGER AS $$
+#            BEGIN
+#            EXECUTE format('
+#            CREATE TABLE IF NOT EXISTS "'||new.vname||'" (
+#              devid uuid NOT NULL PRIMARY KEY,
+#              is_active boolean NOT NULL DEFAULT true,
+#              last_login_time timestamp without time zone NOT NULL DEFAULT now(),
+#              last_logout_time timestamp without time zone NOT NULL DEFAULT now(),
+#              is_online boolean NOT NULL default False,
+#              chost character varying(22) NOT NULL ,
+#              data bytea NOT NULL 
+#              );');
+#              RETURN NEW;
+#            END;
+#            $$LANGUAGE plpgsql;
+#
+#            DROP TRIGGER IF EXISTS insert_vendor ON vendor;
+#            CREATE TRIGGER insert_vendor AFTER INSERT OR UPDATE ON vendor FOR EACH ROW EXECUTE PROCEDURE add_vendor();
+#            """)
         conn.close()
 

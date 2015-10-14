@@ -166,7 +166,7 @@ class EpollServer(StreamServer):
             return
         #self.cluster = ClusterSRV(cluster_eth)
         print "start cluster multicast"
-        self.vendors = self.db.get_vendor_to_set()
+        #self.vendors = self.db.get_vendor_to_set()
         self.prefunc= {
               STUN_METHOD_ALLOCATE:self.handle_allocate_request, # 小机登录方法
               STUN_METHOD_CHECK_USER:self.handle_chkuser_request,
@@ -645,9 +645,9 @@ class EpollServer(StreamServer):
         res.vendor = hexlify(uuid[16:20])
         res.tuid = uuid[:16]
         """检查是不是新的厂商名"""
-        if res.vendor not in self.vendors:
-            self.db.insert_vendor_table(res.vendor)
-            self.vendors.add(res.vendor)
+        #if res.vendor not in self.vendors:
+        #    self.db.insert_vendor_table(res.vendor)
+        #    self.vendors.add(res.vendor)
 
         data = ''
         try:
