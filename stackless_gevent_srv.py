@@ -22,7 +22,7 @@ import hashlib
 import gc
 from sockbasic import *
 from pg_driver import *
-from cluster_mod import *
+#from cluster_mod import *
 #from sockbasic import MySQLEngine as QueryDB
 from pg_driver import PostgresSQLEngine as QueryDB
 import threading
@@ -113,6 +113,7 @@ def device_login_sucess(res,apps): # 客服端向服务器绑定自己的IP
     stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,''.join(['%08x' % res.fileno,STUN_ONLINE]))
     if apps: 
         stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,hexlify(apps))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_LIFETIME,str(int(time.time())))
     stun_add_fingerprint(od)
     lst = get_list_from_od(od)
     return lst
@@ -307,7 +308,7 @@ class EpollServer():
         except TypeError:
             self.errqueue[current_process().name].put("TypeError %d,n is none" % res.fileno)
 
-        self.db.delete_bind_table(uname,devid)
+        self.db.delete_bind_table(uname,uids)
         return  stun_return_same_package(res)
         
 
@@ -691,7 +692,9 @@ class EpollServer():
         """disable select db """
         #if self.app_user_register(res.attrs[STUN_ATTRIBUTE_USERNAME],res.attrs[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]):
         user = unhexlify(res.attrs[STUN_ATTRIBUTE_USERNAME])
-        if self.db.check_user_exist(user):
+        ruser = self.db.check_user_exist(user)
+        print "check_user_exist",ruser
+        if ruser:
             res.eattr = STUN_ERROR_USER_EXIST
             return stun_error_response(res)
         obj = hashlib.sha256()

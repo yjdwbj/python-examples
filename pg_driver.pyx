@@ -1,4 +1,5 @@
 #!/opt/stackless-279/bin/python
+#coding=utf-8
 
 from datetime import datetime
 from sqlalchemy.exc import *
@@ -254,12 +255,12 @@ class PostgresSQLEngine():
     def check_user_exist(self,uname):
         at=get_account_table()
         s = sql.select([at.c.uname]).where(at.c.uname == literal(uname)).limit(1)
-        n = None
         conn = GetConn(self.engine)
         result = conn.execute(s)
+        n = result.fetchone()
         conn.close()
 
-        return None if n is None else n.fetchone()
+        return n
 
     """ 小机表的操作"""
     def devtable_logout(self,vname,devid):

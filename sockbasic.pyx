@@ -325,14 +325,35 @@ def get_muluuid_fmt(num):
 def split_jl_head(hbuf,fileno):
     return [(''.join([HEAD_MAGIC,n]),fileno) for n in hbuf.split(HEAD_MAGIC) if n]
 
+#def split_requests_buf(hbuf):
+#    nset = set([''.join([HEAD_MAGIC,n]) for n in hbuf.split(HEAD_MAGIC) if n])
+#    nlist = list(nset)
+#    del nset
+#    chl = int(nlist[-1][8:12],16) # 检查最后一个是否是完整的。
+#    if len(nlist[-1]) != (chl * 2):
+#        return nlist[:-1]
+#    return nlist
+#
 def split_requests_buf(hbuf):
-    nset = set([''.join([HEAD_MAGIC,n]) for n in hbuf.split(HEAD_MAGIC) if n])
-    nlist = list(nset)
-    del nset
-    chl = int(nlist[-1][8:12],16) # 检查最后一个是否是完整的。
-    if len(nlist[-1]) != (chl * 2):
-        return nlist[:-1]
-    return nlist
+    buf = hbuf
+    if '\x00' not in buf:
+        buf = unhexlify(buf)
+    lst = []
+    while 1:
+        if not buf:
+            break
+        bl = len(buf)
+        if bl < 6:
+            break
+        if 'JL\x00\x01' != buf[:4]:
+            break
+        tl = struct.unpack('!H',buf[4:6])[0]
+        if bl < tl:
+            break
+        lst.append(hexlify(buf[:tl]))
+        buf = buf[tl:]
+    return lst
+
 
 
 def read_attributes_from_buf(response):
