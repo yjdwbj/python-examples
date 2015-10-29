@@ -273,32 +273,18 @@ class PostgresSQLEngine():
     def check_user_exist(self,uname):
         at=get_account_table()
         s = sql.select([at.c.uname]).where(at.c.uname == literal(uname)).limit(1)
-        n = None
         conn = GetConn(self.engine)
         result = conn.execute(s)
+        n = result.fetchone()
         conn.close()
+        return n
 
-        return None if n is None else n.fetchone()
 
     """ 小机表的操作"""
     def devtable_logout(self,vname,devid):
         #dt = get_devices_table()
         dt = get_device_status_table()
         ins = dt.update().values(last_logout_time='now()',is_online=False).where(dt.c.devid == literal(devid))
-        return self.run_trans(ins)
-
-    def insert_devtable(self,vname,devid,chost,data):
-        dt = get_devices_table()
-        n = check_device_exist(devid)
-        if not n:
-            sel = sql.select([literal(vname),literal(devid),True,literal(data)]).where(~exists([dt.c.devid]).where(dt.c.devid == literal(devid)))
-            ins = dt.insert().from_select(['vendor','devid','is_active','data'],sel)
-            self.run_trans(ins)
-            
-        dst = get_device_status_table()
-        #sel = sql.select([literal(devid),text('CURRENT_TIMESTAMP'),True,literal(chost)]).where(~exists([dt.c.devid]).where(dt.c.devid == literal(devid)))
-        ins = dst.insert().from_select(['devid','last_login_time','is_online','chost'],sel)
-        ins = dst.insert().values(devid = literal(devid),last_login_time =literal('now()'),is_online = True,chost = literal(chost))
         return self.run_trans(ins)
 
     def check_device_exist(self,devid):
@@ -310,6 +296,21 @@ class PostgresSQLEngine():
         conn.close()
 
         return None if n is None else n.fetchone()
+
+    def insert_devtable(self,vname,devid,chost,data):
+        dt = get_devices_table()
+        n = self.check_device_exist(devid)
+        if not n:
+            sel = sql.select([literal(vname),literal(devid),True,literal(data)]).where(~exists([dt.c.devid]).where(dt.c.devid == literal(devid)))
+            ins = dt.insert().from_select(['vendor','devid','is_active','data'],sel)
+            self.run_trans(ins)
+            
+        dst = get_device_status_table()
+        #sel = sql.select([literal(devid),text('CURRENT_TIMESTAMP'),True,literal(chost)]).where(~exists([dt.c.devid]).where(dt.c.devid == literal(devid)))
+        ins = dst.insert().from_select(['devid','last_login_time','is_online','chost'],sel)
+        ins = dst.insert().values(devid = literal(devid),last_login_time =literal('now()'),is_online = True,chost = literal(chost))
+        return self.run_trans(ins)
+
 
 
 

@@ -104,7 +104,7 @@ def cmp_md5_digest(fname,digest):
 
 
 class DevicesFunc():
-    def __init__(self,uid,host):
+    def __init__(self,uid):
         self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
         #self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
@@ -120,7 +120,7 @@ class DevicesFunc():
         self.rm_queue = Queue()
         self.retry_t = None
         self.fileno = self.sock.fileno()
-        self.host = host
+        #self.host = host
         self.uid = uid
         self.recv = ''
         self.sbuf = ''
@@ -134,7 +134,7 @@ class DevicesFunc():
             n = time.time()
             rt = randint(5,120)
             try:
-                self.sock.connect(self.host)
+                self.sock.connect(host)
             except socket.timeout:
                 #qdict.err.put('sock connect timeout %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
                 #gevent.sleep(rt)
@@ -421,7 +421,7 @@ class DevicesFunc():
 
 
 class APPfunc():
-    def __init__(self,uid,host):
+    def __init__(self,uid):
         self.sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
         #self.sock.setsockopt(socket.SOL_SOCKET,socket.TCP_NODELAY,1)
@@ -442,10 +442,11 @@ class APPfunc():
         self.user = uid
         self.pwd = uid
         self.uid= uid
-        self.addr = host
+        #self.addr = host
         self.retry = 50
         self.smscode =None
         self.connect()
+        self.send_register_request()
 
     def reconnect(self):
         self.connect()
@@ -455,7 +456,7 @@ class APPfunc():
             n = time.time()
             #rt = randint(5,120)
             try:
-                self.sock.connect(self.addr)
+                self.sock.connect(host)
             except socket.timeout:
                 #qdict.err.put('sock connect timeout %d time %f,sleep %d retry' % (self.fileno,time.time() -n,rt))
                 #gevent.sleep(rt)
@@ -912,7 +913,7 @@ def AppDemo(args):
     """
     subprocess(APPfunc,ulist)
     #pool.map(APPfunc,ulist)
-    #gevent.joinall([gevent.spawn(APPfunc,host,uid) for uid in ulist])
+    #gevent.joinall([gevent.spawn(APPfunc,uid,host) for uid in ulist])
 
 def DevDemo(args):
     args = make_argument_parser().parse_args()
@@ -941,7 +942,7 @@ def DevDemo(args):
         subprocess(DevicesFunc,ulist)
     """
     subprocess(DevicesFunc,ulist)
-    #gevent.joinall([gevent.spawn(DevicesFunc,host,uid) for uid in uulist])
+    #gevent.joinall([gevent.spawn(DevicesFunc,uid,host) for uid in ulist])
     
 
 class A:

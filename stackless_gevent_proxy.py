@@ -251,7 +251,7 @@ class EpollServer(StreamServer):
         self.hosts[fileno] = addr
         denytime = self.redis_log.hget(DENY_HOST,addr[0])
         if denytime:
-            seconds = time.time() - float(deny)
+            seconds = time.time() - float(denytime)
             if seconds < RE_ALLOW_TIME:
                 """还在禁止时间里"""
                 return 
