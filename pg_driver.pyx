@@ -259,8 +259,20 @@ class PostgresSQLEngine():
         result = conn.execute(s)
         n = result.fetchone()
         conn.close()
-
         return n
+
+    def query_appbind(self,tname,devid):
+        print "table name",devid
+        bt = get_account_bind_table(unhexlify(tname))
+        sel = sql.select([bt.c.devid]).where(bt.c.devid == literal(devid))
+        n = None
+        conn = GetConn(self.engine)
+        n = conn.execute(sel)
+        res = n.fetchone()
+        print "res",res
+        conn.close()
+        return res
+
 
     """ 小机表的操作"""
     def devtable_logout(self,vname,devid):

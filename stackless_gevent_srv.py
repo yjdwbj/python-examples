@@ -143,6 +143,14 @@ def stun_return_same_package(res):
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
+def query_bind_response(res,flag):
+    od = stun_init_command_head(stun_make_success_response(res.method))
+    uname = res.attrs[STUN_ATTRIBUTE_DATA]
+    stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,'%s3a%s' % (uname,flag))
+    stun_add_fingerprint(od)
+    return get_list_from_od(od)
+
+
 
 
 
@@ -181,7 +189,8 @@ class EpollServer():
                 #STUN_METHOD_REFRESH:self.handle_refresh_request,
                 STUN_METHOD_MODIFY:self.handle_modify_bind_item, #修改绑定的信息
                 STUN_METHOD_DELETE:self.handle_delete_bind_item, #删除现有的绑定
-                STUN_METHOD_PULL:self.handle_app_pull
+                STUN_METHOD_PULL:self.handle_app_pull,
+                STUN_METHOD_QUERY:self.handle_dev_query  # 小机查询命令
                 }
         #self.server = StreamServer(('0.0.0.0',3478),self.handle_new_accept,backlog = 8192)
         #self.server.serve_forever()
@@ -310,6 +319,18 @@ class EpollServer():
 
         self.db.delete_bind_table(uname,uids)
         return  stun_return_same_package(res)
+
+    def handle_dev_query(self,res):
+        #uname = self.users[res.fileno]
+        uname = res.attrs[STUN_ATTRIBUTE_DATA]
+        uid = self.devsock[res.fileno].uuid 
+        n = self.db.query_appbind(uname,uid)
+        print "query done",n
+        if n:
+            return query_bind_response(res,'01')
+        else:
+            """已经删除了"""
+            return query_bind_response(res,'00')
         
 
     def delete_binds_in_db(self,uname,uids):
@@ -348,13 +369,15 @@ class EpollServer():
             return
         else:
             try:
-                sock.send(unhexlify(''.join(self.responses[fileno])))
+                if isinstance(self.responses[fileno],list):
+                    sock.send(unhexlify(''.join(self.responses[fileno])))
+                else:
+                    sock.send(unhexlify(self.responses[fileno]))
                 self.responses[fileno] = None
             except socket.error:
                 self.dealwith_peer_hup(fileno)
 
     def handle_cluster(self,data,addr):
-        
         pass
         
 
@@ -427,7 +450,8 @@ class EpollServer():
                 for n in STUN_HEAD_KEY:
                     res.__dict__.pop(n,None)
                 res.__dict__.pop('fileno',None)
-                return
+                self.responses[fileno] = hbuf
+                return self.write_to_sock(fileno)
             elif res.method == STUN_METHOD_SEND: 
                 if check_dst_and_src(res):
                     self.responses[fileno] = stun_error_response(res)
@@ -464,7 +488,8 @@ class EpollServer():
                 for n in STUN_HEAD_KEY:
                     res.__dict__.pop(n,None)
                 res.__dict__.pop('fileno',None)
-                return
+                self.responses[fileno] = hbuf
+                return self.write_to_sock(fileno)
             elif res.method == STUN_METHOD_DATA:
                 if check_dst_and_src(res):
                     self.responses[fileno] = stun_error_response(res)
@@ -512,7 +537,7 @@ class EpollServer():
         hexpos = STUN_HEADER_LENGTH
         trip =  parser_stun_package(hbuf[hexpos:-8])
         if trip is None:
-            print "postfunc parser_stun_package is None buf: ",hbuf,res.__dict__,res.host
+            #print "postfunc parser_stun_package is None buf: ",hbuf,res.__dict__,res.host
             res.eattr = STUN_ERROR_UNKNOWN_ATTR
             self.errqueue[current_process().name].put(','.join([LOG_ERROR_ATTR,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             self.responses[res.fileno] = stun_error_response(res)
@@ -521,9 +546,12 @@ class EpollServer():
             res.attrs = trip[0]
             res.reqlst = trip[1]
             try:
-               self.responses[res.fileno]=  self.postfunc[res.method](res)
-               self.write_to_sock(res.fileno)
+                self.responses[res.fileno]=  self.postfunc[res.method](res)
+                self.write_to_sock(res.fileno)
             except KeyError:
+                self.errqueue[current_process().name].put(','.join(["postfunc dict",str(self.postfunc)]));
+                self.errqueue[current_process().name].put(','.join(["postfunc parser_stun_package is KeyError: ",\
+                        hbuf,str(self.hosts[res.fileno]),res.method,str(res.fileno)]))
                 self.handle_client_request_preauth(res,hbuf)
     
                 
@@ -565,7 +593,7 @@ class EpollServer():
             #print 'fileno',fileno
             #print 'self.appsock',self.appsock
             res.eattr = STUN_ERROR_UNKNOWN_PACKET
-            self.errqueue[current_process().name].put(','.join([LOG_ERROR_IILAGE_CLIENT,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
+            self.errqueue[current_process().name].put(','.join([res.method,LOG_ERROR_IILAGE_CLIENT,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             self.delete_fileno(res.fileno)
             return
     

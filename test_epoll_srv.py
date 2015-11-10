@@ -70,10 +70,11 @@ class TestEpollSrv(unittest.TestCase):
 
 
     def test_check_user_exist(self):
-        user = 'lcy123'
-        db = PostgresSQLEngine()
-        self.assertFalse(db.check_user_exist(user))
-        
+        buf='4a4c0001002000000000000000000013000000030013000278620000efff49a6'
+        buf='4a4c0001002000000000000000000013000000000013000278620000d6727563'
+        res = get_packet_head_class(buf[:STUN_HEADER_LENGTH])
+        print res.__dict__
+
         
 
 

@@ -37,6 +37,7 @@ STUN_METHOD_CHANNEL_BIND='0009' # APP 绑定小机的命令
 STUN_METHOD_MODIFY='0010' #修改绑定信息
 STUN_METHOD_DELETE='0011' #删除绑定项
 STUN_METHOD_PULL='0012'  # 从服务器上拉去数据
+STUN_METHOD_QUERY='0013'  # 从服务器上拉去数据
 
 STUN_METHOD_CONNECT='000a'
 STUN_METHOD_CONNECTION_BIND='000b'
@@ -122,6 +123,7 @@ mthlist=(STUN_METHOD_BINDING,\
         STUN_METHOD_CONNECTION_BIND,\
         STUN_METHOD_CONNECTION_ATTEMPT,\
         STUN_METHOD_CHECK_USER,\
+        STUN_METHOD_QUERY,\
         STUN_METHOD_REGISTER)
 
 __author__ = 'liuchunyang'
@@ -229,11 +231,15 @@ def stun_add_fingerprint(od):
     #buf[2] = '%04x' % (int(buf[2],16)+4)
     od['length'] = '%04x' %  (len(''.join(chain(od.values()[:-1],od['lst'])))/2+4) # 4Byte crc32
     crc_str = ''.join(chain(od.values()[:-1],od['lst']))
-    crcval = get_crc32(crc_str)
-    del crc_str
-    crcstr = "%08x" % ((crcval  ^ CRCMASK) & 0xFFFFFFFF)
+    try:
+        crcval = get_crc32(crc_str)
+    except TypeError:
+        print "crc_str string error",crc_str
+    else:
+        del crc_str
+        crcstr = "%08x" % ((crcval  ^ CRCMASK) & 0xFFFFFFFF)
     #buf[-1] = crcstr.replace('-','')
-    od['lst'].append(crcstr.replace('-',''))
+        od['lst'].append(crcstr.replace('-',''))
 
 
 def stun_init_command_head(msg_type):
