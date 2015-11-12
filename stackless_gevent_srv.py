@@ -151,6 +151,16 @@ def query_bind_response(res,flag):
     return get_list_from_od(od)
 
 
+def delete_bind_notify_dev(res,uname):
+    """小机在线，就通知它"""
+    od = stun_init_command_head(stun_make_success_response(res.method))
+    stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,hexlify(uname))
+    stun_add_fingerprint(od)
+    return get_list_from_od(od)
+
+
+
+
 
 
 
@@ -318,6 +328,11 @@ class EpollServer():
             self.errqueue[current_process().name].put("TypeError %d,n is none" % res.fileno)
 
         self.db.delete_bind_table(uname,uids)
+        devsock = self.devuuid.get(uids,None)
+        if devsock:
+            """小机在线"""
+            self.responses[devsock] = delete_bind_notify_dev(res,uname)
+            self.write_to_sock(devsock)
         return  stun_return_same_package(res)
 
     def handle_dev_query(self,res):
@@ -350,7 +365,7 @@ class EpollServer():
         if not data:
             res.eattr = STUN_ERROR_OBJ_NOT_EXIST
             return  stun_error_response(res)
-        return  app_user_pull_table(res,data)
+        return  app_user_pull_table(res,hexlify(data))
 
     def delete_fileno(self,fileno):
         try:

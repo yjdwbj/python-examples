@@ -75,6 +75,50 @@ class TestEpollSrv(unittest.TestCase):
         res = get_packet_head_class(buf[:STUN_HEADER_LENGTH])
         print res.__dict__
 
+
+    def test_db_insert_exist(self):
+        db = PostgresSQLEngine()
+        pwd = 'a42617fa30062fc163447ba157174d5a'
+        db.insert_account_table('www',pwd.decode('hex'),'ftpwd',"127.0.0.1:9999")
+
+    def test_db_update_exist(self):
+        db = PostgresSQLEngine()
+        pwd = 'a42617fa30062fc163447ba157174d5a'
+        res = db.update_account_table('www',pwd.decode('hex'),'ftpwd',True,"127.0.0.1:9999")
+        self.assertTrue(res)
+
+    def test_db_update_not_exist(self):
+        db = PostgresSQLEngine()
+        pwd = 'a42617fa30062fc163447ba157174d5a'
+        res = db.update_account_table('ttt',pwd.decode('hex'),'ftpwd',True,"127.0.0.1:9999")
+        self.assertFalse(res)
+
+    def test_db_insert_devtable(self):
+        db = PostgresSQLEngine()
+        pwd = 'a42617fa30062fc163447ba157174d5a'
+        uuid = 'c1ed939c189c849bee8cbdbc00b250692653716626a67c9f'
+        uuid = '059a94d878214e2a946a40328197284c'
+        #res = db.insert_devtable("00000000",uuid,'128.0.0.1','ab12'.decode('hex'))
+        self.assertFalse(res)
+
+    def test_db_insert_bind_table(self):
+        db = PostgresSQLEngine()
+        pwd = 'a42617fa30062fc163447ba157174d5a'
+        uuid = 'c1ed939c189c849bee8cbdbc00b250692653716626a67c9f'
+        #res = db.insert_bind_table('kini',uuid,pwd.decode('hex'))
+        self.assertFalse(res)
+
+    def test_db_pull_bind_table(self):
+        db = PostgresSQLEngine()
+        data = db.pull_bind_table('kini')
+        print data
+
+    def test_db_delete_bind_table(self):
+        db = PostgresSQLEngine()
+        uname = 'kini'
+        uuid = 'c1ed939c189c849bee8cbdbc00b250692653716626a67c9f'
+        res = db.delete_bind_table(uname,uuid)
+        print res
         
 
 

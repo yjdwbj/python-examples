@@ -14,6 +14,8 @@ import ConfigParser
 from ConfigParser import NoOptionError
 import sys
 from sys import exit
+import json
+import string
 
 #SQLDriver='postgresql+psycopg2cffi://postgres:lcy123@192.168.25.105:5432/nath'
 
@@ -176,7 +178,7 @@ class PostgresSQLEngine():
         n = self.check_user_exist(uname)
         at = get_account_table()
         if not n:
-            ins = at.insert().values(uname=literal(uname),pwd=literal(hexlify(pwd)),ftpwd=literal(ftpwd),is_active=True,reg_host=literal(chost))
+            ins = at.insert().values(uname=literal(uname),pwd=pwd,ftpwd=literal(ftpwd),is_active=True,reg_host=literal(chost))
             conn = GetConn(self.engine)
             try:
                 conn.execute(ins)
@@ -193,6 +195,13 @@ class PostgresSQLEngine():
             #trans.rollback()
             #raise PGError('run query as %s occur err' % str(ins))
             #raise
+
+    def update_account_table(self,uname,pwd,ftpwd,state,chost):
+        #n = self.check_user_exist(uname)
+        at = get_account_table()
+        ups = at.update().values(pwd=pwd,ftpwd=literal(ftpwd),is_active=state,reg_host=literal(chost)).where(at.c.uname == uname)
+        return self.run_trans(ups)
+
 
     def user_logout(self,uname):
         ast = get_account_status_table()
@@ -221,11 +230,21 @@ class PostgresSQLEngine():
 
     def update_bind_table(self,uname,devid,pwd):
         bt = get_account_bind_table(uname)
-        ins = bt.update().values(pwd=pwd,bind_time = 'now()').where(bt.c.devid == literal(devid))
+        ins = bt.update().values(pwd=pwd,bind_time = 'now()').where(bt.c.devid == devid)
         return self.run_trans(ins)
 
     def delete_bind_table(self,uname,devid):
         bt = get_account_bind_table(uname)
+#        ins = sql.select([bt])
+#        print "tname",uname
+#        print "devid ",devid
+#        conn = GetConn(self.engine)
+#        result = conn.execute(ins).fetchall()
+#        for r in result:
+#            print "read row in bind",r
+#            print "devid in bind is ",r[0],type(devid),type(r[0])
+#            print "devid is eq" ,r[0] == literal(devid)
+#        conn.close()
         ins = bt.delete().where(bt.c.devid == devid)
         return self.run_trans(ins)
 
@@ -236,21 +255,35 @@ class PostgresSQLEngine():
         conn = GetConn(self.engine)
         result = conn.execute(ins).fetchall()
         conn.close()
-        mlist = []
+        jdict = {}
         for row in result:
-            mlist.extend(list(row))
+            ## '\xa4&\x17\xfa0\x06/\xc1cD{\xa1W\x17MZ'   --> a42617fa30062fc163447ba157174d5a
+            jdict[row[0]] = row[1].encode('hex')
+            #mlist.extend(list(row))
 
-        data = ''.join(mlist)
-        del mlist[:]
-        del mlist
+        #print "mlist",mlist
+        data = json.dumps(jdict)
+        print "json data",data
+        mlist = []
+        jdict.clear()
+        del jdict
         return data
 
 
     def insert_bind_table(self,uname,devid,pwd):
         bt = get_account_bind_table(uname)
-        sel = sql.select([literal(devid),literal(pwd)]).where(~exists([bt.c.devid]).where(bt.c.devid == literal(devid)))
-        ins = bt.insert().from_select(['devid','pwd'],sel)
-        return self.run_trans(ins)
+        try:
+            while 1:
+                pwd = pwd.decode('hex')
+        except TypeError:
+            pass
+        ins = bt.insert().values(devid=devid,pwd=pwd)
+        conn = GetConn(self.engine)
+        try:
+            conn.execute(ins)
+        except IntegrityError:
+            pass
+        conn.close()
 
     def check_user_exist(self,uname):
         at=get_account_table()
@@ -262,7 +295,6 @@ class PostgresSQLEngine():
         return n
 
     def query_appbind(self,tname,devid):
-        print "table name",devid
         bt = get_account_bind_table(unhexlify(tname))
         sel = sql.select([bt.c.devid]).where(bt.c.devid == literal(devid))
         n = None
@@ -282,9 +314,15 @@ class PostgresSQLEngine():
 
     def insert_devtable(self,vname,devid,chost,data):
         dt = get_devices_table(vname)
-        sel = sql.select([literal(devid),True,text('CURRENT_TIMESTAMP'),True,literal(chost),literal(data)]).where(~exists([dt.c.devid]).where(dt.c.devid == literal(devid)))
-        ins = dt.insert().from_select(['devid','is_active','last_login_time','is_online','chost','data'],sel)
-        return self.run_trans(ins)
+        #sel = sql.select([literal(devid),True,text('CURRENT_TIMESTAMP'),True,literal(chost),literal(data)]).where(~exists([dt.c.devid]).where(dt.c.devid == literal(devid)))
+        #ins = dt.insert().from_select(['devid','is_active','last_login_time','is_online','chost','data'],sel)
+        ins = dt.insert().values(devid=devid,is_active = True,last_login_time=text('CURRENT_TIMESTAMP'),is_online=True,chost = chost,data = data)
+        conn = GetConn(self.engine)
+        try:
+            conn.execute(ins)
+        except IntegrityError:
+            pass
+        #return self.run_trans(ins)
 
 
 
