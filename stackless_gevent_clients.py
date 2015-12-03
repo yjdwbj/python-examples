@@ -299,6 +299,7 @@ class DevicesFunc():
             登录成功
             """
             #qdict.state.put('sock %d,uuid %s login' % (self.fileno,self.uid))
+            """
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
                 self.srcsock = unpack32(stat[:4])
@@ -310,6 +311,10 @@ class DevicesFunc():
                 for m in STUN_HEAD_KEY:
                     hattr.__dict__.pop(m,None)
                 return self.write_sock()
+            """
+            print "login ok test push"
+            self.sbuf = self.dev_push_test()
+            self.write_sock()
         elif hattr.method == STUN_METHOD_INFO:
             try:
                 stat = rdict[STUN_ATTRIBUTE_STATE]
@@ -392,6 +397,19 @@ class DevicesFunc():
         stun_add_fingerprint(od)
         glist = get_list_from_od(od)
         return ''.join(glist)
+
+    def dev_push_test(self):
+        import json
+        od = stun_init_command_head(STUN_METHOD_PUSH)
+        msg = 'test msg from python devices %s' % str(time.time())
+        d = {'aps':{'sound':'default','badge':len(msg),'alert':msg}}
+        stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,'D2446CA64AE906F9534CBD945E95D65C')
+        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,json.dumps(d))
+        stun_add_fingerprint(od)
+        ldata = get_list_from_od(od)
+        return ''.join(ldata)
+
+
     
     
     def send_data_to_app(self,sequence):
@@ -446,7 +464,7 @@ class APPfunc():
         self.retry = 50
         self.smscode =None
         self.connect()
-        self.send_register_request()
+        self.run()
 
     def reconnect(self):
         self.connect()
@@ -468,29 +486,36 @@ class APPfunc():
             else:
                 break
 
+
     def send_register_request(self):
+        """
         if not self.smscode:
             print "not smscode"
             self.get_sms_request(SMS_HOST)
             return 
+        """
         self.sbuf = self.stun_register_request()
         print 'send buf',hexlify(self.sbuf)
         if self.write_sock():
             appreconn.put_nowait(self.uid)
             return
-        try:
-            data = self.sock.recv(SOCK_BUFSIZE)
-        except IOError:
-            return self.reconnect()
-        if not data:
-            qdict.err.put('sock %d, recv not data' % self.fileno)
-            return
-        self.recv += data
-        del data
-        self.process_handle_first()
-        #qdict.err.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
-        #self.sock.close()
-        #appreconn.put_nowait(self.uid)
+
+    def run(self):
+        self.send_register_request()
+        while 1:
+            try:
+                data = self.sock.recv(SOCK_BUFSIZE)
+            except IOError:
+                return self.reconnect()
+            if not data:
+                qdict.err.put('sock %d, recv not data' % self.fileno)
+                return
+            self.recv += data
+            del data
+            self.process_handle_first()
+            #qdict.err.put(','.join(['sock','%d'% self.fileno,' closed,occur error,send packets %d ' % self.mynum]))
+            #self.sock.close()
+            #appreconn.put_nowait(self.uid)
 
 
 
@@ -534,12 +559,13 @@ class APPfunc():
             print "wrong head"
             return False
         if hattr.method == STUN_METHOD_DATA: # 小机回应
-            return ack_device_ask(self,hattr,rbuf)
+            return self.ack_device_ask(hattr,rbuf)
 
         hattr.method = stun_get_type(hattr.method)
         rdict  = parser_stun_package(rbuf[STUN_HEADER_LENGTH:-4]) # 去头去尾
         if rdict is None:
             return False
+        print "handle_next command"
         self.handle_next_command(hattr,rdict,rbuf)
         rdict.clear()
         del rdict
@@ -622,6 +648,7 @@ class APPfunc():
 #                return self.write_sock()
 #    
     def handle_next_command(self,hattr,rdict,rbuf):
+        print "hattr.method", hattr.method
         if hattr.method == STUN_METHOD_APPLOGIN:
             stat = rdict[STUN_ATTRIBUTE_STATE]
             self.ftpwd = rdict[STUN_ATTRIBUTE_MESSAGE_INTEGRITY]
@@ -635,6 +662,7 @@ class APPfunc():
             self.sbuf= self.stun_bind_single_uuid()
         elif hattr.method == STUN_METHOD_REGISTER:
             self.sbuf = self.stun_login_request()
+            print "now is login",self.sbuf
         elif hattr.method  == STUN_METHOD_REFRESH:
             del rdict
             for m in STUN_HEAD_KEY:
@@ -772,7 +800,7 @@ class APPfunc():
         nmac = hashlib.sha256()
         nmac.update(self.pwd)
         stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,unhexlify(nmac.hexdigest()))
-        stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,self.smscode[:6])
+        #stun_attr_append_str(od,STUN_ATTRIBUTE_DATA,self.smscode[:6])
         stun_add_fingerprint(od)
         olist = get_list_from_od(od)
         return ''.join(olist)

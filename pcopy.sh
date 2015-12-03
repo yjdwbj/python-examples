@@ -73,6 +73,9 @@ run_target()
         'srv')
             copy_to_srv
             ;;
+        'nsrv')
+            copy_to_nsrv
+            ;;
         'all')
             copy_to_srv
             copy_to_vclient

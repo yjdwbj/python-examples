@@ -11,12 +11,13 @@ from collections import OrderedDict
 from multiprocessing  import Pool,Queue
 from multiprocessing.queues import Empty
 from select import epoll,EPOLLET,EPOLLIN,EPOLLOUT,EPOLLHUP,EPOLLERR
+import socket
 
 from binascii import hexlify,unhexlify,crc32
 from datetime import datetime
 import sys
 import traceback
-
+import ssl
 
 STUN_METHOD_APPLOGIN=0x1   # APP登录命令
 STUN_METHOD_ALLOCATE=0x3   #小机登录命令
@@ -28,7 +29,10 @@ STUN_METHOD_CHANNEL_BIND=0x9 # APP 绑定小机的命令
 STUN_METHOD_MODIFY=0x10 #修改绑定信息
 STUN_METHOD_DELETE=0x11 #删除绑定项
 STUN_METHOD_PULL=0x12  # 从服务器上拉去数据
-STUN_METHOD_SMS=0x13  # 请求短信验证码
+STUN_METHOD_SMS=0x14  # 请求短信验证码
+STUN_METHOD_QUERY=0x13  #  从服务器查询用户
+
+STUN_METHOD_PUSH=0x15 # 小机发出命令，可能要APNS 推送的。
 
 STUN_METHOD_CONNECT=0xa
 STUN_METHOD_CONNECTION_BIND=0xb
@@ -50,6 +54,7 @@ STUN_ATTRIBUTE_LIFETIME=0xd
 STUN_ATTRIBUTE_BANDWIDTH=0x10
 STUN_ATTRIBUTE_XOR_PEER_ADDRESS=0x12
 STUN_ATTRIBUTE_DATA=0x13
+STUN_ATTRIBUTE_PHONE_ENV=0x14
 STUN_ATTRIBUTE_FINGERPRINT=0x8028
 STUN_ATTRIBUTE_UUID=0x8001
 STUN_ATTRIBUTE_RUUID=0x8002
@@ -87,6 +92,7 @@ STUN_ERROR_SRV_ERROR=0x411
 STUN_ERROR_OVER_TIME=0x412
 STUN_ERROR_CODE_ERROR=0x413
 STUN_ERROR_OVER_CONUT=0x414
+STUN_ERROR_LOGIN=0x415
 STUN_ERROR_NONE=None
 
 LOG_ERROR_UUID='UUID Format Error'
@@ -129,7 +135,11 @@ mthlist=(STUN_METHOD_APPLOGIN,\
         STUN_METHOD_CONNECTION_ATTEMPT,\
         STUN_METHOD_CHECK_USER,\
         STUN_METHOD_REGISTER,\
-        STUN_METHOD_SMS)
+        STUN_METHOD_QUERY,\
+        STUN_METHOD_SMS,\
+        STUN_METHOD_PUSH
+        )
+
 
 __author__ = 'liuchunyang'
 
@@ -162,7 +172,7 @@ def get_packet_head_class(buf): # 把包头解析成可以识的类属性
     for n in STUN_HEAD_KEY:
         d.pop(n,None)
     del d
-
+    m = (STUN_METHOD_SEND,STUN_METHOD_DATA)
     if stun_get_type(cc.method) not in mthlist: #命令类形不能识别
         return None
     else:
@@ -386,6 +396,16 @@ def logger_worker(queue,logger):
                 logger.log(msg)
         time.sleep(0.1)
 
+def force_hex(sdata):
+    hdata = sdata
+    while 1:
+        try:
+            hdata = hdata.decode('hex')
+        except TypeError:
+            break
+    return hdata
+
+
 
 
 class ErrLog(logging.Logger):
@@ -431,3 +451,40 @@ class EpollReactor(object):
     def modify(self,fd,mode):
         self._poller.modify(fd,mode)
 
+
+class APNSConnection(object):
+    apnsHost = 'gateway.push.apple.com'
+    apnsSandboxHost = 'gateway.sandbox.push.apple.com'
+    apnsPort = 2195
+    def __init__(self,certificate =None):
+        self.socket = None
+        self.connectionContext = None
+        self.certificate = certificate
+        self.ssl_module = ssl
+        self.context()
+        self.connect(self.apnsSandboxHost,self.apnsPort)
+
+    def context(self):
+        if self.connectionContext != None:
+            return self
+
+        self.socket = socket.socket()
+        self.connectionContext = self.ssl_module.wrap_socket(
+                self.socket,
+                ssl_version = self.ssl_module.PROTOCOL_SSLv23,
+                certfile = self.certificate
+                )
+        return self
+
+    def read(self,blockSize = 1024):
+        return self.connectionContext.read(blockSize)
+
+    def write(self,data = None):
+        self.connectionContext.write(data)
+
+    def connect(self,host,port):
+        self.connectionContext.connect((host,port))
+
+    def close(self):
+        self.connectionContext.close()
+        self.socket.close()
