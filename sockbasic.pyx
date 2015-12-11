@@ -18,6 +18,7 @@ from datetime import datetime
 import sys
 import traceback
 import ssl
+from ssl import SSLEOFError
 
 STUN_METHOD_APPLOGIN=0x1   # APP登录命令
 STUN_METHOD_ALLOCATE=0x3   #小机登录命令

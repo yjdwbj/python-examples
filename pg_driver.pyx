@@ -286,7 +286,7 @@ class PostgresSQLEngine():
             jdict[row[0].encode('hex')] = row[1].encode('hex')
 
         data = json.dumps(jdict)
-        print "json data",data
+        #print "json data",data
         del mlist[:]
         del mlist
         return None if data == '{}' else data
@@ -294,7 +294,7 @@ class PostgresSQLEngine():
 
     def insert_bind_table(self,uname,devid,pwd):
         bt = get_account_bind_table()
-        print "username,uuid",uname,devid.encode('hex')
+        #print "username,uuid",uname,devid.encode('hex')
         sel = sql.select([bt.c.devid,bt.c.uname]).where(and_(bt.c.devid == str(devid),bt.c.uname == uname))
         conn = GetConn(self.engine)
         result = conn.execute(sel)

@@ -168,6 +168,22 @@ def delete_bind_notify_dev(res,uname):
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
+def send_msg_to_apns(queue):
+    print "start apns threading.................."
+    while 1:
+        try:
+            msg = queue.get_nowait()
+        except Empty:
+            pass
+        else:
+            try:
+                apns = APNSConnection('push_cert.pem')
+                apns.write(msg)
+                apns.close()
+            except :
+                self.print_debug("Apns push error ..............")
+        gevent.sleep(0.2)
+    print "exit apns threading ............, reson is error"
 
 class EpollServer(StreamServer):
     def __init__(self,srv_ip='0.0.0.0',srv_port=3478,redis_ip='127.0.0.1',\
@@ -251,6 +267,7 @@ class EpollServer(StreamServer):
         self.fwdqueue = Queue()
         #self.statqueue[current_process().name] = Queue()
         self.errqueue = Queue()
+        self.apns_queue = Queue()
 
         #self.statlog[current_process().name] = StatLog('state_%s' % current_process().name)
         self.errlog= StatLog('err')
@@ -266,7 +283,9 @@ class EpollServer(StreamServer):
         #recvworker.start()
         threading.Thread(target=self.report_status).start()
         #server.StreamServer(self.listener,self.handle_new_accept).serve_forever()#
+        threading.Thread(target=send_msg_to_apns,args =(self.apns_queue,)).start()
         self.start()
+
         gevent.wait()
 
     def handle_check_access_count(self,addr):
@@ -578,23 +597,41 @@ class EpollServer(StreamServer):
         user = res.attrs.get(STUN_ATTRIBUTE_USERNAME,None)
         errstr = 'not found data from device request'
         default = {'aps':{'sound':'default','badge':len(errstr),'alert':errstr}}
+
+        
+        """ 这里假设都是正常的情况下
+        if '|' in user:
+            mdict = {}
+            users = user.split('|')
+            data = res.attrs.get(STUN_ATTRIBUTE_DATA,json.dumps(default))
+            if '|' in data:
+                payloads = data.split('|')
+                self.print_debug('payload list is %s' % payloads)
+                dlist = [self.apns.get(x,None) for x in users]
+                self.print_debug("device token list %s" % str([x.encode('hex') if x else 'None of devicesToken' for x in dlist ]))
+                mdict = dict(zip(dlist,payloads))
+                self.print_debug('multi msg is %s' % str(mdict))
+                msglist = [struct.pack('!BH32sH%ds' % len(v),0,32,k,len(k),v) for k,v in mdict.items() if k ]
+                self.send_msg_to_apns(''.join(msglist))
+                return
+        """
         devicesToken = self.apns.get(user,None)
-        
-        
         payload = res.attrs.get(STUN_ATTRIBUTE_DATA,json.dumps(default))
         payloadLen = len(payload)
         #!BH32sH73s
+        """
         lst = ['32065bf32d6bda852120202ea2215f9d77762e1488184eb2557d4cad9d436058'.decode('hex'),"f9f8930776f0a4db585a5f001540a70017c06409a1a6fc44c9da65f937088031".decode("hex"),"115d24422f8ae740befaf13894214471a6bc73dbf298f31c1c83a9021a05556a".decode("hex")]
         if not devicesToken:
             devicesToken = lst[0]
-
+        """
         if devicesToken:
             """ 处理与apns的接口"""
             apnsPackFormat = "!BH32sH" + str(len(payload))+"s"
-            apns = APNSConnection('push_cert.pem')
-            apns.write(struct.pack(apnsPackFormat,0,32,devicesToken,payloadLen,payload))
-            self.print_debug("push apns buffer , user: %s,deviceToken: %s ,payload: %s" % (user,devicesToken.encode('hex'),payload))
-            apns.close()
+            msg = struct.pack(apnsPackFormat,0,32,devicesToken,payloadLen,payload)
+            self.print_debug("push apns buffer , user: %s,deviceToken: %s ,payload: %s,msg len %d" % (user,devicesToken.encode('hex'),payload,len(msg)))
+            #self.send_msg_to_apns(msg)
+            self.apns_queue.put(msg)
+
 
     def handle_postauth_process(self,res,hbuf):
         """
@@ -712,7 +749,7 @@ class EpollServer(StreamServer):
         obj.update(user)
         obj.update(pwd)
         ftpwd = self.db.user_login(user,obj.digest(),'%s:%d' % (res.host[0],res.host[1]))
-        print "user login",user
+        #print "user login",user
         if not ftpwd:
             """用户信息不正确所以不能取得ftpwd"""
             res.eattr = STUN_ERROR_AUTH
@@ -732,6 +769,7 @@ class EpollServer(StreamServer):
         os_env = res.attrs.get(STUN_ATTRIBUTE_PHONE_ENV,None)
         if os_env:
             """这个是IOS 系统"""
+            self.print_debug('apple phone login ,devicesToken is %s' % os_env.encode('hex'))
             self.apns[user] = os_env
 
 
@@ -850,7 +888,7 @@ class EpollServer(StreamServer):
             res.eattr = STUN_ERROR_UNKNOWN_PACKET 
             self.errqueue.put(','.join([LOG_ERROR_UUID,self.hosts[res.fileno][0],str(sys._getframe().f_lineno)]))
             return stun_error_response(res)
-        print "now app bind device"
+        #print "now app bind device"
         try:
             self.db.insert_bind_table(user,uuid,pwd)
         except IntegrityError:
