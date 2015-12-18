@@ -87,6 +87,7 @@ class Client(object):
     def get_remote_addr(self):
         self.udpsock.sendto('ok',self.udp_srv)
         self.local_addr =  self.udpsock.getsockname()
+        time.sleep(0.5)
         while 1:
             try:
                 data,addr = self.udpsock.recvfrom(128)
@@ -95,7 +96,11 @@ class Client(object):
                 gevent.sleep(1)
                 continue
             else:
-                return data
+                if ':' in data:
+                    n = data.split(':')
+                    return (n[0],int(n[1]))
+                else:
+                    return data
             
 
 
@@ -112,7 +117,7 @@ class AppClient(Client):
         
     def start(self):
         self.connect()
-        #addr = ('127.0.0.1',5554)
+        addr = ('127.0.0.1',5554)
         addr = self.get_remote_addr()
         debug_print("my remote addr is %s" % str(addr))
         cmd = {CMD:CONN,ADDR:addr,UUID:self.uuid,PWD:self.pwd}
@@ -121,8 +126,15 @@ class AppClient(Client):
         if not jdata:
             debug_print("read from None")
         else:
-            remoteaddr = ast.literal_eval(jdata[ADDR])
-            debug_print('got remote ip %s ' % str(remoteaddr))
+            a = jdata.get(ADDR,None)
+            print "addr type",type(a)
+            debug_print("addr data %s" % a)
+            
+            if isinstance(a,list):
+                debug_print('got remote ip %s ' % str(a))
+            else:
+                remoteaddr = ast.literal_eval(jdata[ADDR])
+                debug_print('got remote ip %s ' % str(remoteaddr))
 
         
 
@@ -189,6 +201,7 @@ class DevClient(Client):
                     continue
                 elif cmd == CONN:
                     debug_print('recv connect request %s' % data)
+                    addr = ('127.0.0.1',8695)
                     addr = self.get_remote_addr()
                     debug_print('my remote addr is %s' % str(addr))
                     remoteaddr = data.get(ADDR)

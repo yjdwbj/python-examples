@@ -5,6 +5,8 @@ import binascii
 import uuid
 import unittest
 import inspect
+from tornado.tcpclient import TCPClient
+import ssl
 
 from sockbasic import *
 from pg_driver import *
@@ -52,7 +54,6 @@ class TestEpollSrv(unittest.TestCase):
         
         print attrs
         
-    """
 
     def test_apns_push(self):
         lst = ['32065bf32d6bda852120202ea2215f9d77762e1488184eb2557d4cad9d436058'.decode('hex'),"f9f8930776f0a4db585a5f001540a70017c06409a1a6fc44c9da65f937088031".decode("hex"),"115d24422f8ae740befaf13894214471a6bc73dbf298f31c1c83a9021a05556a".decode("hex")]
@@ -65,14 +66,27 @@ class TestEpollSrv(unittest.TestCase):
         user = 'test'
         #!BH32sH73s
         lst = ['32065bf32d6bda852120202ea2215f9d77762e1488184eb2557d4cad9d436058'.decode('hex'),"f9f8930776f0a4db585a5f001540a70017c06409a1a6fc44c9da65f937088031".decode("hex"),"115d24422f8ae740befaf13894214471a6bc73dbf298f31c1c83a9021a05556a".decode("hex")]
+        deviceToken = "95526283f3f8f9668a90e285fdb91f7184d7036088279dcb1616b8c8ee043f84".decode('hex')
+        #deviceToken = lst[0]
         #处理与apns的接口 
         apnsPackFormat = "!BH32sH" + str(len(payload))+"s"
-        apns = APNSConnection('push_cert.pem')
-        apns.write(struct.pack(apnsPackFormat,0,32,deviceToken,payloadLen,payload))
+        host = "gateway.sandbox.push.apple.com"
+        host = "gateway.push.apple.com"
+        port = 2195
+
+        apns = APNSConnection('push_cert.pem',True)
+        msg = struct.pack(apnsPackFormat,0,32,deviceToken,payloadLen,payload)
+        apns.write(msg)
+        
         print("push apns buffer , user: %s,deviceToken: %s ,payload: %s" % (user,deviceToken,payload))
+        print "push msg is",msg.encode('hex')
+        data = apns.read()
+        if data :
+            print "Recv from apns ",data
         apns.close()
 
 
+"""
 
     def test_app_register(self):
         buf = "4a4c000100440000000000000000000f00000000000600033939693000080020c4fc18ec501674667276431b6e37a928c28876bdfc438aa5343894d8362c63f25cca2e8c".decode('hex')

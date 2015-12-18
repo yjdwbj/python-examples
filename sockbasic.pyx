@@ -457,12 +457,13 @@ class APNSConnection(object):
     apnsHost = 'gateway.push.apple.com'
     apnsSandboxHost = 'gateway.sandbox.push.apple.com'
     apnsPort = 2195
-    def __init__(self,certificate =None):
+    def __init__(self,cert=None,sandbox=True):
         self.socket = None
         self.connectionContext = None
-        self.certificate = certificate
+        self.certificate = cert
         self.ssl_module = ssl
         self.context()
+        self.sandbox = sandbox
         self.connect(self.apnsSandboxHost,self.apnsPort)
 
     def context(self):
@@ -470,6 +471,7 @@ class APNSConnection(object):
             return self
 
         self.socket = socket.socket()
+        #self.socket.setblocking(0)
         self.connectionContext = self.ssl_module.wrap_socket(
                 self.socket,
                 ssl_version = self.ssl_module.PROTOCOL_SSLv23,

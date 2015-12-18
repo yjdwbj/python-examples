@@ -119,6 +119,10 @@ def app_user_auth_success(res,ftpwd):
     stun_attr_append_str(od,STUN_ATTRIBUTE_STATE,struct.pack('!II',res.fileno,STUN_ONLINE))
     stun_attr_append_str(od,STUN_ATTRIBUTE_USERNAME,res.attrs[STUN_ATTRIBUTE_USERNAME])
     stun_attr_append_str(od,STUN_ATTRIBUTE_MESSAGE_INTEGRITY,str(ftpwd))
+    os_env = res.attrs.get(STUN_ATTRIBUTE_PHONE_ENV,None)
+    if os_env:
+        stun_attr_append_str(od,STUN_ATTRIBUTE_PHONE_ENV,'ios')
+    
     stun_add_fingerprint(od)
     return get_list_from_od(od)
 
@@ -176,12 +180,17 @@ def send_msg_to_apns(queue):
         except Empty:
             pass
         else:
+            data = None
             try:
                 apns = APNSConnection('push_cert.pem')
                 apns.write(msg)
+                #data = apns.read()
                 apns.close()
             except :
-                self.print_debug("Apns push error ..............")
+                print("Apns push error ..............")
+            if data:
+                print "apns return ",data.encode('hex')
+            
         gevent.sleep(0.2)
     print "exit apns threading ............, reson is error"
 
@@ -642,7 +651,7 @@ class EpollServer(StreamServer):
         if not res.attrs and res.method != STUN_METHOD_PULL:
             """这里的STUN_METHOD_PULL 很短，没有res.attrs"""
                
-            self.print_debug("postfunc parser_stun_package is None buf: "+hexlify(hbuf)+res.__dict__+res.host)
+            #self.print_debug("postfunc parser_stun_package is None buf: "+hexlify(hbuf)+res.__dict__+res.host)
             user = self.appsock.get(res.fileno,None)
             if not user:
                 self.devsock.get(res.fileno,None)
@@ -771,6 +780,9 @@ class EpollServer(StreamServer):
             """这个是IOS 系统"""
             self.print_debug('apple phone login ,devicesToken is %s' % os_env.encode('hex'))
             self.apns[user] = os_env
+        else:
+            """ 如果没有发送本机deviceToken ,就认为它在人android 上登录了"""
+            self.apns.pop(user,None)
 
 
         buf = app_user_auth_success(res,ftpwd)
