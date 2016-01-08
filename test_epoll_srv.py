@@ -13,6 +13,8 @@ from pg_driver import *
 from stackless_gevent_proxy import *
 
 srv = EpollServer()
+push_count = 0
+
 class dumpclass:
     pass
 
@@ -69,14 +71,15 @@ class TestEpollSrv(unittest.TestCase):
         deviceToken = "95526283f3f8f9668a90e285fdb91f7184d7036088279dcb1616b8c8ee043f84".decode('hex')
         #deviceToken = lst[0]
         #处理与apns的接口 
-        apnsPackFormat = "!BH32sH" + str(len(payload))+"s"
+        apnsPackFormat = "!BIIH32sH" + str(len(payload))+"s"
         host = "gateway.sandbox.push.apple.com"
         host = "gateway.push.apple.com"
         port = 2195
 
         apns = APNSConnection('push_cert.pem',True)
-        msg = struct.pack(apnsPackFormat,0,32,deviceToken,payloadLen,payload)
+        msg = struct.pack(apnsPackFormat,1,push_count+1,3,32,deviceToken,payloadLen,payload)
         apns.write(msg)
+        time.sleep(1)
         
         print("push apns buffer , user: %s,deviceToken: %s ,payload: %s" % (user,deviceToken,payload))
         print "push msg is",msg.encode('hex')

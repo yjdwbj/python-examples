@@ -464,19 +464,31 @@ class APNSConnection(object):
         self.ssl_module = ssl
         self.context()
         self.sandbox = sandbox
-        self.connect(self.apnsSandboxHost,self.apnsPort)
+        if sandbox:
+            self.connect(self.apnsSandboxHost,self.apnsPort)
+        else:
+            self.connect(self.apnsHost,self.apnsPort)
+
+    def timeout(self,t = 3):
+        self.socket.settimeout(t)
+        return self
+
+    def got_timeout(self):
+        return self.socket.gettimeout()
 
     def context(self):
         if self.connectionContext != None:
             return self
 
         self.socket = socket.socket()
+        self.socket.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
         #self.socket.setblocking(0)
         self.connectionContext = self.ssl_module.wrap_socket(
                 self.socket,
                 ssl_version = self.ssl_module.PROTOCOL_SSLv23,
                 certfile = self.certificate
                 )
+        self.timeout()
         return self
 
     def read(self,blockSize = 1024):

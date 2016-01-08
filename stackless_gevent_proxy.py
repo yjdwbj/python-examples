@@ -28,7 +28,7 @@ import hashlib
 # 自定义模块
 from sockbasic import *
 from pg_driver import *
-from cluster_mod import *
+#from cluster_mod import *
 
 #from sockbasic import MySQLEngine as QueryDB
 #from pg_driver import PostgresSQLEngine as QueryDB
@@ -60,6 +60,7 @@ DEBUG_ON = False
 
 APP_FWD = 0
 DEV_FWD = 1
+global push_count
 
 
 
@@ -175,23 +176,23 @@ def delete_bind_notify_dev(res,uname):
 def send_msg_to_apns(queue):
     print "start apns threading.................."
     while 1:
-        try:
-            msg = queue.get_nowait()
-        except Empty:
-            pass
-        else:
-            data = None
-            try:
-                apns = APNSConnection('push_cert.pem')
-                apns.write(msg)
-                #data = apns.read()
-                apns.close()
-            except :
-                print("Apns push error ..............")
-            if data:
-                print "apns return ",data.encode('hex')
-            
+        apns = APNSConnection('push_cert.pem',True)
         gevent.sleep(0.2)
+        while 1:
+            try:
+                msg = queue.get_nowait()
+            except Empty:
+                pass
+            else:
+                data = None
+                print "got push msg",msg.encode('hex')
+                print "socket time out",apns.got_timeout()
+                try:
+                    apns.write(msg)
+                except:
+                    break
+            gevent.sleep(0.2)
+        apns.close()
     print "exit apns threading ............, reson is error"
 
 class EpollServer(StreamServer):
@@ -207,6 +208,7 @@ class EpollServer(StreamServer):
         self.db = PostgresSQLEngine()
         self.mcastsqueue = Queue()
         self.mcastrqueue = Queue()
+        self.push_count = 0
         """
         self.redis_sms = redis.Redis(host=redis_ip,port=redis_port,db=0,\
                 password=redis_pass)
@@ -628,18 +630,14 @@ class EpollServer(StreamServer):
         payload = res.attrs.get(STUN_ATTRIBUTE_DATA,json.dumps(default))
         payloadLen = len(payload)
         #!BH32sH73s
-        """
-        lst = ['32065bf32d6bda852120202ea2215f9d77762e1488184eb2557d4cad9d436058'.decode('hex'),"f9f8930776f0a4db585a5f001540a70017c06409a1a6fc44c9da65f937088031".decode("hex"),"115d24422f8ae740befaf13894214471a6bc73dbf298f31c1c83a9021a05556a".decode("hex")]
-        if not devicesToken:
-            devicesToken = lst[0]
-        """
         if devicesToken:
             """ 处理与apns的接口"""
-            apnsPackFormat = "!BH32sH" + str(len(payload))+"s"
-            msg = struct.pack(apnsPackFormat,0,32,devicesToken,payloadLen,payload)
-            self.print_debug("push apns buffer , user: %s,deviceToken: %s ,payload: %s,msg len %d" % (user,devicesToken.encode('hex'),payload,len(msg)))
-            #self.send_msg_to_apns(msg)
-            self.apns_queue.put(msg)
+            apnsPackFormat = "!BIIH32sH" + str(len(payload))+"s"
+            msg = struct.pack(apnsPackFormat,1,self.push_count,1,32,devicesToken,payloadLen,payload)
+            #self.print_debug("push apns buffer , user: %s,deviceToken: %s ,payload: %s,msg len %d" % (user,devicesToken.encode('hex'),payload,len(msg)))
+            #print("push apns buffer , user: %s,deviceToken: %s ,payload: %s,msg len %d" % (user,devicesToken.encode('hex'),payload,len(msg)))
+            print "will to push msg"
+            self.apns_queue.put_nowait(msg)
 
 
     def handle_postauth_process(self,res,hbuf):
