@@ -14,6 +14,8 @@ import threading
 import gevent
 import ast
 import argparse
+from gevent.pool import Pool
+CONCURRENCY = 100
 
 
 SOCK_BUFSIZE = 8192
@@ -33,10 +35,22 @@ HOST = 'host'
 MSG = 'msg'
 
 TIMEOUT = 5
-run_time = time.time()
+global run_time 
 run_count = 0
 dev_count = 0
-tmp_num = 0
+import logging
+
+logger = logging.getLogger()
+#handler = logging.StreamHandler()
+#formatter = logging.Formatter(
+#                '%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
+#handler.setFormatter(formatter)
+fHandler = logging.FileHandler("camera.log")
+logger.addHandler(fHandler)
+logger.setLevel(logging.DEBUG)
+
+#logger.debug('often makes a very good meal of %s', 'visiting tourists')
+
 
 def debug_print(msg):
     if DEBUG_FLAG:
@@ -55,17 +69,27 @@ def split_packet(data):
 
 
 class Client(object):
-    def __init__(self,server,udp_srv = None):
+    def __init__(self,server,is_ssl=False):
         sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-        #sock.settimeout(30)
+        sock.setsockopt( socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        #sock.setsockopt( socket.SOL_SOCKET, socket.TCP_NODELAY, 1)
+        sock.setsockopt( socket.SOL_SOCKET, socket.TCP_QUICKACK, 1)
+        saddr = server[0].split('.')[:-1]
+        saddr.append('10')
+        baddr = ('.'.join(saddr),0)
+        self.udpsock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+        if saddr[0] == '172':
+            self.udpsock.bind(baddr)
+            sock.bind(baddr)
+
+        #sock.settimeout(10)
         self.sock = sock
-        #self.sock = ssl.wrap_socket(self.sock)
+        if is_ssl:
+            self.sock = ssl.wrap_socket(self.sock)
         self.server = server
-        self.udp_srv =udp_srv
         self.local_addr  = None
         self.remote_addr = None
-        self.udpsock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-        self.udpsock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        #self.udpsock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         #self.udpsock.setblocking(0)
 
     def connect(self):
@@ -79,12 +103,15 @@ class Client(object):
     def write_sock(self,data):
         if data:
             slen = len(data)
+            #f = '!H%ds%ds' % (slen,CHUNK_SIZE)
             f = '!H%ds%ds' % (slen,CHUNK_SIZE)
-            self.sock.send(struct.pack(f,slen+2,data,CHUNK_FLAG))
+            buf = struct.pack(f,slen+2,data,CHUNK_FLAG)
+            self.sock.send(buf)
 
     def read_sock(self):
         data = self.sock.recv(SOCK_BUFSIZE)
         if data and CHUNK_FLAG in data:
+            #print "recv data",data.encode('hex')
             slen = unpack16(data[:2])
             xdata = data[2:-4][:slen]
             #debug_print('data is %s' % xdata)
@@ -94,10 +121,23 @@ class Client(object):
 
     def get_remote_addr(self):
         #self.udpsock.sendto('ok',self.udp_srv)
-        self.udpsock.sendto('ok',self.udp_srv)
+        udp_srv = (self.server[0],8999)
+        self.udpsock.sendto('ok',udp_srv)
+        #gevent.sleep(0)
         self.local_addr =  self.udpsock.getsockname()
-        data,addr = self.udpsock.recvfrom(128)
-        #self.udpsock.close()
+        self.udpsock.settimeout(2)
+        data = None
+        while 1:
+            try:
+                data,addr = self.udpsock.recvfrom(128)
+            except socket.timeout:
+                self.udpsock.sendto('ok',udp_srv)
+                #gevent.sleep(0)
+                continue
+            else:
+                break
+                
+        self.udpsock.close()
         return data
         #    print "got remote addr",data
         #    if ':' in data:
@@ -123,35 +163,48 @@ class Client(object):
 
 
 class AppClient(Client):
-    def __init__(self,server,uuid,pwd,udp_srv=None):
-        Client.__init__(self,server,udp_srv)
+    def __init__(self,server,uuid,pwd,is_ssl=False):
+        Client.__init__(self,server,is_ssl)
         self.uuid = uuid
         self.pwd = pwd
+        self.sock.settimeout(30)
             
         
     def start(self):
         #gevent.sleep(randint(1,10))
+        global run_count
         try:
             self.connect()
         except:
+            print "connected failed"
             return
         #addr = "127.0.0.1:5678"
         addr = self.get_remote_addr()
         #debug_print("my remote addr is %s" % str(addr))
         cmd = {CMD:CONN,ADDR:addr,UUID:self.uuid,PWD:self.pwd}
+
+        global avg_time
+        t = time.time()
         self.write_sock(json.dumps(cmd))
-        jdata = self.read_sock()
+        #gevent.sleep(0)
+        jdata = None
+        try:
+            jdata = self.read_sock()
+        except socket.timeout:
+            print "time get local addr",self.sock.getsockname()
+            return
+
+        remoteaddr = None
         if not jdata:
             debug_print("read from None")
         else:
             try:
-                a = jdata.get(ADDR,None)
+                remoteaddr = jdata.get(ADDR,None)
             except :
                 pass
-                print "get remote failed"
             else:
-                global run_count
                 run_count += 1
+                avg_time += (time.time() - t)
                 #debug_print("addr data %s" % a)
                 
                 """
@@ -161,90 +214,135 @@ class AppClient(Client):
                     remoteaddr = jdata[ADDR].split(':')
                     debug_print('got remote ip %s ' % str(remoteaddr))
                 """
-
-        
-
-def keepalive(func,queue):
-    n = time.time()+TIMEOUT
-    while 1:
-        time.sleep(TIMEOUT)
-        try:
-            t = queue.get_nowait()
-        except:
-            pass
-        else:
-            if t == 'q':
-                break
-            n = time.time()+TIMEOUT
-            
+        th = threading.Thread(target=connect_remote,args=(self.local_addr,
+            remoteaddr,'send to dev %s' % str(time.time())))
+        th.setDaemon(True)
+        th.start()
+        th.join()
         
 
 
 class DevClient(Client):
-    def __init__(self,server,uuid,pwd,udp_srv=None):
-        Client.__init__(self,server,udp_srv)
+    def __init__(self,server,uuid,pwd,is_ssl):
+        Client.__init__(self,server,is_ssl)
         self.uuid = uuid
         self.pwd = pwd
         self.last_time = time.time()
+
+    def keeplive(self):
+        n = 5
+        while n > 0:
+            try:
+                self.write_sock(json.dumps({CMD:KEP}))  
+            except:
+                gevent.sleep(0)
+            else:
+                break
+            n -=1
+
         
 
-    def send_keepalive(self):
-        while 1:
-            time.sleep(TIMEOUT)
-            self.write_sock(json.dumps({CMD:KEP}))
-
-
     def start(self):
+        global avg_time
+        global tmp_num
         try:
             self.connect()
         except:
+            tmp_num -=1
+            print "connected failed"
             return
         
         cmd = {CMD:LOGIN,UUID:self.uuid,PWD:self.pwd}
+        
+        t = time.time()
         self.write_sock(json.dumps(cmd))
-        self.last_time = time.time()
-        #jdata = self.read_sock()
-        th =threading.Thread(target=self.send_keepalive)
-        th.Daemon = True
-        th.start()
-
+        #gevent.sleep(0)
+        jdata = self.read_sock()
+        print "recv data",jdata
+        avg_time += (time.time() - t)
+        self.write_sock(json.dumps({CMD:KEP}))  
         global dev_count
-        global tmp_num
+        global run_time
         dev_count += 1
-        if dev_count > tmp_num:
-            print "sucess connect time",time.time() - run_time
+        #print "dev_count",dev_count,tmp_num
+        if dev_count == tmp_num:
+            
+            logger.debug("DEV success  Connected %d" % dev_count)
+            logger.debug("DEV Run Time: %f" % (time.time() - run_time))
+            #print "DEV Run Time:",time.time() - run_time
+            #print "DEV Sum Time:",avg_time
+            logger.debug("DEV Avg Time: %f" % (avg_time / float(tmp_num)))
+            #print "DEV Avg Time:",avg_time / float(tmp_num)
+            #print "done>"
+            logger.debug("done>")
         n = 10
         data = None
+        
+        is_break = False
         while 1:
             try:
                 data = self.read_sock()
             except IOError:
-                print "IOError"
-                break
+                if is_break:
+                    print "IOError"
+                    break
+                else:
+                    try:
+                        self.write_sock(json.dumps({CMD:KEP}))  
+                        #print "send keep"
+                    except :
+                        break
+
+                    is_break = True
+                    continue
+
+
             if data: 
-                n = 10
-                #print "recv data is",data
+                is_break = False
                 cmd = data.get(MSG,None)
                 if cmd == CONN:
-                    #debug_print('recv connect request %s' % data)
+                    #logger.debug("recv conn %s" % data)
                     addr = self.get_remote_addr()
-                    #debug_print('my remote addr is %s' % str(addr))
                     remoteaddr = data.get(ADDR)
                     data[ADDR] = addr
+                    th = threading.Thread(target=connect_remote,args=(self.local_addr,
+                        remoteaddr,'send to app %s' % str(time.time())))
+                    th.setDaemon(True)
+                    th.start()
                     data.pop(MSG)
                     data[CMD] = CONN
                     d = json.dumps(data)
-                    #print "send conn to srv",d
+                    #logger.debug("response conn %s"  % d)
                     self.write_sock(d)
-
-            else:
-                print "no data"
-                if n < 10:
+                cmd = data.get('err',None)
+                if cmd:
                     break
-                else:
-                    n -= 1
             gevent.sleep(0)
-                
+
+        # error exit
+        tmp_num -= 1
+
+
+def connect_remote(laddr,raddr,msg):
+    udpsock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    udpsock.bind(laddr)
+    t = raddr.split(':')
+    r_peer = (t[0],int(t[1]))
+    
+    while 1:
+        try:
+            udpsock.sendto(msg,r_peer)
+        except:
+            gevent.sleep(0)
+            continue
+        else:
+            gevent.sleep(1)
+            data = udpsock.recvfrom(1024)
+            if data:
+                print "recv remote data",data
+            gevent.sleep(0)
+
+
 
 
 def argument_parser():
@@ -256,68 +354,97 @@ def argument_parser():
     app_parser.add_argument('-H',action='store',dest='srv_host',type=str,help='server host')
     app_parser.add_argument('-u',action='store',dest='uuid',type=str,help='uuid')
     app_parser.add_argument('-p',action='store',dest='pwd',type=str,help='pwd ')
-    app_parser.add_argument('-P',action='store',dest='port',type=int,help='server port')
+    app_parser.add_argument('-P',action='store',dest='port',type=int,help='server port',default=5561)
     app_parser.add_argument('-f',action='store',dest='infile',type=str,help='user file')
+    app_parser.add_argument('-s',action='store',dest='is_ssl',type=bool,help='toggle ssl listen')
     app_parser.set_defaults(func=AppDemo)
     dev_parser = subparsers.add_parser('dev',help='dev simulator')
     dev_parser.add_argument('-H',action='store',dest='srv_host',type=str,help='server host')
     dev_parser.add_argument('-u',action='store',dest='uuid',type=str,help='uuid')
     dev_parser.add_argument('-p',action='store',dest='pwd',type=str,help='pwd ')
-    dev_parser.add_argument('-P',action='store',dest='port',type=int,help='server port')
+    dev_parser.add_argument('-P',action='store',dest='port',type=int,help='server port',default=5560)
     dev_parser.add_argument('-f',action='store',dest='infile',type=str,help='user file')
+    dev_parser.add_argument('-t',action='store',dest='dev_only',type=bool,help='test device login only')
+    dev_parser.add_argument('-s',action='store',dest='is_ssl',type=bool,help='toggle ssl listen')
     dev_parser.set_defaults(func=DevDemo)
     return parser
 
-UDP_SRV=(socket.gethostbyname('cam.jieli.net'),8999)
+#UDP_SRV=(socket.gethostbyname('cam.jieli.net'),8999)
+#UDP_SRV=('192.168.25.100',8999)
+#UDP_SRV=('120.24.12.160',8999)
 def read_file(fname):
     lst = None
     with open(fname,'r') as fd:
         lst = fd.readlines()
     return [x.strip() for x in lst]
 
-def g_func(func,addr,u,p):
-    o = func(addr,u,p,UDP_SRV)
+def g_func(glist,func,addr,u,p,s):
+    
+    o = func(addr,u,p,s)
     o.start()
     
 
 def AppDemo(args):
     if args.uuid:
-        AppClient((socket.gethostbyname(args.srv_host),args.port),args.uuid,args.pwd,UDP_SRV).start()
+        AppClient((socket.gethostbyname(args.srv_host),args.port),args.uuid,args.pwd,args.is_ssl).start()
     else:
-        if not args.infile:
-            print "please pointer a input file"
-            sys.exit(0)
-        lst = read_file(args.infile)
-        
-        g_lst = [gevent.spawn(g_func,AppClient,(socket.gethostbyname(args.srv_host),args.port),x,x) for x in lst]
-        gevent.joinall(g_lst)
+        n = len(args.flist)
+        pool = Pool(n)
+        logger.debug("APP Start  Connect number %d" % n)
+        for n in args.flist:
+            pool.spawn(g_func,None,AppClient,(args.srv_host,args.port),n,n,args.is_ssl)
+        pool.join()
+        #g_lst = [gevent.spawn(g_func,AppClient,(args.srv_host,args.port),x,x,args.is_ssl) for x in args.flist]
+        #gevent.joinall(g_lst)
 
-    #app = AppClient((socket.gethostbyname(args.srv_host),args.port),args.uuid,args.pwd)
-    #app.start()
 
 def DevDemo(args):
-    global tmp_num
+    glist = []
     if args.uuid:
-        DevClient((socket.gethostbyname(args.srv_host),args.port),args.uuid,args.pwd,UDP_SRV).start()
+        glist.append(gevent.spawn(g_func,glist,DevClient,(args.srv_host,args.port),args.uuid,args.pwd,args.is_ssl))
     else:
-        if not args.infile:
-            print "please pointer a input file"
-            sys.exit(0)
-        lst = read_file(args.infile)
-        tmp_num = len(lst)
-        print "num of users ",tmp_num
-        g_lst = [gevent.spawn(g_func,DevClient,(socket.gethostbyname(args.srv_host),args.port),x,x) for x in lst]
-        gevent.joinall(g_lst)
+        n = len(args.flist)
+        logger.debug("DEV Start  Connect number %d" % n)
+        for n in args.flist:
+            glist.append(gevent.spawn(g_func,glist,DevClient,(args.srv_host,args.port),n,n,args.is_ssl))
+            #pool.spawn(g_func,glist,DevClient,(args.srv_host,args.port),n,n,args.is_ssl)
+        #pool.join()
+    gevent.joinall(glist)
+        #g_lst = [gevent.spawn(g_func,DevClient,(args.srv_host,args.port),x,x,args.is_ssl) for x in args.flist]
+        #gevent.joinall(g_lst)
     #dev = DevClient((socket.gethostbyname(args.srv_host),args.port),args.uuid,args.pwd)
     #dev.start()
 
 
 if __name__ == '__main__':
     args = argument_parser().parse_args()
+    args.srv_host = socket.gethostbyname(args.srv_host)
+    print args.port
+    global run_time
+    avg_time = 0
     run_time = time.time()
+    global tmp_num
+    if not args.uuid:
+        if not args.infile:
+            print "please pointer a input file"
+            sys.exit(0)
+        lst = read_file(args.infile)
+        setattr(args,'flist',lst)
+        tmp_num = len(args.flist)
+        print "start num of users ",tmp_num
+    else:
+        tmp_num = 1
+
     args.func(args)
-    print "run time is ",time.time() - run_time
-    print "success connect is ",run_count
+    if args.func == AppDemo:
+        logger.debug("APP success  Connected %d" % run_count)
+        logger.debug("APP Run Time: %f" % (time.time() - run_time))
+        #print "APP Run Time:",time.time() - run_time
+        #print "APP Sum Time:",avg_time
+        logger.debug("APP Avg Time: %f" % (avg_time / float(tmp_num)))
+        #print "APP Avg Time:",avg_time / float(tmp_num)
+        logger.debug("done>")
+    
 
 
 
